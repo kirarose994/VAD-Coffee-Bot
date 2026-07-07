@@ -1,36 +1,46 @@
-# [Project name]
+# VAD Coffee Date Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A Telegram bot that connects people for casual coffee chats and networking, built with python-telegram-bot v21.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- **VAD Coffee Date Bot** workflow — runs `cd bot && python main.py`
+- After setting `TELEGRAM_BOT_TOKEN` as a Replit Secret, start the workflow to bring the bot online.
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Python 3.13
+- python-telegram-bot v21 (async, with APScheduler job-queue)
+- python-dotenv
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+```
+bot/
+├── main.py              # Entry point — builds Application and starts polling
+├── config.py            # Config (env vars), conversation states, keyboard constants
+├── requirements.txt     # Python dependencies
+├── handlers/
+│   ├── start.py         # /start and /help
+│   ├── register.py      # /register — 4-step ConversationHandler
+│   ├── profile.py       # /profile
+│   ├── match.py         # /match — overlap-score matching
+│   └── error.py         # Global error handler
+└── utils/
+    ├── keyboards.py     # Reply / inline keyboard builders
+    └── formatting.py   # Message text formatters
+```
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Profiles stored in `bot_data` (in-memory). Persist with a DB for production use.
+- `ConversationHandler` added before plain command handlers to correctly intercept mid-conversation messages.
+- Match scoring: `(shared availability slots × 2) + shared interests` — availability weighted higher.
+- All handlers are `async` functions; errors are caught globally by `error_handler`.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Users can register a coffee date profile (name, availability slots, location, interests) through a guided multi-step conversation, then use `/match` to find a compatible partner based on shared availability and interests.
 
 ## User preferences
 
@@ -38,8 +48,11 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Profiles reset on restart (in-memory only). Add a DB for persistence.
+- `TELEGRAM_BOT_TOKEN` must be set as a Replit Secret before starting the workflow.
+- Package manager is `uv` (managed by Replit). Add packages via the package-management skill, not raw `pip install`.
 
 ## Pointers
 
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- Bot token: add as Replit Secret `TELEGRAM_BOT_TOKEN`
+- Optional secrets: `ADMIN_IDS` (comma-separated user IDs), `LOG_LEVEL`, `DEBUG`
