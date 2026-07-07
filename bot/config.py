@@ -52,9 +52,9 @@ SIZES = {
 }
 
 ROASTS = {
-    "light":  {"label": "Light Roast",  "price": 10},
-    "medium": {"label": "Medium Roast", "price": 20},
-    "dark":   {"label": "Dark Roast",   "price": 40},
+    "light":  {"label": "Light Roast",  "price": 10, "description": "Sweet & smooth (sfw banter, flirting & company)"},
+    "medium": {"label": "Medium Roast", "price": 20, "description": "Playful middle ground (casual and sexual mix)"},
+    "dark":   {"label": "Dark Roast",   "price": 40, "description": "Extra hot 🔥 (intense sexual chemistry)"},
 }
 
 FLAVORS = {

@@ -124,8 +124,9 @@ HDR = "☕ <b>VAD Coffee Lounge</b>\n\n"
 def _barista_text(selected: list) -> str:
     note = f"\n<i>💕 Your picks so far ({len(selected)}): {', '.join(selected)}</i>" if selected else ""
     return (
-        HDR + "<b>Step 1 of 6 — Who's making your magic today? 💕</b>\n"
-        "Choose at least 2 of your favourites, then tap <b>These are my picks! 💛</b>" + note
+        HDR + "<b>👩‍🍳 Choose your baristas</b>\n"
+        "Pick at least 2 sweethearts to host your session.\n"
+        "Two baristas. Twice the fun. 💕" + note
     )
 
 
@@ -134,21 +135,22 @@ def _size_text() -> str:
         f"  • <b>{s['label']}</b> — {s['duration']} — ${s['price']} each"
         for s in SIZES.values()
     )
-    return HDR + "<b>Step 2 of 6 — How long are you staying? ⏱️</b>\n\n" + lines
+    return HDR + "<b>☕ How long are you staying with us today?</b>\n\n" + lines
 
 
 def _roast_text() -> str:
     lines = "\n".join(
-        f"  • <b>{r['label']}</b> — ${r['price']} each"
+        f"  • <b>{r['label']}</b> — {r['description']} — ${r['price']} each"
         for r in ROASTS.values()
     )
-    return HDR + "<b>Step 3 of 6 — How do you like it? 🫘</b>\n\n" + lines
+    return HDR + "<b>🤎 How do you like it?</b>\n\n" + lines
 
 
 def _flavor_text(selected: list) -> str:
     note = f"\n<i>🍬 Added: {', '.join(FLAVORS[f]['label'] for f in selected)}</i>" if selected else ""
     return (
-        HDR + "<b>Step 4 of 6 — A little something sweet? 🍬</b>\n"
+        HDR + "<b>🍯 Add flavor shots</b>\n"
+        "Choose one or mix a few to customize your coffee date.\n"
         "Vanilla, Caramel & Hazelnut are on us · Cinnamon is +$15 each" + note
     )
 
@@ -159,11 +161,18 @@ def _bakery_text(selected: list) -> str:
         f"  • <b>{v['label']}</b> ({v['duration']}) — ${v['price']} each"
         for v in BAKERY.values()
     )
-    return HDR + "<b>Step 5 of 6 — Something to nibble on? 🥐</b> (totally optional!)\n\n" + lines + note
+    return (
+        HDR + "<b>🥐 Bakery Menu & Extended Stays (Gfe Fun)</b>\n"
+        "Available separately or as an add-on.\n\n" + lines + note
+    )
 
 
 def _caffeine_text() -> str:
-    return HDR + "<b>Step 6 of 6 — Need an extra kick? ⚡</b>\n+$30 per barista"
+    return (
+        HDR + "<b>⚡ Want to get your order nice and HOT?</b>\n"
+        "Add a caffeine shot for extra spice (hyper sexual or graphic).\n"
+        "+$30 per barista"
+    )
 
 
 # ── Handlers ───────────────────────────────────────────────────────────────
@@ -173,11 +182,13 @@ async def start_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     _clear(ctx)
     order = _order(ctx)
     await update.message.reply_html(
-        "☕ <b>Hey, welcome to VAD Coffee Lounge!</b> 💛\n\n"
-        "So glad you're here — let's build your perfect order together. "
-        "It'll only take a moment, we promise. ✨\n\n"
-        "<b>Step 1 of 6 — Who's making your magic today? 💕</b>\n"
-        "Choose at least 2 of your favourites, then tap <b>These are my picks! 💛</b>",
+        "☕💕 <b>Welcome to VAD Coffee Lounge!</b> 💕☕\n\n"
+        "Well hello there... 😘\n\n"
+        "Take a seat, get comfortable, and let our baristas help you build up the HEAT "
+        "with your perfect coffee date. (Wink wink) 😉\n\n"
+        "<b>👩‍🍳 Choose your baristas</b>\n"
+        "Pick at least 2 sweethearts to host your session.\n"
+        "Two baristas. Twice the fun. 💕",
         reply_markup=_barista_kb(order["baristas"]),
     )
     return STATE_BARISTAS
@@ -312,7 +323,11 @@ async def submit_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         )
         try:
             await ctx.bot.send_message(admin_chat_id, admin_msg, parse_mode="HTML")
-            confirmation = "\n\n🎉 <b>Order placed — we can't wait to see you!</b> See you soon. ☕✨"
+            confirmation = (
+                "\n\n🎉 <b>Order placed!</b>\n"
+                "Your ticket has been sent to the café.\n"
+                "A VAD admin will be with you soon. ☕💕"
+            )
         except Exception as exc:
             logger.error("Could not forward order to admin: %s", exc)
             confirmation = "\n\n⚠️ Your order is noted, but we had a little hiccup reaching the team — we'll be in touch soon! 💛"
