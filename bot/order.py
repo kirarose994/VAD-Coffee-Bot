@@ -345,8 +345,14 @@ async def submit_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
             "<b>Order Details:</b>\n\n"
             + receipt
         )
+        thread_id = ctx.bot_data.get("coffee_orders_thread_id")
         try:
-            await ctx.bot.send_message(admin_chat_id, admin_msg, parse_mode="HTML")
+            await ctx.bot.send_message(
+                admin_chat_id,
+                admin_msg,
+                parse_mode="HTML",
+                message_thread_id=thread_id,  # None → group root; set → Coffee Orders topic
+            )
             confirmation = (
                 "\n\n🎉 <b>Order placed!</b>\n"
                 "Your ticket has been sent to the café.\n"

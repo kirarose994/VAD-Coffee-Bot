@@ -10,6 +10,7 @@ from dataclasses import dataclass
 class Config:
     token: str
     admin_chat_id: int | None
+    coffee_orders_thread_id: int | None
     log_level: str
 
     @classmethod
@@ -18,20 +19,23 @@ class Config:
         if not token:
             raise ValueError("TELEGRAM_BOT_TOKEN is not set. Add it as a Replit Secret.")
 
-        raw_admin = os.environ.get("ADMIN_CHAT_ID", "").strip()
-        admin_chat_id: int | None = None
-        if raw_admin:
+        def _parse_int_env(key: str) -> int | None:
+            raw = os.environ.get(key, "").strip()
+            if not raw:
+                return None
             try:
-                admin_chat_id = int(raw_admin)
+                return int(raw)
             except ValueError:
                 import logging
                 logging.getLogger(__name__).warning(
-                    "ADMIN_CHAT_ID %r is not a valid integer — admin forwarding disabled.", raw_admin
+                    "%s %r is not a valid integer — ignored.", key, raw
                 )
+                return None
 
         return cls(
             token=token,
-            admin_chat_id=admin_chat_id,
+            admin_chat_id=_parse_int_env("ADMIN_CHAT_ID"),
+            coffee_orders_thread_id=_parse_int_env("COFFEE_ORDERS_THREAD_ID"),
             log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         )
 

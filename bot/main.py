@@ -2,11 +2,12 @@
 VAD Coffee Lounge Bot — entry point.
 
 Required:
-    TELEGRAM_BOT_TOKEN   — bot token from @BotFather (Replit Secret)
+    TELEGRAM_BOT_TOKEN        — bot token from @BotFather (Replit Secret)
 
 Optional:
-    ADMIN_CHAT_ID        — group chat ID where orders are forwarded
-    LOG_LEVEL            — default INFO
+    ADMIN_CHAT_ID             — supergroup chat ID where order receipts are forwarded
+    COFFEE_ORDERS_THREAD_ID   — message_thread_id of the Coffee Orders topic inside that supergroup
+    LOG_LEVEL                 — default INFO
 """
 
 import logging
@@ -37,6 +38,25 @@ async def groupid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
 
+async def topicid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reply with the topic's message_thread_id — useful for setting COFFEE_ORDERS_THREAD_ID."""
+    msg = update.message
+    if msg and msg.is_topic_message:
+        await msg.reply_html(
+            f"✨ This topic's thread ID is:\n<code>{msg.message_thread_id}</code>\n\n"
+            "Set <b>COFFEE_ORDERS_THREAD_ID</b> to this value in Replit Secrets, "
+            "then restart the bot to route order receipts here."
+        )
+    elif update.effective_chat and update.effective_chat.type in ("group", "supergroup"):
+        await msg.reply_text(
+            "Use /topicid inside a specific topic thread to get its ID. ☕"
+        )
+    else:
+        await msg.reply_text(
+            "Add me to a supergroup and run /topicid inside the target topic thread. ☕"
+        )
+
+
 def setup_logging(level: str) -> None:
     logging.basicConfig(
         format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
@@ -61,8 +81,15 @@ def main() -> None:
     else:
         logger.warning("ADMIN_CHAT_ID not set — orders will not be forwarded to an admin group")
 
+    if config.coffee_orders_thread_id:
+        app.bot_data["coffee_orders_thread_id"] = config.coffee_orders_thread_id
+        logger.info("Coffee Orders topic thread ID: %s", config.coffee_orders_thread_id)
+    else:
+        logger.warning("COFFEE_ORDERS_THREAD_ID not set — receipts will post to the group root")
+
     app.add_handler(build_order_conversation())
     app.add_handler(CommandHandler("groupid", groupid_command))
+    app.add_handler(CommandHandler("topicid", topicid_command))
     app.add_error_handler(error_handler)
 
     logger.info("Bot is running. Press Ctrl-C to stop.")
