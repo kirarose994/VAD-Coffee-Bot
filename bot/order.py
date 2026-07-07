@@ -50,7 +50,7 @@ def _barista_kb(selected: list) -> InlineKeyboardMarkup:
             for name in chunk
         ])
     if len(selected) >= 2:
-        rows.append([InlineKeyboardButton("✅ Done — Continue →", callback_data="baristas_done")])
+        rows.append([InlineKeyboardButton("💛 These are my picks! →", callback_data="baristas_done")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -81,8 +81,8 @@ def _flavor_kb(selected: list) -> InlineKeyboardMarkup:
         for i in range(0, len(items), 2)
     ]
     rows.append([
-        InlineKeyboardButton("✅ Done", callback_data="flavors_done"),
-        InlineKeyboardButton("Skip →",  callback_data="flavors_skip"),
+        InlineKeyboardButton("💛 Love it!",    callback_data="flavors_done"),
+        InlineKeyboardButton("No thanks →", callback_data="flavors_skip"),
     ])
     return InlineKeyboardMarkup(rows)
 
@@ -96,23 +96,23 @@ def _bakery_kb(selected: list) -> InlineKeyboardMarkup:
         for k, v in BAKERY.items()
     ]
     rows.append([
-        InlineKeyboardButton("✅ Done", callback_data="bakery_done"),
-        InlineKeyboardButton("Skip →",  callback_data="bakery_skip"),
+        InlineKeyboardButton("💛 Yes please!",      callback_data="bakery_done"),
+        InlineKeyboardButton("Just coffee for me →", callback_data="bakery_skip"),
     ])
     return InlineKeyboardMarkup(rows)
 
 
 def _caffeine_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("⚡ Yes  (+$30 each)", callback_data="caffeine:yes"),
-        InlineKeyboardButton("No",                  callback_data="caffeine:no"),
+        InlineKeyboardButton("⚡ Hit me! (+$30 each)", callback_data="caffeine:yes"),
+        InlineKeyboardButton("I'm sweet enough 😏",   callback_data="caffeine:no"),
     ]])
 
 
 def _receipt_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📤  Submit Order", callback_data="submit")],
-        [InlineKeyboardButton("❌  Cancel",        callback_data="cancel")],
+        [InlineKeyboardButton("💌 Place My Order!", callback_data="submit")],
+        [InlineKeyboardButton("💔 Cancel",          callback_data="cancel")],
     ])
 
 
@@ -122,10 +122,10 @@ HDR = "☕ <b>VAD Coffee Lounge</b>\n\n"
 
 
 def _barista_text(selected: list) -> str:
-    note = f"\n<i>Selected ({len(selected)}): {', '.join(selected)}</i>" if selected else ""
+    note = f"\n<i>💕 Your picks so far ({len(selected)}): {', '.join(selected)}</i>" if selected else ""
     return (
-        HDR + "<b>Step 1 of 6 — Choose Your Baristas</b>\n"
-        "Select at least 2, then tap <b>Done ✅</b>" + note
+        HDR + "<b>Step 1 of 6 — Who's making your magic today? 💕</b>\n"
+        "Choose at least 2 of your favourites, then tap <b>These are my picks! 💛</b>" + note
     )
 
 
@@ -134,7 +134,7 @@ def _size_text() -> str:
         f"  • <b>{s['label']}</b> — {s['duration']} — ${s['price']} each"
         for s in SIZES.values()
     )
-    return HDR + "<b>Step 2 of 6 — Choose Your Size</b>\n\n" + lines
+    return HDR + "<b>Step 2 of 6 — How long are you staying? ⏱️</b>\n\n" + lines
 
 
 def _roast_text() -> str:
@@ -142,28 +142,28 @@ def _roast_text() -> str:
         f"  • <b>{r['label']}</b> — ${r['price']} each"
         for r in ROASTS.values()
     )
-    return HDR + "<b>Step 3 of 6 — Choose Your Roast</b>\n\n" + lines
+    return HDR + "<b>Step 3 of 6 — How do you like it? 🫘</b>\n\n" + lines
 
 
 def _flavor_text(selected: list) -> str:
-    note = f"\n<i>Selected: {', '.join(FLAVORS[f]['label'] for f in selected)}</i>" if selected else ""
+    note = f"\n<i>🍬 Added: {', '.join(FLAVORS[f]['label'] for f in selected)}</i>" if selected else ""
     return (
-        HDR + "<b>Step 4 of 6 — Flavor Shots</b>\n"
-        "Vanilla, Caramel, Hazelnut are free · Cinnamon +$15 each" + note
+        HDR + "<b>Step 4 of 6 — A little something sweet? 🍬</b>\n"
+        "Vanilla, Caramel & Hazelnut are on us · Cinnamon is +$15 each" + note
     )
 
 
 def _bakery_text(selected: list) -> str:
-    note = f"\n<i>Selected: {', '.join(BAKERY[b]['label'] for b in selected)}</i>" if selected else ""
+    note = f"\n<i>🥐 In your bag: {', '.join(BAKERY[b]['label'] for b in selected)}</i>" if selected else ""
     lines = "\n".join(
         f"  • <b>{v['label']}</b> ({v['duration']}) — ${v['price']} each"
         for v in BAKERY.values()
     )
-    return HDR + "<b>Step 5 of 6 — Bakery Menu</b> (optional)\n\n" + lines + note
+    return HDR + "<b>Step 5 of 6 — Something to nibble on? 🥐</b> (totally optional!)\n\n" + lines + note
 
 
 def _caffeine_text() -> str:
-    return HDR + "<b>Step 6 of 6 — Caffeine Shot?</b>\n+$30 per barista"
+    return HDR + "<b>Step 6 of 6 — Need an extra kick? ⚡</b>\n+$30 per barista"
 
 
 # ── Handlers ───────────────────────────────────────────────────────────────
@@ -173,10 +173,11 @@ async def start_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     _clear(ctx)
     order = _order(ctx)
     await update.message.reply_html(
-        "☕ <b>Welcome to VAD Coffee Lounge!</b>\n\n"
-        "I'll guide you through your order step by step.\n\n"
-        "<b>Step 1 of 6 — Choose Your Baristas</b>\n"
-        "Select at least 2, then tap <b>Done ✅</b>",
+        "☕ <b>Hey, welcome to VAD Coffee Lounge!</b> 💛\n\n"
+        "So glad you're here — let's build your perfect order together. "
+        "It'll only take a moment, we promise. ✨\n\n"
+        "<b>Step 1 of 6 — Who's making your magic today? 💕</b>\n"
+        "Choose at least 2 of your favourites, then tap <b>These are my picks! 💛</b>",
         reply_markup=_barista_kb(order["baristas"]),
     )
     return STATE_BARISTAS
@@ -200,7 +201,7 @@ async def baristas_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     q = update.callback_query
     baristas = _order(ctx)["baristas"]
     if len(baristas) < 2:
-        await q.answer("Please select at least 2 baristas.", show_alert=True)
+        await q.answer("Pick at least 2 sweethearts to host your session! 💕", show_alert=True)
         return STATE_BARISTAS
     await q.answer()
     await q.edit_message_text(_size_text(), parse_mode="HTML", reply_markup=_size_kb())
@@ -288,7 +289,7 @@ async def submit_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if len(order["baristas"]) < 2 or not order["size"] or not order["roast"] or order["caffeine"] is None:
         await q.answer("Order is incomplete. Please start over.", show_alert=True)
         _clear(ctx)
-        await q.edit_message_text("⚠️ Incomplete order. Type /start to begin again.")
+        await q.edit_message_text("😬 Oops, something got a little mixed up! Type /start to begin again. ☕")
         return ConversationHandler.END
 
     await q.answer("Submitting…")
@@ -300,21 +301,21 @@ async def submit_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if admin_chat_id:
         user = update.effective_user
         admin_msg = (
-            f"🔔 <b>New Order</b> from {user.full_name}"
+            f"💌 <b>New order just dropped! ✨</b> from {user.full_name}"
             + (f" (@{user.username})" if user.username else "")
             + f" — ID: <code>{user.id}</code>\n\n"
             + receipt
         )
         try:
             await ctx.bot.send_message(admin_chat_id, admin_msg, parse_mode="HTML")
-            confirmation = "\n\n✅ <b>Order submitted!</b> See you soon. ☕"
+            confirmation = "\n\n🎉 <b>Order placed — we can't wait to see you!</b> See you soon. ☕✨"
         except Exception as exc:
             logger.error("Could not forward order to admin: %s", exc)
-            confirmation = "\n\n⚠️ Order saved locally but couldn't reach admin — we'll be in touch!"
+            confirmation = "\n\n⚠️ Your order is noted, but we had a little hiccup reaching the team — we'll be in touch soon! 💛"
     else:
         confirmation = (
-            "\n\n✅ <b>Order received!</b>\n"
-            "<i>Admin group not connected yet — your order is noted. ☕</i>"
+            "\n\n💛 <b>Order received!</b>\n"
+            "<i>We're not fully set up to forward orders yet, but your details are noted — we'll be in touch! ☕</i>"
         )
 
     await q.edit_message_text(receipt + confirmation, parse_mode="HTML")
@@ -326,13 +327,13 @@ async def cancel_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     q = update.callback_query
     await q.answer()
     _clear(ctx)
-    await q.edit_message_text("❌ Order cancelled. Type /start to begin a new order.")
+    await q.edit_message_text("💔 No worries — we'll be here when you're ready! Type /start to start a new order. ☕")
     return ConversationHandler.END
 
 
 async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     _clear(ctx)
-    await update.message.reply_text("❌ Order cancelled. Type /start to begin a new order.")
+    await update.message.reply_text("💔 No worries — we'll be here when you're ready! Type /start to start a new order. ☕")
     return ConversationHandler.END
 
 

@@ -17,5 +17,5 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     )
     if isinstance(update, Update) and update.effective_message:
         await update.effective_message.reply_text(
-            "⚠️ Something went wrong. Please try again or type /start to restart."
+            "😳 Oops, something spilled! Please try again or type /start to start fresh. ☕"
         )

@@ -28,12 +28,12 @@ async def groupid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     chat = update.effective_chat
     if chat.type in ("group", "supergroup", "channel"):
         await update.message.reply_html(
-            f"This group's chat ID is:\n<code>{chat.id}</code>\n\n"
+            f"✨ This group's chat ID is:\n<code>{chat.id}</code>\n\n"
             "Set <b>ADMIN_CHAT_ID</b> to this value in Replit Secrets to connect the admin group."
         )
     else:
         await update.message.reply_text(
-            "Add me to a group and use /groupid there to get that group's chat ID."
+            "Add me to a group first, then use /groupid there to get the chat ID. ☕"
         )
 
 

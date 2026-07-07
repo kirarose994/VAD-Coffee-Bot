@@ -41,14 +41,14 @@ def format_receipt(order: dict, total: int) -> str:
         flavor_paid = [FLAVORS[f]["label"] for f in order["flavors"] if FLAVORS[f]["price"] > 0]
         if flavor_paid:
             flavor_line = (
-                f"🍶 <b>Flavors:</b> {', '.join(flavor_labels)}"
+                f"🍬 <b>Flavors:</b> {', '.join(flavor_labels)}"
                 f" — +${sum(FLAVORS[f]['price'] for f in order['flavors'] if FLAVORS[f]['price'] > 0)}"
                 f" × {n} = <b>${flavor_cost}</b>"
             )
         else:
-            flavor_line = f"🍶 <b>Flavors:</b> {', '.join(flavor_labels)} — <b>Free</b>"
+            flavor_line = f"🍬 <b>Flavors:</b> {', '.join(flavor_labels)} — <b>Free</b>"
     else:
-        flavor_line = "🍶 <b>Flavors:</b> None"
+        flavor_line = "🍬 <b>Flavors:</b> None"
 
     # Bakery lines
     if order["bakery"]:
@@ -69,9 +69,9 @@ def format_receipt(order: dict, total: int) -> str:
         caffeine_line = "⚡ <b>Caffeine Shot:</b> No"
 
     return "\n".join([
-        "☕ <b>VAD Coffee Lounge — Order Receipt</b>",
+        "☕ <b>VAD Coffee Lounge — Your Order ✨</b>",
         "",
-        f"👥 <b>Baristas ({n}):</b> {baristas_text}",
+        f"💕 <b>Baristas ({n}):</b> {baristas_text}",
         "",
         f"📏 <b>Size:</b> {size['label']} ({size['duration']}) — ${size['price']} × {n} = <b>${size['price'] * n}</b>",
         f"🫘 <b>Roast:</b> {roast['label']} — ${roast['price']} × {n} = <b>${roast['price'] * n}</b>",
@@ -80,5 +80,5 @@ def format_receipt(order: dict, total: int) -> str:
         caffeine_line,
         "",
         "─" * 22,
-        f"💰 <b>Total: ${total:,}</b>",
+        f"💛 <b>Total: ${total:,}</b>",
     ])
