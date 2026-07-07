@@ -45,9 +45,9 @@ BARISTAS = [
 ]
 
 SIZES = {
-    "tall":   {"label": "Tall",   "duration": "30 minutes", "price": 30},
-    "grande": {"label": "Grande", "duration": "1 hour",     "price": 60},
-    "venti":  {"label": "Venti",  "duration": "2 hours",    "price": 120},
+    "tall":   {"label": "Quick Coffee Date", "duration": "30 minutes", "price": 30},
+    "grande": {"label": "Cozy Coffee Date",  "duration": "1 hour",     "price": 60},
+    "venti":  {"label": "VIP Coffee Date",   "duration": "2 hours",    "price": 120},
 }
 
 ROASTS = {

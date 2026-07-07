@@ -292,7 +292,7 @@ async def submit_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         await q.edit_message_text("😬 Oops, something got a little mixed up! Type /start to begin again. ☕")
         return ConversationHandler.END
 
-    await q.answer("Submitting…")
+    await q.answer("Getting your order nice and hot... ☕🔥")
     total = calculate_total(order)
     receipt = format_receipt(order, total)
 
@@ -300,10 +300,14 @@ async def submit_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     if admin_chat_id:
         user = update.effective_user
+        username_line = f"@{user.username}" if user.username else "—"
         admin_msg = (
-            f"💌 <b>New order just dropped! ✨</b> from {user.full_name}"
-            + (f" (@{user.username})" if user.username else "")
-            + f" — ID: <code>{user.id}</code>\n\n"
+            "☕ <b>NEW VAD COFFEE ORDER</b>\n\n"
+            "<b>Customer:</b>\n"
+            f"Name: {user.full_name}\n"
+            f"Username: {username_line}\n"
+            f"Telegram ID: <code>{user.id}</code>\n\n"
+            "<b>Order Details:</b>\n\n"
             + receipt
         )
         try:

@@ -69,7 +69,7 @@ def format_receipt(order: dict, total: int) -> str:
         caffeine_line = "⚡ <b>Caffeine Shot:</b> No"
 
     return "\n".join([
-        "☕ <b>VAD Coffee Lounge — Your Order ✨</b>",
+        "☕ <b>VAD Coffee Lounge — Order Receipt</b>",
         "",
         f"💕 <b>Baristas ({n}):</b> {baristas_text}",
         "",
