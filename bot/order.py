@@ -3,6 +3,7 @@ VAD Coffee Lounge — full ordering conversation flow.
 """
 
 import logging
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ContextTypes,
@@ -13,12 +14,15 @@ from telegram.ext import (
 
 from config import (
     BARISTAS, SIZES, ROASTS, FLAVORS, BAKERY,
-    STATE_BARISTAS, STATE_SIZE, STATE_ROAST,
+    STATE_WELCOME, STATE_BARISTAS, STATE_SIZE, STATE_ROAST,
     STATE_FLAVORS, STATE_BAKERY, STATE_CAFFEINE, STATE_RECEIPT,
 )
 from receipt import calculate_total, format_receipt
 
 logger = logging.getLogger(__name__)
+
+_FLYER_PATH = os.path.join(os.path.dirname(__file__), "..", "attached_assets",
+                           "file_00000000166c720caa0619f0f320043f_1783410414050.png")
 
 
 # ── Order state helpers ────────────────────────────────────────────────────
@@ -52,6 +56,12 @@ def _barista_kb(selected: list) -> InlineKeyboardMarkup:
     if len(selected) >= 2:
         rows.append([InlineKeyboardButton("💛 These are my picks! →", callback_data="baristas_done")])
     return InlineKeyboardMarkup(rows)
+
+
+def _enter_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("☕ Enter the Coffee Lounge", callback_data="enter_lounge"),
+    ]])
 
 
 def _size_kb() -> InlineKeyboardMarkup:
@@ -178,17 +188,31 @@ def _caffeine_text() -> str:
 # ── Handlers ───────────────────────────────────────────────────────────────
 
 async def start_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry point: /start"""
+    """Entry point: /start — sends the welcome flyer then the lounge entry screen."""
     _clear(ctx)
-    order = _order(ctx)
+    with open(_FLYER_PATH, "rb") as f:
+        await update.message.reply_photo(photo=f)
     await update.message.reply_html(
-        "☕💕 <b>Welcome to VAD Coffee Lounge!</b> 💕☕\n\n"
-        "Well hello there... 😘\n\n"
-        "Take a seat, get comfortable, and let our baristas help you build up the HEAT "
-        "with your perfect coffee date. (Wink wink) 😉\n\n"
-        "<b>👩‍🍳 Choose your baristas</b>\n"
-        "Pick at least 2 sweethearts to host your session.\n"
-        "Two baristas. Twice the fun. 💕",
+        "☕ <b>Welcome to the VAD Coffee Lounge</b> 💕\n\n"
+        "Come on in... we've been expecting you. 🌹\n\n"
+        "Here, every Coffee Date is a private premium experience with two or more of our hot creators.\n\n"
+        "Browse the menu, choose your favorite baristas, customize your naughty experience, "
+        "and submit your order. An admin will personally review your request and contact you "
+        "soon to verify when you and your dates are looking to start!\n\n"
+        "✨ <b>Ready to build your perfect Coffee Date?</b>",
+        reply_markup=_enter_kb(),
+    )
+    return STATE_WELCOME
+
+
+async def enter_lounge(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    """'Enter the Coffee Lounge' button — advances to barista selection."""
+    q = update.callback_query
+    await q.answer()
+    order = _order(ctx)
+    await q.edit_message_text(
+        _barista_text(order["baristas"]),
+        parse_mode="HTML",
         reply_markup=_barista_kb(order["baristas"]),
     )
     return STATE_BARISTAS
@@ -365,6 +389,9 @@ def build_order_conversation() -> ConversationHandler:
         entry_points=[CommandHandler("start", start_order)],
         per_message=False,
         states={
+            STATE_WELCOME: [
+                CallbackQueryHandler(enter_lounge, pattern=r"^enter_lounge$"),
+            ],
             STATE_BARISTAS: [
                 CallbackQueryHandler(toggle_barista, pattern=r"^barista:"),
                 CallbackQueryHandler(baristas_done,  pattern=r"^baristas_done$"),

@@ -73,6 +73,7 @@ BAKERY = {
 # ── Conversation states ────────────────────────────────────────────────────
 
 (
+    STATE_WELCOME,
     STATE_BARISTAS,
     STATE_SIZE,
     STATE_ROAST,
@@ -80,4 +81,4 @@ BAKERY = {
     STATE_BAKERY,
     STATE_CAFFEINE,
     STATE_RECEIPT,
-) = range(7)
+) = range(8)
