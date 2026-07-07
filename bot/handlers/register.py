@@ -282,8 +282,12 @@ async def _cancel_from_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
 def build_register_conversation() -> ConversationHandler:
     """Return the fully configured ConversationHandler for registration."""
+    # per_message=False (explicit): we track conversation per user+chat, not per
+    # message. The confirmation inline keyboard belongs to a single bot message
+    # and is never duplicated, so routing callbacks per-message is unnecessary.
     return ConversationHandler(
         entry_points=[CommandHandler("register", register_entry)],
+        per_message=False,
         states={
             STATE_ASKING_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, got_name),

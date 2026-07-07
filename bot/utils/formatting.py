@@ -2,12 +2,21 @@
 Message formatting helpers for VAD Coffee Date Bot.
 """
 
+import html
+
+
+def _esc(text: str) -> str:
+    """HTML-escape a user-supplied string before embedding in reply_html messages."""
+    return html.escape(str(text))
+
 
 def format_profile_summary(profile: dict) -> str:
     """Return a nicely formatted profile summary for confirmation."""
-    name = profile.get("name", "—")
+    # _esc() is applied to all user-supplied text fields to prevent HTML injection
+    name = _esc(profile.get("name", "—"))
     availability = profile.get("availability", [])
-    location = profile.get("location", "—")
+    location = _esc(profile.get("location", "—"))
+    # Availability and interests come from fixed option lists, so no escaping needed
     interests = profile.get("interests", [])
 
     avail_text = "\n".join(f"  • {a}" for a in availability) if availability else "  • None selected"
@@ -24,7 +33,7 @@ def format_profile_summary(profile: dict) -> str:
 
 def format_welcome(first_name: str) -> str:
     return (
-        f"☕ <b>Welcome to VAD Coffee Date Bot, {first_name}!</b>\n\n"
+        f"☕ <b>Welcome to VAD Coffee Date Bot, {_esc(first_name)}!</b>\n\n"
         "I help connect people for casual coffee chats and networking.\n\n"
         "<b>What I can do:</b>\n"
         "• /register — Set up your coffee date profile\n"

@@ -2,10 +2,16 @@
 /match command handler — finds a coffee date partner based on shared interests and availability.
 """
 
+import html
 import logging
 import random
 from telegram import Update, ReplyKeyboardRemove
 from telegram.ext import ContextTypes
+
+
+def _esc(text: str) -> str:
+    """HTML-escape a user-supplied string before embedding in reply_html messages."""
+    return html.escape(str(text))
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +63,8 @@ async def match_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     top_candidates = [(uid, p) for uid, p in scored if _overlap_score(my_profile, p) == top_score]
     matched_uid, matched_profile = random.choice(top_candidates)
 
-    matched_name = matched_profile.get("name", "Someone")
-    matched_location = matched_profile.get("location", "Unknown area")
+    matched_name = _esc(matched_profile.get("name", "Someone"))
+    matched_location = _esc(matched_profile.get("location", "Unknown area"))
     matched_avail = matched_profile.get("availability", [])
     matched_interests = matched_profile.get("interests", [])
 
