@@ -1,75 +1,76 @@
-# VAD Coffee Date Bot
+# VAD Coffee Lounge Bot
 
-A Telegram bot that helps people connect for casual coffee chats and networking.
+A Telegram ordering bot for VAD Coffee Lounge. Guides users through a 6-step ordering flow with inline keyboards, calculates a price receipt, and forwards orders to an admin group.
 
-## Features
+## Flow
 
-- **/register** — Multi-step conversation to create your coffee date profile  
-  (name → availability → location → interests → confirmation)
-- **/profile** — View your saved profile
-- **/match** — Get matched with another user based on shared availability and interests
-- **/help** — Show all available commands
+1. **/start** — Welcome message + barista selection (choose ≥ 2)
+2. **Size** — Tall / Grande / Venti (price × baristas)
+3. **Roast** — Light / Medium / Dark (price × baristas)
+4. **Flavor Shots** — Vanilla, Caramel, Hazelnut (free) · Cinnamon (+$15 × baristas) · Skip
+5. **Bakery** — Croissant / Cake Pop / Breakfast Sandwich (price × baristas) · Skip
+6. **Caffeine Shot** — Yes (+$30 × baristas) / No
+7. **Receipt** — Full itemised total with Submit / Cancel
 
-## Project Structure
+## Commands
+
+| Command    | Description |
+|------------|-------------|
+| `/start`   | Start or restart an order |
+| `/cancel`  | Cancel the current order at any step |
+| `/groupid` | (Use inside a group) Returns the group's chat ID |
+
+## Project structure
 
 ```
 bot/
-├── main.py                  # Entry point — builds and starts the bot
-├── config.py                # Configuration (env vars, conversation states, constants)
-├── requirements.txt         # Python dependencies
-├── handlers/
-│   ├── start.py             # /start and /help handlers
-│   ├── register.py          # /register ConversationHandler (4-step flow)
-│   ├── profile.py           # /profile handler
-│   ├── match.py             # /match handler (overlap-score matching)
-│   └── error.py             # Global error handler
-└── utils/
-    ├── keyboards.py          # Reply and inline keyboard builders
-    └── formatting.py         # Message text formatters
+├── main.py           # Entry point
+├── config.py         # Config class + all menu data
+├── order.py          # Full ConversationHandler (all steps & keyboards)
+├── receipt.py        # Price calculation + receipt formatting
+├── requirements.txt  # Python dependencies
+└── handlers/
+    └── error.py      # Global error handler
 ```
 
 ## Setup
 
 ### 1. Create a bot with @BotFather
 
-1. Open Telegram and search for `@BotFather`
-2. Send `/newbot` and follow the prompts
-3. Copy the token you receive
+Send `/newbot` to @BotFather and copy the token you receive.
 
-### 2. Set the bot token
+### 2. Add required secret
 
-Add `TELEGRAM_BOT_TOKEN` as a Replit Secret (the padlock icon in the sidebar),  
-or set it in a `.env` file locally:
+Add `TELEGRAM_BOT_TOKEN` as a Replit Secret.
 
-```
-TELEGRAM_BOT_TOKEN=your_token_here
-```
+### 3. Connect an admin group (optional)
 
-### 3. Optional environment variables
+1. Add the bot to your admin group.
+2. Send `/groupid` in that group — the bot replies with the chat ID.
+3. Add `ADMIN_CHAT_ID` as a Replit Secret with that value.
+4. Restart the **VAD Coffee Lounge Bot** workflow.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ADMIN_IDS` | _(empty)_ | Comma-separated Telegram user IDs with admin access |
-| `LOG_LEVEL` | `INFO` | Python logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-| `DEBUG` | `false` | Enable debug mode |
+### 4. Optional environment variables
 
-### 4. Run the bot
+| Variable       | Default | Description |
+|----------------|---------|-------------|
+| `ADMIN_CHAT_ID`| _(none)_| Group chat ID for order forwarding |
+| `LOG_LEVEL`    | `INFO`  | Logging level |
 
-```bash
-cd bot
-pip install -r requirements.txt
-python main.py
-```
+## Pricing logic
 
-## How matching works
+All prices marked **"each"** are multiplied by the number of selected baristas.
 
-Each profile stores a list of availability slots and interests. When `/match` is called,  
-the bot scores every other registered user by:
-
-```
-score = (shared availability slots × 2) + shared interests
-```
-
-The highest-scoring candidate is shown as the match. If multiple candidates tie, one is chosen at random.
-
-> **Note:** Profiles are stored in-memory and reset when the bot restarts. For persistence across restarts, integrate a database (e.g. PostgreSQL with psycopg2, or SQLite).
+| Item | Price |
+|------|-------|
+| Tall | $30 × baristas |
+| Grande | $60 × baristas |
+| Venti | $120 × baristas |
+| Light Roast | $10 × baristas |
+| Medium Roast | $20 × baristas |
+| Dark Roast | $40 × baristas |
+| Cinnamon shot | $15 × baristas |
+| Croissant | $75 × baristas |
+| Cake Pop | $150 × baristas |
+| Breakfast Sandwich | $200 × baristas |
+| Caffeine shot | $30 × baristas |

@@ -1,28 +1,40 @@
 """
-VAD Coffee Date Bot — entry point.
+VAD Coffee Lounge Bot — entry point.
 
-Run:
-    python main.py
+Required:
+    TELEGRAM_BOT_TOKEN   — bot token from @BotFather (Replit Secret)
 
-Required environment variable:
-    TELEGRAM_BOT_TOKEN — your bot token from @BotFather
+Optional:
+    ADMIN_CHAT_ID        — group chat ID where orders are forwarded
+    LOG_LEVEL            — default INFO
 """
 
 import logging
 import sys
 import os
 
-# Allow imports from this directory regardless of working directory
 sys.path.insert(0, os.path.dirname(__file__))
 
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 from config import Config
-from handlers.start import start_handler, help_handler
-from handlers.profile import profile_handler
-from handlers.match import match_handler
-from handlers.register import build_register_conversation
+from order import build_order_conversation
 from handlers.error import error_handler
+
+
+async def groupid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reply with the current chat's ID — useful for setting ADMIN_CHAT_ID."""
+    chat = update.effective_chat
+    if chat.type in ("group", "supergroup", "channel"):
+        await update.message.reply_html(
+            f"This group's chat ID is:\n<code>{chat.id}</code>\n\n"
+            "Set <b>ADMIN_CHAT_ID</b> to this value in Replit Secrets to connect the admin group."
+        )
+    else:
+        await update.message.reply_text(
+            "Add me to a group and use /groupid there to get that group's chat ID."
+        )
 
 
 def setup_logging(level: str) -> None:
@@ -31,39 +43,27 @@ def setup_logging(level: str) -> None:
         level=getattr(logging, level, logging.INFO),
         stream=sys.stdout,
     )
-    # Silence noisy third-party loggers
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-
-
-def build_app(config: Config) -> Application:
-    """Build and configure the Telegram Application."""
-    app = Application.builder().token(config.token).build()
-
-    # Conversation handler (must be added before plain command handlers
-    # so it intercepts messages during an active conversation)
-    app.add_handler(build_register_conversation())
-
-    # Standalone command handlers
-    app.add_handler(CommandHandler("start", start_handler))
-    app.add_handler(CommandHandler("help", help_handler))
-    app.add_handler(CommandHandler("profile", profile_handler))
-    app.add_handler(CommandHandler("match", match_handler))
-
-    # Global error handler
-    app.add_error_handler(error_handler)
-
-    return app
 
 
 def main() -> None:
     config = Config.from_env()
     setup_logging(config.log_level)
-
     logger = logging.getLogger(__name__)
-    logger.info("Starting VAD Coffee Date Bot…")
+    logger.info("Starting VAD Coffee Lounge Bot…")
 
-    app = build_app(config)
+    app = Application.builder().token(config.token).build()
+
+    if config.admin_chat_id:
+        app.bot_data["admin_chat_id"] = config.admin_chat_id
+        logger.info("Admin chat connected: %s", config.admin_chat_id)
+    else:
+        logger.warning("ADMIN_CHAT_ID not set — orders will not be forwarded to an admin group")
+
+    app.add_handler(build_order_conversation())
+    app.add_handler(CommandHandler("groupid", groupid_command))
+    app.add_error_handler(error_handler)
 
     logger.info("Bot is running. Press Ctrl-C to stop.")
     app.run_polling(

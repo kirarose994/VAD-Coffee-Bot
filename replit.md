@@ -1,46 +1,49 @@
-# VAD Coffee Date Bot
+# VAD Coffee Lounge Bot
 
-A Telegram bot that connects people for casual coffee chats and networking, built with python-telegram-bot v21.
+A Telegram ordering bot for VAD Coffee Lounge. Guides users through a 6-step inline-keyboard ordering flow, calculates an itemised receipt, and forwards orders to an admin group.
 
 ## Run & Operate
 
 - **VAD Coffee Date Bot** workflow — runs `cd bot && python main.py`
-- After setting `TELEGRAM_BOT_TOKEN` as a Replit Secret, start the workflow to bring the bot online.
+- Required secret: `TELEGRAM_BOT_TOKEN`
+- Optional secret: `ADMIN_CHAT_ID` (group chat ID for order forwarding)
 
 ## Stack
 
 - Python 3.13
-- python-telegram-bot v21 (async, with APScheduler job-queue)
-- python-dotenv
+- python-telegram-bot v21 (async polling, ConversationHandler)
 
 ## Where things live
 
 ```
 bot/
-├── main.py              # Entry point — builds Application and starts polling
-├── config.py            # Config (env vars), conversation states, keyboard constants
-├── requirements.txt     # Python dependencies
-├── handlers/
-│   ├── start.py         # /start and /help
-│   ├── register.py      # /register — 4-step ConversationHandler
-│   ├── profile.py       # /profile
-│   ├── match.py         # /match — overlap-score matching
-│   └── error.py         # Global error handler
-└── utils/
-    ├── keyboards.py     # Reply / inline keyboard builders
-    └── formatting.py   # Message text formatters
+├── main.py           # Entry point + /groupid command
+├── config.py         # Config class + all menu data + conversation states
+├── order.py          # Full 6-step ConversationHandler (keyboards, handlers)
+├── receipt.py        # Price calculation + receipt formatting
+├── requirements.txt  # python-telegram-bot[job-queue]==21.10
+└── handlers/
+    └── error.py      # Global error handler
 ```
 
-## Architecture decisions
+## Ordering flow
 
-- Profiles stored in `bot_data` (in-memory). Persist with a DB for production use.
-- `ConversationHandler` added before plain command handlers to correctly intercept mid-conversation messages.
-- Match scoring: `(shared availability slots × 2) + shared interests` — availability weighted higher.
-- All handlers are `async` functions; errors are caught globally by `error_handler`.
+1. /start → Welcome + barista multi-select (≥ 2 required)
+2. Size — Tall / Grande / Venti
+3. Roast — Light / Medium / Dark
+4. Flavor shots — multi-select with Skip (Cinnamon is the only paid shot)
+5. Bakery — multi-select with Skip
+6. Caffeine shot — Yes / No
+7. Receipt with Submit / Cancel
 
-## Product
+Prices marked "each" are multiplied by the number of selected baristas.
 
-Users can register a coffee date profile (name, availability slots, location, interests) through a guided multi-step conversation, then use `/match` to find a compatible partner based on shared availability and interests.
+## Connecting the admin group
+
+1. Add the bot to your admin group
+2. Send `/groupid` inside that group — bot replies with the chat ID
+3. Add `ADMIN_CHAT_ID` as a Replit Secret
+4. Restart the workflow
 
 ## User preferences
 
@@ -48,11 +51,6 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-- Profiles reset on restart (in-memory only). Add a DB for persistence.
-- `TELEGRAM_BOT_TOKEN` must be set as a Replit Secret before starting the workflow.
-- Package manager is `uv` (managed by Replit). Add packages via the package-management skill, not raw `pip install`.
-
-## Pointers
-
-- Bot token: add as Replit Secret `TELEGRAM_BOT_TOKEN`
-- Optional secrets: `ADMIN_IDS` (comma-separated user IDs), `LOG_LEVEL`, `DEBUG`
+- Profiles/orders are in-memory; they reset on restart.
+- `ADMIN_CHAT_ID` must be an integer (negative for groups). A malformed value logs a warning and disables forwarding rather than crashing.
+- Package manager is `uv` (Replit-managed). Add packages via the package-management skill, not raw `pip install`.
