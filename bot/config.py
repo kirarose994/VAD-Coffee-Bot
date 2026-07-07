@@ -42,6 +42,7 @@ BARISTAS = [
     "Leah", "Jade", "Asobi", "Lia", "Jude", "Nicole",
     "Alex", "Maria", "Darla", "Eve", "Bambola", "Kayt",
     "Kira", "Keely", "Kayla", "Hilarity", "Peppi", "Ashley",
+    "Queen Anie", "Jay 💜",
 ]
 
 SIZES = {
