@@ -1034,9 +1034,10 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "away":getattr(cfg,"away_thread_id",None),"registration":getattr(cfg,"registration_thread_id",None),
             "moderation":getattr(cfg,"moderation_thread_id",None),"support":getattr(cfg,"support_thread_id",None),
             "health":getattr(cfg,"health_thread_id",None)}.get(purpose)
-        match=value in current if purpose=="participation" and isinstance(current,list) else value==current
+        match=((value in current) if current else value is None) if purpose=="participation" and isinstance(current,list) else value==current
         title=getattr(chat,"title",None) or "Private chat";forum=bool(getattr(chat,"is_forum",False))
-        recommendation="Open this tool inside the intended forum topic." if value is None else f"Use {value} for {purpose.replace('_',' ')}"
+        recommendation=("Use General (no topic ID) for participation" if purpose=="participation" and value is None else
+            "Open this tool inside the intended forum topic." if value is None else f"Use {value} for {purpose.replace('_',' ')}")
         key={"main":"participation_chat","sellers":"creator_group","admin":"admin_chat","participation":"participation_topic",
             "pop":"pop_topic","pop_review":"pop_review_topic","reports":"reports_topic","away":"away_topic","registration":"registration_topic",
             "moderation":"moderation_topic","support":"support_topic","health":"health_topic"}.get(purpose)
@@ -1061,7 +1062,8 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"Topic title: {'General' if thread_id is None else 'Current topic (title unavailable)'}\nTopic ID: {thread_id or 'None'}\n"
             f"Bot membership and permissions: {bot_permissions}\nTelegram privacy mode: {privacy_status}\nCurrent configured destination: {current if current is not None else 'Not configured'}\n"
             f"Participation enabled here: {'Yes' if purpose == 'participation' and match else 'No'}\nMatch: {'Yes' if match else 'No'}\nRecommended correction: {recommendation}")
-        actions=[] if value is None else [("Use This Location",f"setup_prepare_{key}")]
+        actions=([("Use General for Participation","setup_prepare_participation_general")] if purpose=="participation" and value is None else
+            [] if value is None else [("Use This Location",f"setup_prepare_{key}")])
         return await _show(query,text,menu_markup(ctx,actions,"telegram_locations"))
     if action == "routing_summary":
         if role is not Role.OWNER:return await _show(query,"Routing Summary is owner-only.",home_markup(ctx,user_id))
@@ -1083,6 +1085,8 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         configured_chat=cfg.participation_chat_id or cfg.girls_chat_id
         configured_topics=sorted(cfg.participation_topic_ids) if cfg.participation_topic_ids else []
         expected_topics=", ".join(map(str,configured_topics)) if configured_topics else "General (no thread ID)"
+        topic_source="Owner Setup (database override)" if "config:participation_topic_ids" in state else "Startup configuration"
+        reports_overlap=bool(configured_topics and getattr(cfg,"reports_thread_id",None) in configured_topics)
         chat_match="Not yet observed" if observed_chat=="None yet" else ("Yes" if str(observed_chat)==str(configured_chat) else "No")
         observed_topic_value=None if observed_topic=="general:none" else observed_topic
         topic_match="Not yet observed" if observed_topic=="None yet" else ("Yes" if ((not configured_topics and observed_topic_value is None) or str(observed_topic_value) in {str(v) for v in configured_topics}) else "No")
@@ -1107,13 +1111,18 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"Observed: {friendly_timestamp(diag.get('observed_at'),timezone_name=cfg.timezone_name)}")
         last=lambda row: friendly_timestamp(row["created_at"],timezone_name=cfg.timezone_name) if row else "None yet"
         text=("📈 Participation Monitor\n\nThis page confirms whether participation tracking is seeing and correctly processing messages in the approved VAD participation area.\n\n"
-            f"Configured chat ID: {configured_chat or 'Not configured'}\nConfigured topic IDs: {expected_topics}\n"
+            f"Configured chat ID: {configured_chat or 'Not configured'}\nConfigured topic IDs: {expected_topics}\nConfiguration source: {topic_source}\n"
+            f"Admin reports topic mistakenly reused: {'Yes' if reports_overlap else 'No'}\n"
             f"Connected: {'Yes' if cfg.participation_chat_id else 'No'}\nCan read ordinary messages: {access}\nLast message detected: {last(monitor['last_detected'])}\n"
             f"Last observed chat ID: {observed_chat}\nLast observed topic ID: {observed_topic}\nChat matches: {chat_match}\nTopic matches: {topic_match}\n"
             f"Last meaningful participation: {last(monitor['last_counted'])}\nApproved sellers tracked: {monitor['tracked']}\n"
             f"Ignored today: {monitor['ignored_today']}\nIgnored categories: {cats}\nProcessing failures: {monitor['failures']}\n\n"
             "Last approved-creator outcomes\n"+("\n\n".join(creator_lines) or "No approved creators are currently tracked."))
-        return await _show(query,text,menu_markup(ctx,[("🧾 Participation Event Log","participation_events")],"owner"))
+        monitor_actions=[("🧾 Participation Event Log","participation_events")]
+        if observed_topic=="general:none" and configured_topics:
+            text += "\n\nRecommended correction\nGeneral is receiving creator messages, but numbered topic IDs are configured. Replace the participation topic list with General-only after confirming General is the intended area."
+            monitor_actions.insert(0,("Use General for Participation","setup_prepare_participation_general"))
+        return await _show(query,text,menu_markup(ctx,monitor_actions,"owner"))
     if action == "participation_events":
         if role is not Role.OWNER:return await _show(query,"Participation Event Log is owner-only.",home_markup(ctx,user_id))
         rows=db.participation_events();lines=[f"{'✅ Counted' if r['decision']=='accepted' else '⚪ Ignored'} · {r['display_name'] or 'Unregistered user'} · {r['reason']}\n{friendly_timestamp(r['created_at'],timezone_name=cfg.timezone_name)}" for r in rows]
@@ -1192,7 +1201,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if participation_chat is None: problems.append("Participation Group is not configured")
         if getattr(cfg,"pop_chat_id",None) is None: problems.append("POP Group is not configured")
         if getattr(cfg,"pop_thread_id",None) is None: problems.append("POP Topic is not configured")
-        if is_forum and action == "verify_topic" and thread_id is None: problems.append("Run this inside the intended forum topic")
+        if is_forum and action == "verify_topic" and thread_id is None and topics: problems.append("General is observed, but a numbered participation topic is configured")
         text = (f"✅ {'Current Topic' if action == 'verify_topic' else 'Current Chat'}\n\n"
             "Confirm that this is the place you intended to configure.\n\n"
             f"Chat name: {title}\nChat ID: {chat_id}\nForum: {'Yes' if is_forum else 'No'}\n"
@@ -1206,6 +1215,8 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             actions = [("Use as Participation Group","setup_prepare_participation_chat"),
                 ("Use as Seller Group","setup_prepare_creator_group"),("Use as POP Group","setup_prepare_pop_chat"),
                 ("Use as Admin Group","setup_prepare_admin_chat"),("Use as Buyer Group","setup_prepare_buyer_group")]
+        elif action == "verify_topic" and thread_id is None:
+            actions = [("Use General for Participation","setup_prepare_participation_general")]
         elif thread_id is not None:
             actions = [("Add Participation Topic","setup_prepare_participation_topic"),("Use as POP Topic","setup_prepare_pop_topic")]
         return await _show(query,text,menu_markup(ctx,actions,"setup"))
@@ -1218,6 +1229,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "participation_chat": getattr(chat,"id",None),"creator_group":getattr(chat,"id",None),
             "pop_chat":getattr(chat,"id",None),"admin_chat":getattr(chat,"id",None),
             "buyer_group":getattr(chat,"id",None),"participation_topic":getattr(query.message,"message_thread_id",None),
+            "participation_general":"general",
             "pop_topic":getattr(query.message,"message_thread_id",None),
             "pop_review_topic":getattr(query.message,"message_thread_id",None),
             "reports_topic":getattr(query.message,"message_thread_id",None),
@@ -1245,7 +1257,9 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "pop_review_topic":"pop_review_thread_id",
             "reports_topic":"reports_thread_id","away_topic":"away_thread_id","registration_topic":"registration_thread_id",
             "moderation_topic":"moderation_thread_id","support_topic":"support_thread_id","health_topic":"health_thread_id"}
-        if pending["key"] == "participation_topic":
+        if pending["key"] == "participation_general":
+            persist_setting(cfg,"participation_topic_ids",frozenset(),user_id)
+        elif pending["key"] == "participation_topic":
             new_topics=set(getattr(cfg,"participation_topic_ids",frozenset()));new_topics.add(int(pending["value"]))
             persist_setting(cfg,"participation_topic_ids",frozenset(new_topics),user_id)
         else:

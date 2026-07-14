@@ -44,6 +44,12 @@ class ReadinessCalculationTests(unittest.TestCase):
         self.assertEqual(next(i for i in checks if i["key"]=="docs")["state"],"ready")
         self.assertGreater(counts["setup"],0)
 
+    def test_explicit_general_topic_configuration_is_ready(self):
+        db.set_system_state("config:participation_topic_ids","[]",self.path)
+        items={item["key"]:item for item in readiness_items(config(),self.path)}
+        self.assertEqual(items["participation_topic"]["state"],"ready")
+        self.assertIn("explicitly verified",items["participation_topic"]["detail"])
+
     def test_pending_start_does_not_assign_any_role(self):
         db.record_bot_user(50,"person","Known Person",self.path)
         rows=db.pending_bot_users({1},{2},{3},self.path)
