@@ -71,6 +71,7 @@ def readiness_items(config,path=None,now=None):
     active_creators=len([r for r in db.list_creators(path) if r["status"]=="active"])
     participation_verified=bool((topics or general_verified) and active_creators and counted and message_access_ready)
     registration_verified=verified("last_route_success:registration") or verified("readiness:registration_route_test")
+    away_route_verified=verified("last_route_success:away_notice") or verified("readiness:away_route_test")
     items.extend([
         _item("registration_queue","Registration queue working","ready" if registration_verified else "unverified",
             "Verified by a successful real registration delivery." if verified("last_route_success:registration") else "Run the safe registration routing test after configuring its topic.","test_route_registration"),
@@ -79,7 +80,8 @@ def readiness_items(config,path=None,now=None):
         _item("two_day","Two-day reminders configured","ready" if getattr(config,"warning_hours",None) else "setup",f"Current threshold: {getattr(config,'warning_hours','not set')} hours.","settings_warning"),
         _item("three_day","Three-day alerts configured","ready" if getattr(config,"alert_hours",None) else "setup",f"Current threshold: {getattr(config,'alert_hours','not set')} hours.","settings_alert"),
         _item("pop_deadline","Thursday POP deadline configured","ready" if getattr(config,"pop_cutoff_time",None) is not None else "setup",f"Current cutoff: {getattr(config,'pop_cutoff_time','not set')} ET.","settings_pop"),
-        _item("away_route","Away Notice routing working","ready" if verified("readiness:away_route_test") else "unverified","Run the safe Away Notice routing test.","test_away"),
+        _item("away_route","Away Notice routing working","ready" if away_route_verified else "unverified",
+            "Verified by a successful real Away Notice delivery." if verified("last_route_success:away_notice") else "Run the safe Away Notice routing test.","test_away"),
         _item("support_route","Support routing working","ready" if verified("readiness:support_route_test") else "unverified","Run the safe Support routing test.","test_support"),
         _item("scheduler","Scheduler running","ready" if "last_scheduled_check" in state else "unverified","No recent scheduled check has been recorded yet.","health"),
         _item("database","Database ready","ready","The readiness query completed successfully.","health"),
