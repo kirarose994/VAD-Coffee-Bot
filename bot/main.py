@@ -17,14 +17,13 @@ from database import initialize_database, set_system_state
 from handlers.error import error_handler
 from navigation import register_navigation
 from operations import register_operations
-from permissions import can_mutate
-from setup_mode import register_setup_handlers
+from permissions import can_manage_sensitive
 from tracker import register_handlers
 
 
 async def groupid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not can_mutate(update.effective_user.id if update.effective_user else None, ctx.bot_data["config"]):
-        return await update.effective_message.reply_text("Sorry, this command is for operational admins only.")
+    if not can_manage_sensitive(update.effective_user.id if update.effective_user else None, ctx.bot_data["config"]):
+        return await update.effective_message.reply_text("Sorry, chat verification is owner-only.")
     chat = update.effective_chat
     if chat.type in ("group", "supergroup", "channel"):
         await update.effective_message.reply_text(f"This group's chat ID is: {chat.id}")
@@ -33,8 +32,8 @@ async def groupid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def topicid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not can_mutate(update.effective_user.id if update.effective_user else None, ctx.bot_data["config"]):
-        return await update.effective_message.reply_text("Sorry, this command is for operational admins only.")
+    if not can_manage_sensitive(update.effective_user.id if update.effective_user else None, ctx.bot_data["config"]):
+        return await update.effective_message.reply_text("Sorry, topic verification is owner-only.")
     msg = update.effective_message
     if msg and msg.is_topic_message:
         await msg.reply_text(f"This topic's thread ID is: {msg.message_thread_id}")
@@ -55,7 +54,6 @@ def register_application_handlers(app: Application) -> None:
     register_navigation(app)
     register_operations(app)
     register_handlers(app)
-    register_setup_handlers(app)
     app.add_handler(CommandHandler("groupid", groupid_command))
     app.add_handler(CommandHandler("topicid", topicid_command))
     app.add_error_handler(error_handler)

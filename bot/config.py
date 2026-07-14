@@ -3,7 +3,7 @@
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
 
@@ -56,6 +56,11 @@ class Config:
     away_thread_id: int | None
     moderation_thread_id: int | None
     health_thread_id: int | None
+    participation_chat_id: int | None = None
+    participation_topic_ids: frozenset[int] = field(default_factory=frozenset)
+    pop_chat_id: int | None = None
+    creator_group_id: int | None = None
+    buyer_group_id: int | None = None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -74,6 +79,13 @@ class Config:
             logging.getLogger(__name__).warning("ADMIN_PERMISSIONS_JSON is invalid; defaults used")
             admin_permissions = {}
         owners = _parse_ids("OWNER_USER_IDS") | _parse_ids("OWNER_TELEGRAM_IDS")
+        girls_chat_id = _parse_int_env("GIRLS_CHAT_ID")
+        girls_thread_id = _parse_int_env("GIRLS_THREAD_ID")
+        participation_topics = set(_parse_ids("PARTICIPATION_TOPIC_IDS"))
+        explicit_participation_chat = _parse_int_env("PARTICIPATION_CHAT_ID") or _parse_int_env("MAIN_CHAT_ID")
+        if not explicit_participation_chat and not participation_topics and girls_thread_id is not None:
+            participation_topics.add(girls_thread_id)
+        participation_chat_id = explicit_participation_chat or girls_chat_id
         return cls(
             token=token,
             admin_chat_id=_parse_int_env("ADMIN_CHAT_ID"),
@@ -82,8 +94,8 @@ class Config:
             lead_admin_user_ids=_parse_ids("LEAD_ADMIN_USER_IDS"),
             admin_user_ids=_parse_ids("ADMIN_USER_IDS"),
             admin_permissions=admin_permissions,
-            girls_chat_id=_parse_int_env("GIRLS_CHAT_ID"),
-            girls_thread_id=_parse_int_env("GIRLS_THREAD_ID"),
+            girls_chat_id=girls_chat_id,
+            girls_thread_id=girls_thread_id,
             pop_thread_id=_parse_int_env("POP_THREAD_ID"),
             reports_thread_id=_parse_int_env("REPORTS_THREAD_ID"),
             timezone_name=timezone_name,
@@ -98,6 +110,11 @@ class Config:
             away_thread_id=_parse_int_env("AWAY_THREAD_ID"),
             moderation_thread_id=_parse_int_env("MODERATION_THREAD_ID"),
             health_thread_id=_parse_int_env("HEALTH_THREAD_ID"),
+            participation_chat_id=participation_chat_id,
+            participation_topic_ids=frozenset(participation_topics),
+            pop_chat_id=_parse_int_env("POP_CHAT_ID") or girls_chat_id,
+            creator_group_id=_parse_int_env("CREATOR_GROUP_ID") or girls_chat_id,
+            buyer_group_id=_parse_int_env("BUYER_GROUP_ID"),
         )
 
     @property

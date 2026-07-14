@@ -209,9 +209,22 @@ async def setting_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"{key} changed from {old_value} to {value}. Replit Secrets remain the restart source of truth.")
 
 
+def participation_enabled(config, chat_id, thread_id):
+    """Return whether a message is in a configured participation location."""
+    configured_chat = getattr(config, "participation_chat_id", None) or getattr(config, "girls_chat_id", None)
+    if configured_chat is None or chat_id != configured_chat:
+        return False
+    topics = frozenset(getattr(config, "participation_topic_ids", frozenset()) or ())
+    legacy_topic = getattr(config, "girls_thread_id", None)
+    if getattr(config,"participation_chat_id",None) is None and legacy_topic is not None:
+        topics = topics | {legacy_topic}
+    # An empty topic list intentionally means General only, never every forum topic.
+    return thread_id in topics if topics else thread_id is None
+
+
 async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg, user, cfg = update.effective_message, update.effective_user, config(ctx)
-    if not msg or not user or not cfg.girls_chat_id or update.effective_chat.id != cfg.girls_chat_id:
+    if not msg or not user:
         return
     creator = db.get_creator(user.id)
     if not creator or creator["status"] != "active":
@@ -224,7 +237,9 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     thread_id = msg.message_thread_id
     media = bool(msg.photo or msg.sticker or msg.animation or msg.video or msg.voice or msg.document)
     pop_caption = (msg.caption or "").casefold() if media else ""
-    if media and "pop" in pop_caption and cfg.pop_thread_id and thread_id == cfg.pop_thread_id and local_now.weekday() == 3:
+    pop_chat_id = getattr(cfg,"pop_chat_id",None) or getattr(cfg,"girls_chat_id",None)
+    if (media and "pop" in pop_caption and pop_chat_id == msg.chat_id and cfg.pop_thread_id
+            and thread_id == cfg.pop_thread_id and local_now.weekday() == 3):
         proof_type = "photo" if msg.photo else "document" if msg.document else "media"
         if db.submit_pop(user.id, week_key(local_now), msg.message_id, msg.chat_id, thread_id, proof_type):
             await msg.reply_text("Thursday POP received! 📸 It’s now waiting for review.")
@@ -237,7 +252,7 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     db.record_audit(None,"pop_notification_delivery_failed","notification",target_telegram_id=user.id,result="error")
         return
-    if cfg.girls_thread_id is not None and thread_id != cfg.girls_thread_id:
+    if not participation_enabled(cfg,msg.chat_id,thread_id):
         return
     decision = classify(msg.text, media=media,
         is_repeat=lambda digest, since: db.recent_hash_exists(user.id, digest, since))

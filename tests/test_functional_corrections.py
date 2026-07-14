@@ -106,7 +106,7 @@ class GuidedScreenTests(unittest.IsolatedAsyncioTestCase):
         return query.edit_message_text.await_args.args[0],query.edit_message_text.await_args.kwargs["reply_markup"]
 
     async def test_owner_access_export_and_settings_are_button_driven(self):
-        for action,expected in (("roles","➕ Add Admin"),("export_help","📦 Full Owner Export"),("settings","📸 POP Cutoff")):
+        for action,expected in (("roles","➕ Add Admin"),("export_help","📦 Full Owner Export"),("settings","📸 POP Deadline")):
             text,markup=await self.screen(action)
             labels=[b.text for row in markup.inline_keyboard for b in row]
             self.assertIn(expected,labels)

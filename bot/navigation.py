@@ -41,13 +41,22 @@ def home_markup(ctx, user_id):
     nonce = _nonce(ctx)
     cfg = ctx.bot_data["config"]
     role = role_for(user_id, cfg)
-    rows = [[_button("👤 My Dashboard", nonce, "creator")]]
+    creator = db.get_creator(user_id)
+    member = db.get_member(user_id)
+    rows = []
+    if creator:
+        rows.append([_button("👤 My Creator Hub", nonce, "creator")])
+    elif role is Role.NONE and not member:
+        rows.append([_button("✨ I'm a Creator / Seller", nonce, "join_creator")])
+        rows.append([_button("🛍️ I'm a Buyer", nonce, "join_buyer")])
+    elif role is Role.NONE:
+        rows.append([_button("🛍️ Buyer Home", nonce, "buyer")])
     if role >= Role.ADMIN:
-        rows.append([_button("👑 Admin Dashboard", nonce, "admin")])
+        rows.append([_button("🛡️ Admin Tools", nonce, "admin")])
     if role is Role.OWNER:
         rows.append([_button("🔐 Owner Dashboard", nonce, "owner")])
     rows.extend([
-        [_button("📚 Help Center", nonce, "resources"), _button("🆘 Support", nonce, "support")],
+        [_button("📚 Help Center", nonce, "resources"), _button("💬 Get Help", nonce, "support")],
     ])
     return InlineKeyboardMarkup(rows)
 
@@ -151,7 +160,7 @@ def admin_card(cfg):
     pending = metrics["pending_registrations"] + metrics["pending_vacations"] + metrics["pending_sick"] + metrics["pending_pop"]
     return (
         f"🚨 Admin queue: {pending + metrics.get('participation_flags', 0) + metrics.get('failed_notifications', 0)}\n"
-        f"📝 Registrations: {metrics['pending_registrations']}\n"
+        f"📝 New creators: {metrics['pending_registrations']}\n"
         f"💙 Away Notices: {metrics['pending_vacations'] + metrics['pending_sick']}\n"
         f"📸 POP reviews: {metrics['pending_pop']}\n"
         f"🟠 Participation flags: {metrics.get('participation_flags', 0)}\n"
@@ -179,13 +188,22 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     returning = bool(ctx.user_data.get("welcome_seen"))
     ctx.user_data.clear()
     ctx.user_data["welcome_seen"] = True
+    role = role_for(update.effective_user.id, ctx.bot_data["config"])
+    creator = db.get_creator(update.effective_user.id)
+    member = db.get_member(update.effective_user.id)
     text = f"Welcome back, {update.effective_user.first_name}! 💛" if returning else (
         f"Welcome, {update.effective_user.first_name}! 💛\n\n"
         "Your VAD Community Hub is here to help keep participation, Thursday POP, Away Notices, and personal updates together.\n\n"
         "Away Notices simply keep tracking fair while you take time away. No private details are required."
     )
-    if db.get_creator(update.effective_user.id):
+    if creator:
         text += "\n\nToday\n" + creator_card(update.effective_user.id,ctx.bot_data["config"])
+    elif role >= Role.ADMIN:
+        text += "\n\nChoose the tools you need below."
+    elif member:
+        text += "\n\nBuyer Home keeps community help and support easy to find."
+    else:
+        text += "\n\nChoose the community view that fits you."
     markup = home_markup(ctx, update.effective_user.id)
     await update.effective_message.reply_text(text, reply_markup=markup)
 
@@ -212,31 +230,54 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "cancel":
         ctx.user_data.clear()
         return await _show(query, "Action cancelled.", home_markup(ctx, user_id))
+    if action == "join_creator":
+        if role is not Role.NONE or db.get_member(user_id):
+            return await _show(query,"That community view is already set.",home_markup(ctx,user_id))
+        db.register_creator(user_id,update.effective_user.username,update.effective_user.full_name)
+        if getattr(cfg,"admin_chat_id",None):
+            try:
+                await ctx.bot.send_message(cfg.admin_chat_id,
+                    f"📝 New creator\n{update.effective_user.full_name} is ready for review.",
+                    message_thread_id=getattr(cfg,"registration_thread_id",None) or getattr(cfg,"reports_thread_id",None))
+            except Exception:
+                db.record_audit(None,"registration_notification_delivery_failed","notification",target_telegram_id=user_id,result="error")
+        return await _show(query,"Welcome! 💛\n\nYour creator profile is ready for community review.",home_markup(ctx,user_id))
+    if action == "join_buyer":
+        if role is not Role.NONE or db.get_creator(user_id):
+            return await _show(query,"That community view is already set.",home_markup(ctx,user_id))
+        db.register_member(user_id,update.effective_user.username,update.effective_user.full_name,"buyer")
+        return await _show(query,"Welcome to the buyer community. 💛\n\nUse Buyer Home for help and community information.",home_markup(ctx,user_id))
+    if action == "buyer":
+        member = db.get_member(user_id)
+        if role is not Role.NONE or not member or member["member_type"] != "buyer":
+            return await _show(query,"Buyer Home is available to registered buyers.",home_markup(ctx,user_id))
+        return await _show(query,"🛍️ Buyer Home\n\nFind community information or ask the admin team for help.",grid_markup(ctx,[
+            [("📜 Community Rules","resource_rules")],[("💬 Contact Admin","contact")],[("📚 Help Center","resources")]
+        ]))
     if action == "creator":
         creator = db.get_creator(user_id)
         if not creator:
-            return await _show(query,"Your VAD Dashboard\n\nYou are not registered yet. Registration takes one tap and sends your profile for review.",
-                grid_markup(ctx,[[ ("📝 Register","register") ],[("📚 Help Center","resources"),("💬 Get Help","contact")]]))
-        return await _show(query, "Your VAD Dashboard\n\n" + creator_card(user_id, cfg), grid_markup(ctx, [
+            return await _show(query,"Creator access is not available for this account.",home_markup(ctx,user_id))
+        return await _show(query, "👤 My Creator Hub\n\nSee your participation, POP, time away, and community standing.\n\n" + creator_card(user_id, cfg), grid_markup(ctx, [
             [("🟢 Available","available"),("⚪ Unavailable","unavailable")],
             [("💙 Let Us Know You’ll Be Away","away_help")],
-            [("📸 POP Help","pop_help"),("💛 Standing","my_warnings")],
+            [("📸 POP Help","pop_help"),("💛 My Standing","my_warnings")],
             [("📜 Timeline","timeline_0"),("💬 Get Help","contact")],
         ]))
     if action == "admin":
         if role < Role.ADMIN:
             return await _show(query, "Admin access is required.", home_markup(ctx, user_id))
         rows = [[("🚨 Admin Queue","admin_queue")]]
-        if has_permission(user_id,cfg,"review_registrations"): rows.append([("📝 Registrations","registration_queue")])
+        if has_permission(user_id,cfg,"review_registrations"): rows.append([("📝 Review New Creators","registration_queue")])
         if has_permission(user_id,cfg,"review_vacations") or has_permission(user_id,cfg,"review_sick_days"):
             rows.append([("💙 Away Notices","away_queue")])
         if has_permission(user_id,cfg,"review_pop"): rows.append([("📸 POP Reviews","pop_queue")])
-        if has_permission(user_id,cfg,"view_creator_reports"): rows.append([("👥 Creator Directory","creator_report"),("📅 Calendar","calendar")])
+        if has_permission(user_id,cfg,"view_creator_reports"): rows.append([("👥 Active Creators","creator_report"),("📅 Community Calendar","calendar")])
         tools = []
-        if has_permission(user_id,cfg,"adjust_warnings"): tools.append(("💛 Standing","warnings_help"))
-        if has_permission(user_id,cfg,"send_announcements"): tools.append(("💬 Messages","templates_help"))
+        if has_permission(user_id,cfg,"adjust_warnings"): tools.append(("💛 Creator Standing","warnings_help"))
+        if has_permission(user_id,cfg,"send_announcements"): tools.append(("💬 Message Center","templates_help"))
         if tools: rows.append(tools)
-        return await _show(query, "Admin Dashboard\n\n" + admin_card(cfg), grid_markup(ctx,rows))
+        return await _show(query, "🛡️ Admin Tools\n\nReview community items assigned to your role.\n\n" + admin_card(cfg), grid_markup(ctx,rows))
     if action == "owner":
         if role is not Role.OWNER:
             return await _show(query, "Owner access is required.", home_markup(ctx, user_id))
@@ -245,10 +286,13 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [("📊 Reports","reports"),("👥 Access","roles")],
             [("🔐 Audit","audit"),("🗃️ Archive","deleted")],
             [("♻️ Restore","restore_help")],
-            [("⚙️ Settings","settings"),("🩺 Health","health")],
+            [("🧭 Setup","setup"),("🩺 Health","health")],
             [("💾 Export","export_help")],
         ]))
     if action == "register":
+        member = db.get_member(user_id)
+        if member and member["member_type"] == "buyer":
+            return await _show(query,"This account is already set up for the buyer community. Contact an owner if that needs to change.",home_markup(ctx,user_id))
         db.register_creator(user_id, update.effective_user.username, update.effective_user.full_name)
         if getattr(cfg,"admin_chat_id",None):
             try:
@@ -269,7 +313,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         counts = db.needs_attention_counts(period.week_key,now=now,due_weekday=_pop_args(cfg)[0],cutoff_time=_pop_args(cfg)[1],timezone_name=_pop_args(cfg)[2])
         permitted = []
         if has_permission(user_id,cfg,"review_registrations"):
-            permitted.append(("📝 Registrations",counts["registrations"],"registration_queue"))
+            permitted.append(("📝 New creators",counts["registrations"],"registration_queue"))
         if has_permission(user_id,cfg,"review_vacations") or has_permission(user_id,cfg,"review_sick_days"):
             permitted.append(("💙 Away Notices",counts["away_notices"],"away_queue"))
         if has_permission(user_id,cfg,"review_pop"):
@@ -377,7 +421,8 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await _show(query, text[:3900], menu_markup(ctx, [], "home"))
     if action in {"contact", "support"}:
         ctx.user_data["guided_input"] = "contact_admin"
-        return await _show(query, "💬 Contact Admin\n\nWhat do you need help with? Send one message below. Please do not include private medical details.\n\nYou’ll preview it before anything is sent.", menu_markup(ctx, [], "creator" if action == "contact" else "home"))
+        back = "creator" if db.get_creator(user_id) else "buyer" if db.get_member(user_id) else "home"
+        return await _show(query, "💬 Contact Admin\n\nWhat do you need help with? Send one message below. Please do not include private medical details.\n\nYou’ll preview it before anything is sent.", menu_markup(ctx, [], back))
     if action == "resources":
         help_actions = [("⭐ Getting Started","resource_about"),("📜 Community Rules","resource_rules"),
             ("📈 Participation Guide","resource_engagement"),("📸 Thursday POP Guide","resource_pop"),
@@ -479,7 +524,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ("📋 Browse All Creators","creator_list_all"),("🟢 Available","creator_list_available"),
             ("⚪ Unavailable","creator_list_unavailable"),("💙 Away","creator_list_away"),
             ("🟠 Needs Attention","creator_list_attention")]
-        return await _show(query,"👥 Creator Directory\n\nSearch, browse, or filter creator profiles.",menu_markup(ctx,actions,"admin"))
+        return await _show(query,"👥 Active Creators\n\nFind a creator and open the tools available to your role.",menu_markup(ctx,actions,"admin"))
     if action in {"creator_search_name","creator_search_id"}:
         if not has_permission(user_id,cfg,"view_creator_reports"):
             return await _show(query,"Creator search isn’t included in your access.",home_markup(ctx,user_id))
@@ -488,7 +533,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await _show(query,"🔎 Creator Search\n\n"+prompt+"\n\nYou can cancel or go back without searching.",menu_markup(ctx,[],"creator_report"))
     if action.startswith("creator_list_"):
         if not has_permission(user_id,cfg,"view_creator_reports"):
-            return await _show(query,"Creator Directory isn’t included in your access.",home_markup(ctx,user_id))
+            return await _show(query,"Active Creators isn’t included in your access.",home_markup(ctx,user_id))
         selected = action.removeprefix("creator_list_")
         rows = list(db.list_creators())
         if selected == "available": rows = [r for r in rows if r["availability"] == "available"]
@@ -496,7 +541,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if selected == "away": rows = [r for r in rows if r["availability"] in {"vacation","sick"}]
         if selected == "attention": rows = [r for r in rows if sum(db.warning_summary(r["telegram_id"]).values()) or r["status"] != "active"]
         buttons = [[(r["display_name"][:40],f"creator_select_{r['telegram_id']}")] for r in rows[:20]]
-        text = "👥 Creator Directory\n\n" + (f"Select a creator below. Showing {len(rows)} result(s)." if rows else "No creators match this filter.")
+        text = "👥 Active Creators\n\n" + (f"Select a creator below. Showing {len(rows)} result(s)." if rows else "No creators match this filter.")
         return await _show(query,text,grid_markup(ctx,buttons,"creator_report"))
     if action.startswith("creator_select_"):
         if not has_permission(user_id,cfg,"view_creator_reports"):
@@ -512,7 +557,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"🤝 Participation: {creator['status'].title()}\n🕒 Last meaningful: {_friendly_time(creator['last_meaningful_at'],cfg)}\n"
             f"📸 POP: {pop_label(pop)}\n💛 Warnings: {warning['warnings']} · Strikes: {warning['strikes']}")
         actions = [("📊 Overview",f"creator_select_{target}"),("📜 Timeline",f"creator_admin_timeline_{target}_0"),
-            ("📸 POP History","pop_queue"),("💙 Away Notices","calendar"),("⚠️ Standing","warnings_help")]
+            ("📸 POP History","pop_queue"),("💙 Away Notices","calendar"),("⚠️ Creator Standing","warnings_help")]
         if has_permission(user_id,cfg,"add_admin_notes"): actions.append(("📝 Private Notes",f"notes_member_{target}"))
         if has_permission(user_id,cfg,"send_announcements"): actions.append(("💬 Send Message",f"template_member_{target}"))
         if has_permission(user_id,cfg,"manage_creators"): actions.extend([("✏️ Edit",f"creator_edit_{target}"),("🗃️ Archive",f"archive_creator_{target}")])
@@ -614,17 +659,17 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         creators=list(db.list_creators()); buttons=[[(r["display_name"][:40],f"warning_member_{r['telegram_id']}")] for r in creators[:20]]
         return await _show(query,"⚠️ Warning & Strike Management\n\nSelect a member.",grid_markup(ctx,buttons,"admin"))
     if action.startswith("warning_member_"):
-        if not has_permission(user_id,cfg,"adjust_warnings"): return await _show(query,"Standing management isn’t included in your access.",home_markup(ctx,user_id))
+        if not has_permission(user_id,cfg,"adjust_warnings"): return await _show(query,"Creator Standing isn’t included in your access.",home_markup(ctx,user_id))
         target=int(action.removeprefix("warning_member_")); creator=db.get_creator(target)
         return await _show(query,f"⚠️ {creator['display_name']}\n\nChoose the record type.",menu_markup(ctx,[("💛 Warning",f"warning_type_warning_{target}"),("🔴 Strike",f"warning_type_strike_{target}")],"warnings_help"))
     if action.startswith("warning_type_"):
-        if not has_permission(user_id,cfg,"adjust_warnings"): return await _show(query,"Standing management isn’t included in your access.",home_markup(ctx,user_id))
+        if not has_permission(user_id,cfg,"adjust_warnings"): return await _show(query,"Creator Standing isn’t included in your access.",home_markup(ctx,user_id))
         raw=action.removeprefix("warning_type_"); kind,target_raw=raw.split("_",1); target=int(target_raw)
         ctx.user_data["warning_draft"]={"type":kind,"target":target}
         return await _show(query,"Choose a reason or write a custom reason.",menu_markup(ctx,[("Participation follow-up","warning_reason_participation"),
             ("Community-rule concern","warning_reason_rules"),("✍️ Custom reason","warning_reason_custom")],f"warning_member_{target}"))
     if action.startswith("warning_reason_"):
-        if not has_permission(user_id,cfg,"adjust_warnings"): return await _show(query,"Standing management isn’t included in your access.",home_markup(ctx,user_id))
+        if not has_permission(user_id,cfg,"adjust_warnings"): return await _show(query,"Creator Standing isn’t included in your access.",home_markup(ctx,user_id))
         draft=ctx.user_data.get("warning_draft")
         if not draft: return await _show(query,"That workflow expired.",menu_markup(ctx,[],"warnings_help"))
         choice=action.removeprefix("warning_reason_")
@@ -636,7 +681,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         body=template["body"].replace("{name}",creator["display_name"]).replace("{reason}",draft["reason"])
         return await _show(query,f"⚠️ Preview\n\nType: {draft['type'].title()}\nReason: {draft['reason']}\n\n{body}",menu_markup(ctx,[("✅ Confirm, Record & Send","warning_send")],"warnings_help"))
     if action == "warning_send":
-        if not has_permission(user_id,cfg,"adjust_warnings"): return await _show(query,"Standing management isn’t included in your access.",home_markup(ctx,user_id))
+        if not has_permission(user_id,cfg,"adjust_warnings"): return await _show(query,"Creator Standing isn’t included in your access.",home_markup(ctx,user_id))
         draft=ctx.user_data.pop("warning_draft",None)
         if not draft or not draft.get("reason"): return await _show(query,"That warning preview expired.",menu_markup(ctx,[],"warnings_help"))
         warning_id=db.add_warning(draft["target"],draft["type"],draft["reason"],user_id,template_key=draft["type"])
@@ -660,6 +705,60 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"Last success: {when('last_admin_notification')}\n🟢 Database schema current: {db.schema_version()}\n"
             f"Last restart: {when('last_restart')}\nDatabase backup: Not tracked by the bot\n\n🔒 Secret values are never displayed.")
         return await _show(query,text,menu_markup(ctx,[("🔄 Refresh","health"),("⚠️ Review Errors","audit_filter_errors")],"owner"))
+    if action == "setup":
+        if role is not Role.OWNER:
+            return await _show(query,"Setup is available only to owners.",home_markup(ctx,user_id))
+        return await _show(query,"🧭 Setup\n\nReview where the bot works and adjust owner-protected community settings.",menu_markup(ctx,[
+            ("💬 Participation Chat","setup_participation_chat"),("🧵 Participation Topics","setup_participation_topics"),
+            ("📸 POP Group","setup_pop_group"),("🧵 POP Topic","setup_pop_topic"),
+            ("🛡️ Admin Group","setup_admin_group"),("👤 Creator Group","setup_creator_group"),
+            ("🛍️ Buyer Group","setup_buyer_group"),("🌎 Time Zone","setup_timezone"),
+            ("⏰ Reminder Times","settings"),
+            ("✅ Verify Current Chat","verify_chat"),("✅ Verify Current Topic","verify_topic"),
+        ],"owner"))
+    if action.startswith("setup_") and action != "setup":
+        if role is not Role.OWNER:
+            return await _show(query,"Setup is available only to owners.",home_markup(ctx,user_id))
+        topics = sorted(getattr(cfg,"participation_topic_ids",frozenset()) or ())
+        values = {
+            "setup_participation_chat": ("💬 Participation Chat","This is the only group where participation can count.",getattr(cfg,"participation_chat_id",None) or getattr(cfg,"girls_chat_id",None)),
+            "setup_participation_topics": ("🧵 Participation Topics","Only these topics count. Multiple topics are supported.",", ".join(map(str,topics)) if topics else "General only"),
+            "setup_pop_group": ("📸 POP Group","Thursday proof is accepted only in this group.",getattr(cfg,"pop_chat_id",None) or getattr(cfg,"girls_chat_id",None)),
+            "setup_pop_topic": ("🧵 POP Topic","Thursday proof is accepted only in this topic.",getattr(cfg,"pop_thread_id",None)),
+            "setup_admin_group": ("🛡️ Admin Group","Private reviews and operational notices are routed here.",getattr(cfg,"admin_chat_id",None)),
+            "setup_creator_group": ("👤 Creator Group","This is the configured creator community group.",getattr(cfg,"creator_group_id",None) or getattr(cfg,"girls_chat_id",None)),
+            "setup_buyer_group": ("🛍️ Buyer Group","This is the configured buyer community group.",getattr(cfg,"buyer_group_id",None)),
+            "setup_timezone": ("🌎 Time Zone","POP deadlines and reminders use this daylight-saving-aware time zone.",getattr(cfg,"timezone_name","America/New_York")),
+        }
+        title, explanation, value = values.get(action,("Setup","Review this owner-protected setting.",None))
+        text = f"{title}\n\n{explanation}\n\nCurrent setting: {value if value is not None else 'Not configured'}"
+        return await _show(query,text,menu_markup(ctx,[("✅ Verify Current Chat","verify_chat"),("✅ Verify Current Topic","verify_topic")],"setup"))
+    if action in {"verify_chat","verify_topic"}:
+        if role is not Role.OWNER:
+            return await _show(query,"Chat and topic verification is owner-only.",home_markup(ctx,user_id))
+        chat = getattr(query.message,"chat",None) or update.effective_chat
+        message = query.message
+        chat_id = getattr(chat,"id",None)
+        title = getattr(chat,"title",None) or getattr(chat,"full_name",None) or "Private chat"
+        thread_id = getattr(message,"message_thread_id",None)
+        is_forum = bool(getattr(chat,"is_forum",False))
+        participation_chat = getattr(cfg,"participation_chat_id",None) or getattr(cfg,"girls_chat_id",None)
+        topics = frozenset(getattr(cfg,"participation_topic_ids",frozenset()) or ())
+        participation_on = chat_id == participation_chat and (thread_id in topics if topics else thread_id is None)
+        configured = []
+        if chat_id == participation_chat: configured.append("Participation chat")
+        if chat_id == (getattr(cfg,"pop_chat_id",None) or getattr(cfg,"girls_chat_id",None)): configured.append("POP group")
+        if chat_id == getattr(cfg,"admin_chat_id",None): configured.append("Admin group")
+        if chat_id == getattr(cfg,"creator_group_id",None): configured.append("Creator group")
+        if chat_id == getattr(cfg,"buyer_group_id",None): configured.append("Buyer group")
+        topic_name = "General" if thread_id is None else "Current forum topic"
+        text = (f"✅ {'Current Topic' if action == 'verify_topic' else 'Current Chat'}\n\n"
+            "Confirm that this is the place you intended to configure.\n\n"
+            f"Chat name: {title}\nChat ID: {chat_id}\nForum: {'Yes' if is_forum else 'No'}\n"
+            f"Topic name: {topic_name}\nTopic ID: {thread_id if thread_id is not None else 'None'}\n"
+            f"Current configuration: {', '.join(configured) if configured else 'No matching destination'}\n"
+            f"Participation enabled here: {'Yes' if participation_on else 'No'}")
+        return await _show(query,text,menu_markup(ctx,[],"setup"))
     if action == "settings" and role is Role.OWNER:
         period = current_period(datetime.now(cfg.timezone),*_pop_args(cfg))
         text = ("⚙️ System Settings\n\n"
@@ -670,8 +769,8 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"📊 Daily summary: {'Enabled' if getattr(cfg,'daily_owner_summary_enabled',False) else 'Disabled'}\n"
             f"📨 Admin routing: {'Configured' if cfg.admin_chat_id else 'Needs setup'}\n"
             "🤖 Bot version: 1.1\n🗄️ Database schema: 4")
-        return await _show(query,text,menu_markup(ctx,[("🟡 Reminder Threshold","settings_warning"),("🔴 Alert Threshold","settings_alert"),
-            ("📸 POP Cutoff","settings_pop"),("📊 Daily Summary","settings_summary")],"owner"))
+        return await _show(query,text,menu_markup(ctx,[("🟡 Reminder Times","settings_warning"),("🔴 Follow-up Time","settings_alert"),
+            ("📸 POP Deadline","settings_pop"),("📊 Daily Summary","settings_summary")],"setup"))
     if action in {"settings_warning","settings_alert","settings_pop","settings_summary"}:
         if role is not Role.OWNER: return await _show(query,"Settings are owner-only.",home_markup(ctx,user_id))
         choices = {
@@ -770,7 +869,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     }
     if action in permission_actions and not has_permission(user_id,cfg,permission_actions[action]):
         return await _show(query,"This tool isn’t included in your access.",menu_markup(ctx,[],"admin"))
-    if action in {"roles","settings","export_help","restore_help","health"} and role is not Role.OWNER:
+    if action in {"roles","setup","settings","export_help","restore_help","health","verify_chat","verify_topic"} and role is not Role.OWNER:
         return await _show(query,"This tool is available only in the Owner dashboard.",home_markup(ctx,user_id))
     if action in {"reports", "creator_report", "calendar", "registration_queue", "vacation_queue", "sick_queue", "pop_queue", "search_help", "warnings_help", "templates_help", "announce_help", "roles", "settings", "export_help", "restore_help", "health"}:
         if action not in {"reports", "calendar"} and role < Role.ADMIN:
@@ -793,7 +892,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "restore_help": "Browse archived records, review deletion details, and confirm restoration.",
             "health": "Review live system checks and safe diagnostics.",
         }
-        back = "owner" if role is Role.OWNER and action in {"roles","settings","export_help","restore_help","health"} else "admin"
+        back = "owner" if role is Role.OWNER and action in {"roles","export_help","restore_help","health"} else "setup" if action == "settings" else "admin"
         return await _show(query, descriptions[action], menu_markup(ctx, [], back))
     return await _show(query, "Unknown or unavailable action.", home_markup(ctx, user_id))
 

@@ -292,7 +292,36 @@ def register_creator(telegram_id, username, display_name, path=None):
 
 def get_creator(telegram_id, path=None):
     with get_connection(path) as db:
-        return db.execute("SELECT * FROM creators WHERE telegram_id=?", (telegram_id,)).fetchone()
+        try:
+            return db.execute("SELECT * FROM creators WHERE telegram_id=?", (telegram_id,)).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            return None
+
+
+def register_member(telegram_id, username, display_name, member_type="buyer", path=None):
+    """Create or refresh a non-privileged community identity."""
+    if member_type not in {"buyer", "community"}:
+        raise ValueError("member_type must be buyer or community")
+    now = utc_now()
+    with get_connection(path) as db:
+        db.execute("""INSERT INTO community_members
+          (telegram_id,member_type,display_name,username,created_at,updated_at)
+          VALUES(?,?,?,?,?,?) ON CONFLICT(telegram_id) DO UPDATE SET
+          member_type=CASE WHEN community_members.member_type='creator' THEN 'creator' ELSE excluded.member_type END,
+          display_name=excluded.display_name,username=excluded.username,updated_at=excluded.updated_at""",
+          (telegram_id,member_type,display_name,username,now,now))
+
+
+def get_member(telegram_id, path=None):
+    with get_connection(path) as db:
+        try:
+            return db.execute("SELECT * FROM community_members WHERE telegram_id=?", (telegram_id,)).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            return None
 
 
 def list_creators(path=None):
