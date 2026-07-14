@@ -78,6 +78,16 @@ def setup_logging(level: str) -> None:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
+def register_application_handlers(app: Application) -> None:
+    """Register specific slash commands before the Coffee conversation router."""
+    register_handlers(app)
+    register_setup_handlers(app)
+    app.add_handler(CommandHandler("groupid", groupid_command))
+    app.add_handler(CommandHandler("topicid", topicid_command))
+    app.add_handler(build_order_conversation())
+    app.add_error_handler(error_handler)
+
+
 def main() -> None:
     config = Config.from_env()
     initialize_database()
@@ -100,12 +110,7 @@ def main() -> None:
     else:
         logger.warning("COFFEE_ORDERS_THREAD_ID not set — receipts will post to the group root")
 
-    app.add_handler(build_order_conversation())
-    app.add_handler(CommandHandler("groupid", groupid_command))
-    app.add_handler(CommandHandler("topicid", topicid_command))
-    register_handlers(app)
-    register_setup_handlers(app)
-    app.add_error_handler(error_handler)
+    register_application_handlers(app)
 
     logger.info("Bot is running. Press Ctrl-C to stop.")
     app.run_polling(
