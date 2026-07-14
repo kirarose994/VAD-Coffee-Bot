@@ -7,6 +7,16 @@ exhausted, the original delivery failure remains stored and one grouped system i
 Owners can review first seen, last seen, occurrence count, status, and sanitized traceback under
 Audit Log → System Errors. A successful Telegram recovery check marks the incident Resolved.
 
+## Approved creators are not receiving participation credit
+
+Open Owner Home → Setup & Readiness and Participation Monitor. Confirm the displayed Main Group
+and topic match the message location, and check **Can read ordinary messages**. Telegram privacy
+mode must be disabled through BotFather, or the bot must be an administrator in the Main Group.
+After one accepted meaningful message, Last Message Detected, Last Meaningful Participation,
+ordinary-message access, and Participation Monitor automatically become verified. Commands,
+greetings, short filler, promotional links, media without meaningful context, and repeated text
+remain intentionally ignored.
+
 ## Bot receives no messages
 
 Confirm exactly one polling process. Telegram `Conflict: terminated by other getUpdates`

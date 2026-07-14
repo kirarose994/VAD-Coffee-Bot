@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added Telegram privacy-mode visibility and live participation-location diagnostics.
+- Made real accepted participation events verify ordinary-message access and Participation Monitor readiness.
+
 - Group transient Telegram/httpx read failures into durable incidents with first seen, last seen,
   occurrence count, Open/Resolved status, sanitized tracebacks, bounded retry, and automatic recovery.
 - Added additive SQLite schema version 8 for restart-safe system incident tracking.

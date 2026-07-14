@@ -21,6 +21,7 @@ from permissions import can_manage_sensitive
 from runtime_config import apply_persisted_settings
 from readiness import critical_fingerprint
 from tracker import register_handlers
+from telegram_io import retry_telegram
 
 
 async def groupid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -63,12 +64,21 @@ def register_application_handlers(app: Application) -> None:
 
 async def startup_readiness_notice(app: Application) -> None:
     """Privately notify Owners once per distinct critical setup state."""
+    try:
+        identity=await retry_telegram(lambda: app.bot.get_me(),attempts=2)
+        set_system_state("telegram_can_read_all_group_messages",
+            "true" if bool(getattr(identity,"can_read_all_group_messages",False)) else "false")
+        set_system_state("telegram_bot_identity_checked_at",datetime.now(ZoneInfo("America/New_York")).isoformat())
+    except Exception:
+        # The transient-network incident system owns connectivity failures.
+        pass
     cfg=app.bot_data["config"];fingerprint,incomplete=critical_fingerprint(cfg)
     if not incomplete:return
     from database import system_state
     state=system_state()
     labels={"owners":"Owner configuration","token":"Bot connection","main":"Main participation group",
-        "participation_topic":"General participation topic","admin":"Admin group","reports":"Participation-alert topic","health":"Health topic"}
+        "participation_topic":"General participation topic","privacy":"Telegram privacy mode blocks ordinary messages",
+        "admin":"Admin group","reports":"Participation-alert topic","health":"Health topic"}
     body="⚠️ Setup Incomplete\n\nThe bot started safely, but these items still need attention:\n"+"\n".join(f"• {labels.get(key,key)}" for key in incomplete)+"\n\nOpen Owner Home → Setup & Readiness."
     for owner_id in cfg.owner_user_ids:
         marker=f"startup_readiness_notice:{owner_id}:{fingerprint}"

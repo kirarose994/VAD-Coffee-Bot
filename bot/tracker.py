@@ -250,9 +250,16 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             await msg.reply_text("⚪ Safe test detected, but the location or test creator was not eligible. No operational data changed.")
         return
+    if isinstance(msg.chat_id,int) and msg.chat_id<0:
+        db.set_system_state("last_group_message_chat_id",msg.chat_id)
+        db.set_system_state("last_group_message_thread_id",msg.message_thread_id if msg.message_thread_id is not None else "general:none")
+        db.set_system_state("last_group_message_detected",datetime.now(cfg.timezone).isoformat())
     in_participation_chat = msg.chat_id == (getattr(cfg,"participation_chat_id",None) or getattr(cfg,"girls_chat_id",None))
     if in_participation_chat:
-        db.set_system_state("last_participation_message_detected",datetime.now(cfg.timezone).isoformat())
+        detected_at=datetime.now(cfg.timezone).isoformat()
+        db.set_system_state("last_participation_message_detected",detected_at)
+        db.set_system_state("last_participation_chat_id",msg.chat_id)
+        db.set_system_state("last_participation_thread_id",msg.message_thread_id if msg.message_thread_id is not None else "general:none")
     creator = db.get_creator(user.id)
     if not creator or creator["status"] != "active":
         if in_participation_chat and participation_enabled(cfg,msg.chat_id,msg.message_thread_id):
@@ -283,8 +290,15 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         min_words=getattr(cfg,"meaningful_min_words",3),
         min_characters=getattr(cfg,"meaningful_min_characters",12),
         repeat_window_days=getattr(cfg,"repeat_window_days",7))
-    db.record_engagement(user.id, msg.message_id, msg.chat_id, thread_id, decision.digest or None,
-                         "accepted" if decision.accepted else "rejected", decision.reason)
+    stored=db.record_engagement(user.id,msg.message_id,msg.chat_id,thread_id,decision.digest or None,
+                         "accepted" if decision.accepted else "rejected",decision.reason)
+    if stored and decision.accepted:
+        counted_at=datetime.now(cfg.timezone).isoformat()
+        db.set_system_state("last_meaningful_participation_counted",counted_at)
+        # A real accepted event is stronger evidence than the isolated safe test.
+        db.set_system_state("readiness:meaningful_test",counted_at)
+    elif stored:
+        db.set_system_state("readiness:ignored_test",datetime.now(cfg.timezone).isoformat())
 
 
 async def inactivity_job(ctx: ContextTypes.DEFAULT_TYPE):
