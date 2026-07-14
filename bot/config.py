@@ -4,6 +4,7 @@ Configuration and menu data for VAD Coffee Lounge Bot.
 
 import os
 from dataclasses import dataclass
+from zoneinfo import ZoneInfo
 
 
 @dataclass
@@ -12,6 +13,14 @@ class Config:
     admin_chat_id: int | None
     coffee_orders_thread_id: int | None
     log_level: str
+    admin_user_ids: frozenset[int]
+    girls_chat_id: int | None
+    girls_thread_id: int | None
+    pop_thread_id: int | None
+    reports_thread_id: int | None
+    timezone_name: str
+    warning_hours: int
+    alert_hours: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -32,12 +41,39 @@ class Config:
                 )
                 return None
 
+        def _parse_ids(key: str) -> frozenset[int]:
+            values = set()
+            for raw in os.environ.get(key, "").split(","):
+                raw = raw.strip()
+                if raw:
+                    try:
+                        values.add(int(raw))
+                    except ValueError:
+                        import logging
+                        logging.getLogger(__name__).warning("Invalid ID %r in %s", raw, key)
+            return frozenset(values)
+
+        timezone_name = os.environ.get("TIMEZONE", "America/New_York")
+        ZoneInfo(timezone_name)  # fail early on a misspelled timezone
+
         return cls(
             token=token,
             admin_chat_id=_parse_int_env("ADMIN_CHAT_ID"),
             coffee_orders_thread_id=_parse_int_env("COFFEE_ORDERS_THREAD_ID"),
             log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+            admin_user_ids=_parse_ids("ADMIN_USER_IDS"),
+            girls_chat_id=_parse_int_env("GIRLS_CHAT_ID"),
+            girls_thread_id=_parse_int_env("GIRLS_THREAD_ID"),
+            pop_thread_id=_parse_int_env("POP_THREAD_ID"),
+            reports_thread_id=_parse_int_env("REPORTS_THREAD_ID"),
+            timezone_name=timezone_name,
+            warning_hours=int(os.environ.get("INACTIVITY_WARNING_HOURS", "48")),
+            alert_hours=int(os.environ.get("INACTIVITY_ALERT_HOURS", "72")),
         )
+
+    @property
+    def timezone(self) -> ZoneInfo:
+        return ZoneInfo(self.timezone_name)
 
 
 # ── Menu data ──────────────────────────────────────────────────────────────

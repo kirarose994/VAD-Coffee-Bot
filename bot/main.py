@@ -23,6 +23,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from config import Config
 from order import build_order_conversation
 from handlers.error import error_handler
+from database import initialize_database
+from tracker import register_handlers
 
 
 async def groupid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -70,11 +72,13 @@ def setup_logging(level: str) -> None:
 
 def main() -> None:
     config = Config.from_env()
+    initialize_database()
     setup_logging(config.log_level)
     logger = logging.getLogger(__name__)
     logger.info("Starting VAD Coffee Lounge Bot…")
 
     app = Application.builder().token(config.token).build()
+    app.bot_data["config"] = config
 
     if config.admin_chat_id:
         app.bot_data["admin_chat_id"] = config.admin_chat_id
@@ -91,6 +95,7 @@ def main() -> None:
     app.add_handler(build_order_conversation())
     app.add_handler(CommandHandler("groupid", groupid_command))
     app.add_handler(CommandHandler("topicid", topicid_command))
+    register_handlers(app)
     app.add_error_handler(error_handler)
 
     logger.info("Bot is running. Press Ctrl-C to stop.")
