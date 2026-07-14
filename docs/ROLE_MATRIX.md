@@ -1,12 +1,13 @@
 # Role Matrix
 
-| Capability | Owner | Lead Admin | Admin | Creator | Buyer |
-|---|---:|---:|---:|---:|---:|
-| Owner Setup, full audit, export, restore | Yes | No | No | No | No |
-| Registration/Away/POP review | Yes | Yes | Only if assigned | No | No |
-| Creator reports and moderation | Yes | Yes | Yes | Own record only | No |
-| Creator participation and POP | If approved creator | If approved creator | If approved creator | If approved | Never |
-| Own Away Notice and standing | If creator | If creator | If creator | Yes | No |
-| Buyer Help Center and support | Yes | Yes | Yes | Yes | Yes |
+| Capability | Owner | Admin | Creator | Buyer |
+|---|---:|---:|---:|---:|
+| Creator participation, POP, Away Notices, support, personal history | Yes | Yes | Yes | No |
+| Assigned operational review and moderation tools | Yes | Yes | No | No |
+| Owner Setup, roles, full audit, export, restore, health | Yes | No | No | No |
+| Buyer Help Center and support | Yes | Yes | Yes | Yes |
+
+Owner = Creator + Admin + Owner. Admin = Creator + Admin. The internal Lead Admin permission
+bundle remains supported for existing assignments.
 
 No hidden menu is a permission grant. Direct callback manipulation is rejected server-side.

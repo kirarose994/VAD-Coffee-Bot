@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "bot"))
 from permissions import (
-    Role, can_manage_sensitive, can_mutate, can_read, can_view_audit, has_permission, role_for,
+    Membership, Role, can_manage_sensitive, can_mutate, can_read, can_view_audit, has_permission, role_for, roles_for,
 )
 
 
@@ -23,6 +23,7 @@ class PermissionTests(unittest.TestCase):
         self.assertTrue(can_mutate(0, self.config))
         self.assertTrue(can_view_audit(0, self.config))
         self.assertTrue(can_manage_sensitive(0, self.config))
+        self.assertEqual(roles_for(0,self.config),frozenset({Membership.CREATOR,Membership.ADMIN,Membership.OWNER}))
 
     def test_lead_admin_has_operational_permissions_only(self):
         self.assertEqual(role_for(1, self.config), Role.LEAD_ADMIN)
@@ -38,6 +39,10 @@ class PermissionTests(unittest.TestCase):
         self.assertFalse(can_view_audit(2, self.config))
         self.assertTrue(has_permission(2,self.config,"adjust_warnings"))
         self.assertFalse(has_permission(2,self.config,"review_registrations"))
+        self.assertEqual(roles_for(2,self.config),frozenset({Membership.CREATOR,Membership.ADMIN}))
+
+    def test_creator_membership_is_independent_of_admin_membership(self):
+        self.assertEqual(roles_for(50,self.config,has_creator_profile=True),frozenset({Membership.CREATOR}))
 
     def test_lead_admin_receives_review_tools_but_not_owner_setup(self):
         self.assertTrue(has_permission(1,self.config,"review_registrations"))

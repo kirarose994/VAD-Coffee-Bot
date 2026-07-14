@@ -1,5 +1,12 @@
 # Changelog
 
+## Multi-role permission upgrade
+
+- Added additive Creator, Admin, and Owner memberships in schema version 9.
+- Existing creator records and histories remain canonical by Telegram ID.
+- Configured Admins receive Creator capabilities; Owners receive Admin and Creator capabilities.
+- Added audited Owner/Admin assignment synchronization and additive home navigation.
+
 ## Unreleased
 
 - Added Telegram privacy-mode visibility and live participation-location diagnostics.

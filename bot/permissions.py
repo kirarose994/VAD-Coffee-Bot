@@ -1,6 +1,12 @@
 """Role-based authorization for Telegram commands."""
 
-from enum import IntEnum
+from enum import IntEnum, StrEnum
+
+
+class Membership(StrEnum):
+    CREATOR = "creator"
+    ADMIN = "admin"
+    OWNER = "owner"
 
 
 class Role(IntEnum):
@@ -20,6 +26,21 @@ def role_for(user_id: int | None, config) -> Role:
     if user_id in config.admin_user_ids:
         return Role.ADMIN
     return Role.NONE
+
+
+def roles_for(user_id: int | None, config, *, has_creator_profile=False) -> frozenset[Membership]:
+    """Return additive public memberships while preserving legacy permission tiers."""
+    if user_id is None:
+        return frozenset()
+    memberships=set()
+    highest=role_for(user_id,config)
+    if has_creator_profile or highest >= Role.ADMIN:
+        memberships.add(Membership.CREATOR)
+    if highest >= Role.ADMIN:
+        memberships.add(Membership.ADMIN)
+    if highest is Role.OWNER:
+        memberships.add(Membership.OWNER)
+    return frozenset(memberships)
 
 
 def can_read(user_id: int | None, config) -> bool:

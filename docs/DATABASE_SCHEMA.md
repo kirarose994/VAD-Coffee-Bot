@@ -1,6 +1,6 @@
 # Database Schema
 
-SQLite schema version 6 is initialized and migrated by `database.initialize_database()`.
+SQLite schema version 9 is initialized and migrated by `database.initialize_database()`.
 
 | Table | Purpose |
 |---|---|
@@ -19,6 +19,19 @@ SQLite schema version 6 is initialized and migrated by `database.initialize_data
 | `support_requests`, `support_messages` | Private creator-bound support history |
 | `delivery_failures` | Durable routing failures with safe references and retry state |
 | `bot_users` | People who privately started the bot; this does not assign a role |
+| `user_roles` | Additive Creator/Admin/Owner memberships and removal history |
 
 Telegram ID is the creator/member primary key, so duplicate creator identities cannot exist.
 Foreign keys, unique indexes, WAL mode, and a busy timeout protect consistency.
+
+## Version 9 migration
+
+Startup creates `user_roles`, seeds Creator membership from existing creator rows, and attaches
+Admin/Owner memberships from the current audited configuration. Configured staff without a
+creator row receive one active profile keyed by the same Telegram ID; an existing non-archived
+staff profile is activated without replacing its history. Archived profiles are never restored
+automatically. Re-running synchronization is idempotent.
+
+Rollback to version 8 code is non-destructive: older code ignores `user_roles` and continues to
+use the unchanged creator and configuration tables. Back up the database before deployment; do
+not drop the additive table during rollback.
