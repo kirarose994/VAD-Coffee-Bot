@@ -67,7 +67,7 @@ class ReadinessCalculationTests(unittest.TestCase):
 
 class SafeTestIsolationTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
-    def audio_message(*,duration=15,thread=10,chat=EXPECTED_MAIN_CHAT_ID,voice=True,message_id=100,file_id="audio-1",caption=None):
+    def audio_message(*,duration=5,thread=10,chat=EXPECTED_MAIN_CHAT_ID,voice=True,message_id=100,file_id="audio-1",caption=None):
         media=SimpleNamespace(duration=duration,file_unique_id=file_id,file_id=file_id)
         return SimpleNamespace(text=None,chat_id=chat,message_thread_id=thread,message_id=message_id,
             photo=None,sticker=None,animation=None,video=None,voice=media if voice else None,
@@ -127,22 +127,23 @@ class SafeTestIsolationTests(unittest.IsolatedAsyncioTestCase):
         payload=json.loads(diagnostic.args[1])
         self.assertEqual(payload["reason"],"wrong_topic");self.assertTrue(payload["chat_matches"]);self.assertFalse(payload["topic_matches"])
 
-    async def test_qualifying_voice_message_counts(self):
+    async def test_five_second_voice_and_uploaded_audio_count(self):
         cfg=config(participation_topic_ids=frozenset({10}),repeat_window_days=7)
-        msg=self.audio_message(duration=15);update=SimpleNamespace(effective_message=msg,effective_user=SimpleNamespace(id=20))
         creator={"telegram_id":20,"status":"active","vacation_until":None};ctx=SimpleNamespace(bot_data={"config":cfg})
-        with patch("tracker.db.system_state",return_value={}),patch("tracker.db.get_creator",return_value=creator), \
-             patch("tracker.db.approved_absence_on",return_value=None),patch("tracker.db.recent_hash_exists",return_value=False), \
-             patch("tracker.db.record_engagement",return_value=True) as record,patch("tracker.db.set_system_state") as state:
-            await observe(update,ctx)
-        self.assertEqual(record.call_args.args[5:7],("accepted","voice_message"))
-        self.assertEqual(record.call_args.kwargs["event_type"],"voice_message")
-        diagnostic=next(call for call in state.call_args_list if call.args[0]=="participation:last_creator:20")
-        self.assertEqual(json.loads(diagnostic.args[1])["reason"],"accepted_voice_message")
+        for is_voice,event_type in ((True,"voice_message"),(False,"audio_message")):
+            msg=self.audio_message(duration=5,voice=is_voice,file_id=event_type);update=SimpleNamespace(effective_message=msg,effective_user=SimpleNamespace(id=20))
+            with patch("tracker.db.system_state",return_value={}),patch("tracker.db.get_creator",return_value=creator), \
+                 patch("tracker.db.approved_absence_on",return_value=None),patch("tracker.db.recent_hash_exists",return_value=False), \
+                 patch("tracker.db.record_engagement",return_value=True) as record,patch("tracker.db.set_system_state") as state:
+                await observe(update,ctx)
+            self.assertEqual(record.call_args.args[5:7],("accepted",event_type))
+            self.assertEqual(record.call_args.kwargs["event_type"],event_type)
+            diagnostic=next(call for call in state.call_args_list if call.args[0]=="participation:last_creator:20")
+            self.assertEqual(json.loads(diagnostic.args[1])["reason"],f"accepted_{event_type}")
 
     async def test_short_voice_message_is_ignored(self):
         cfg=config(participation_topic_ids=frozenset({10}),repeat_window_days=7)
-        msg=self.audio_message(duration=14);update=SimpleNamespace(effective_message=msg,effective_user=SimpleNamespace(id=20))
+        msg=self.audio_message(duration=4);update=SimpleNamespace(effective_message=msg,effective_user=SimpleNamespace(id=20))
         creator={"telegram_id":20,"status":"active","vacation_until":None};ctx=SimpleNamespace(bot_data={"config":cfg})
         with patch("tracker.db.system_state",return_value={}),patch("tracker.db.get_creator",return_value=creator), \
              patch("tracker.db.approved_absence_on",return_value=None),patch("tracker.db.record_engagement",return_value=True) as record, \

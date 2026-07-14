@@ -14,6 +14,7 @@ from permissions import can_manage_sensitive, can_mutate, can_read, can_view_aud
 from pop_policy import label as pop_label
 from routing import send_routed
 from briefing import daily_admin_brief_job
+from constants import MIN_AUDIO_PARTICIPATION_SECONDS
 from telegram_io import retry_telegram
 
 
@@ -335,7 +336,7 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if audio_details:
         event_type,duration,digest=audio_details
-        if duration < 15:
+        if duration < MIN_AUDIO_PARTICIPATION_SECONDS:
             decision_reason="audio_too_short"
         elif contains_promotional_spam(msg.caption or ""):
             decision_reason="promotional_spam"
