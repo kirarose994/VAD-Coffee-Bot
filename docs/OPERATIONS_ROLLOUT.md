@@ -1,5 +1,46 @@
 # VAD Operations Bot rollout guide
 
+## Version 1.1 usability upgrade
+
+- Schema version 6 is additive. It includes Away Notice category metadata, template revisions,
+  owner-summary delivery claims, general community-member identities, and future-safe
+  buyer/community warning storage. Existing creator, POP, Away Notice, warning, audit,
+  deletion, template, and timeline records are retained.
+- Owner Dashboard starts with **🚨 Needs Attention** and presents actionable counts only.
+- Admin Dashboard starts with a permission-filtered **🚨 Admin Queue**.
+- Passive screens show Home and Back. Cancel appears only while entering or confirming data.
+- The optional owner summary is disabled by default. To enable it later, set
+  `DAILY_OWNER_SUMMARY_ENABLED=true` and optionally `DAILY_OWNER_SUMMARY_TIME=09:00`.
+  The time uses `America/New_York`, and each owner/date claim is restart-safe.
+
+### Functional correction pass
+
+- `pop_policy.py` is the single source of truth for the current period and Eastern Time
+  cutoff. Dashboards, queues, reports, counts, and Needs Attention consume its states.
+- Creator search, registration review, Away Notices, access changes, settings, exports,
+  restoration, warnings/strikes, templates, and Contact Admin use guided buttons and
+  confirmations. Slash commands remain fallback tools but are not advertised in screens.
+- Timelines and owner audit filters use friendly Eastern Time and plain-language events.
+- Repeated `BadRequest: Message is not modified` callback events are classified as harmless
+  duplicate edits and no longer create owner-facing system-error records.
+
+### Routing
+
+| Event | Chat | Topic |
+|---|---|---|
+| Meaningful participation | `PARTICIPATION_CHAT_ID`, then `MAIN_CHAT_ID` fallback | comma-separated `PARTICIPATION_TOPIC_IDS`; empty means General only |
+| POP proof | `POP_CHAT_ID`, then creator-group fallback | required `POP_THREAD_ID` |
+| Registration review | `ADMIN_CHAT_ID` | `REGISTRATION_THREAD_ID`, else `REPORTS_THREAD_ID` |
+| Away Notice review | `ADMIN_CHAT_ID` | `AWAY_THREAD_ID`, else `REPORTS_THREAD_ID` |
+| Participation alerts/reports | `ADMIN_CHAT_ID` | `REPORTS_THREAD_ID` |
+| Warning/strike moderation | `ADMIN_CHAT_ID` | `MODERATION_THREAD_ID`, else reports |
+| System health failures | owners privately | optional `HEALTH_THREAD_ID` |
+
+The participation allow-list is strict: a message must match both the configured chat and
+one configured topic. More topics can be added through configuration without a code change.
+The owner-only Setup menu shows friendly destination names and provides Verify Current Chat
+and Verify Current Topic. Temporary setup-mode commands are no longer registered by the bot.
+
 ## Architecture
 
 - `bot/main.py`: application startup and handler registration
@@ -25,7 +66,7 @@ Before first production start:
 
 New tables: `absence_requests`, `availability_history`, `admin_notes`, `audit_events`,
 `announcements`, `resources`, `pop_excuses`, `creator_warnings`, and `message_templates`.
-The current schema version is 3. Existing important records gain
+The current schema version is 6. Existing important records gain
 soft-deletion and restoration metadata where applicable.
 
 ## Rollback
@@ -60,6 +101,21 @@ is the supported rollback because older code does not understand approved absenc
   - Resources / Support
 
 Every submenu has Home, Back, and Cancel. Expired/reused menu buttons return safely to Home.
+
+## Role-separated menu map
+
+- Unassigned community member: choose **I'm a Creator / Seller** or **I'm a Buyer**.
+- Creator: **My Creator Hub**, Help Center, and Get Help. Administration is not shown.
+- Buyer: **Buyer Home**, Help Center, and Get Help. Creator and administration tools are not shown.
+- Admin / lead admin: **Admin Tools** with only individually permitted review and moderation tools.
+- Owner: Admin Tools plus **Owner Dashboard** and every protected capability.
+  - Owner Dashboard: Needs Attention, Reports, Access, Audit, Archive, Restore, Setup, Health, Export.
+  - Setup: Participation Chat, Participation Topics, POP Group, POP Topic, Admin Group,
+    Seller Group, Buyer Group, Time Zone, Reminder Times, Verify Current Chat, Verify Current Topic.
+
+Passive screens show Home and Back. Cancel appears only in an active form or confirmation.
+Expired buttons return safely to the correct role-aware Home screen. Every callback still
+checks authorization server-side; hiding a button is never the only protection.
 
 ## Phase 3 mobile UX standards
 

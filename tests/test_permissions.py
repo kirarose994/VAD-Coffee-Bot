@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "bot"))
 from permissions import (
-    Role, can_manage_sensitive, can_mutate, can_read, can_view_audit, role_for,
+    Role, can_manage_sensitive, can_mutate, can_read, can_view_audit, has_permission, role_for,
 )
 
 
@@ -31,11 +31,18 @@ class PermissionTests(unittest.TestCase):
         self.assertFalse(can_view_audit(1, self.config))
         self.assertFalse(can_manage_sensitive(1, self.config))
 
-    def test_admin_has_operational_permissions_without_audit_access(self):
+    def test_admin_has_moderation_permissions_without_audit_access(self):
         self.assertEqual(role_for(2, self.config), Role.ADMIN)
         self.assertTrue(can_read(2, self.config))
         self.assertTrue(can_mutate(2, self.config))
         self.assertFalse(can_view_audit(2, self.config))
+        self.assertTrue(has_permission(2,self.config,"adjust_warnings"))
+        self.assertFalse(has_permission(2,self.config,"review_registrations"))
+
+    def test_lead_admin_receives_review_tools_but_not_owner_setup(self):
+        self.assertTrue(has_permission(1,self.config,"review_registrations"))
+        self.assertTrue(has_permission(1,self.config,"review_pop"))
+        self.assertFalse(has_permission(1,self.config,"change_settings"))
 
     def test_unknown_user_has_no_permissions(self):
         self.assertEqual(role_for(3, self.config), Role.NONE)

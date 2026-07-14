@@ -3,9 +3,11 @@
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+from pop_policy import calculate_status, current_period
 
 DATABASE_PATH = Path(__file__).with_name("vad_tracker.db")
 
@@ -139,18 +141,86 @@ def initialize_database(path: Path | None = None):
           category TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1,
           updated_at TEXT NOT NULL, updated_by INTEGER
         );
+        CREATE TABLE IF NOT EXISTS owner_summary_deliveries (
+          owner_id INTEGER NOT NULL, cycle_key TEXT NOT NULL, claimed_at TEXT NOT NULL,
+          PRIMARY KEY(owner_id,cycle_key)
+        );
+        CREATE TABLE IF NOT EXISTS community_members (
+          telegram_id INTEGER PRIMARY KEY, member_type TEXT NOT NULL DEFAULT 'buyer'
+            CHECK(member_type IN ('creator','buyer','community')),
+          display_name TEXT NOT NULL, username TEXT, created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS member_warnings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER NOT NULL,
+          warning_type TEXT NOT NULL CHECK(warning_type IN ('warning','strike')),
+          reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+          issued_at TEXT NOT NULL, issued_by INTEGER NOT NULL, acknowledged_at TEXT,
+          acknowledged_by INTEGER, template_key TEXT, notes TEXT,
+          deleted_at TEXT, deleted_by INTEGER, deletion_reason TEXT,
+          FOREIGN KEY(telegram_id) REFERENCES community_members(telegram_id)
+        );
+        CREATE TABLE IF NOT EXISTS template_revisions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, template_key TEXT NOT NULL,
+          previous_body TEXT NOT NULL, new_body TEXT NOT NULL, changed_at TEXT NOT NULL,
+          changed_by INTEGER NOT NULL, reason TEXT,
+          FOREIGN KEY(template_key) REFERENCES message_templates(template_key)
+        );
+        CREATE TABLE IF NOT EXISTS system_state (
+          state_key TEXT PRIMARY KEY, state_value TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS support_requests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER NOT NULL,
+          category TEXT NOT NULL, message TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','assigned','escalated','resolved')),
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, assigned_to INTEGER,
+          resolved_at TEXT, resolved_by INTEGER, resolution_note TEXT,
+          delivery_status TEXT NOT NULL DEFAULT 'pending', delivery_error_ref TEXT,
+          FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id)
+        );
+        CREATE INDEX IF NOT EXISTS support_queue ON support_requests(status,created_at);
+        CREATE TABLE IF NOT EXISTS support_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, request_id INTEGER NOT NULL,
+          sender_id INTEGER NOT NULL, sender_role TEXT NOT NULL, body TEXT NOT NULL,
+          created_at TEXT NOT NULL, delivered_at TEXT, delivery_error_ref TEXT,
+          FOREIGN KEY(request_id) REFERENCES support_requests(id)
+        );
+        CREATE TABLE IF NOT EXISTS delivery_failures (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, error_reference TEXT NOT NULL UNIQUE,
+          event_type TEXT NOT NULL, destination_chat_id INTEGER,
+          destination_thread_id INTEGER, payload_summary TEXT,
+          created_at TEXT NOT NULL, resolved_at TEXT, retry_claimed_at TEXT,
+          retry_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS delivery_failures_open ON delivery_failures(resolved_at,created_at);
+        CREATE TABLE IF NOT EXISTS bot_users (
+          telegram_id INTEGER PRIMARY KEY, display_name TEXT NOT NULL, username TEXT,
+          first_started_at TEXT NOT NULL, last_started_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS daily_brief_deliveries (
+          cycle_date TEXT PRIMARY KEY, claimed_at TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('pending','sent','failed')),
+          sent_at TEXT, error_reference TEXT
+        );
         """)
         _migrate_legacy_schema(db)
         _seed_message_templates(db)
-        db.execute("UPDATE schema_version SET version=3")
+        db.execute("UPDATE schema_version SET version=7")
 
 
 DEFAULT_MESSAGE_TEMPLATES = {
     "friendly_reminder": ("Friendly Reminder", "Hi {name}! Just a friendly check-in from the VAD team. 💛", "community"),
-    "participation_reminder": ("Participation Reminder", "Hi {name}! We have not seen meaningful participation recently. Please check in when you can, or submit an Away Notice so tracking stays fair.", "participation"),
+    "participation_reminder": ("Participation Reminder", "Hi {name}! Meaningful participation helps keep the community lively and gives members a reason to come back. Join a discussion, respond thoughtfully, or ask a genuine question when you can. Taking time away? Record an Away Notice so tracking stays fair.", "participation"),
+    "two_day_reminder": ("Two-Day Participation Reminder", "Hi {name}. Two full days have passed since your last meaningful participation. Meaningful participation means adding value to a genuine conversation—not simply checking in. Another full day without participation will notify the Admin team. Taking time away? You can record an Away Notice.", "participation"),
+    "three_day_followup": ("Three-Day Admin Follow-Up", "Hi {name}. Three full days have passed without meaningful participation and no approved Away Notice is active. The Admin team has been notified for supportive follow-up.", "participation"),
     "pop_reminder": ("POP Reminder", "Hi {name}! This is your friendly Thursday POP reminder. Please submit in the designated topic, or make sure an Away Notice is on file.", "pop"),
     "welcome": ("Welcome", "Welcome, {name}! The VAD Operations Bot is here to help you stay informed and keep participation tracking fair.", "welcome"),
     "community_checkin": ("Community Check-In", "Hi {name}! The team is checking in. Let us know if you need support or time away.", "community"),
+    "missing_pop": ("Missing POP", "Hi {name}. Thursday POP has not been received for this week. Please submit in the designated topic or contact an admin if an Away Notice applies.", "pop"),
+    "away_acknowledgement": ("Away Notice Acknowledgement", "Hi {name}. Your Away Notice has been recorded as excused. We hope your time away is restorative. 💙", "away"),
+    "clarification_request": ("Clarification Request", "Hi {name}. An admin needs a little more information about your Away Notice: {reason}", "away"),
+    "good_standing": ("Good Standing", "Hi {name}! Your community status is in good standing. Thank you for participating. 💚", "community"),
+    "owner_review_outcome": ("Owner Review Outcome", "Hi {name}. The owner review is complete: {reason}", "warning"),
     "warning": ("Warning Notice", "Hi {name}. A participation warning has been documented: {reason}. Please contact an admin if you need clarification or support.", "warning"),
     "strike": ("Strike Notice", "Hi {name}. A strike has been documented: {reason}. The record is available in your dashboard, and you may contact an admin for support.", "warning"),
 }
@@ -222,6 +292,12 @@ def _migrate_legacy_schema(db):
         "deletion_reason": "TEXT", "restored_at": "TEXT", "restored_by": "INTEGER",
     })
     _add_columns(db, "audit_events", {"legacy_audit_id": "INTEGER"})
+    _add_columns(db, "absence_requests", {"absence_category": "TEXT"})
+    _add_columns(db, "creator_warnings", {
+        "template_key": "TEXT", "notes": "TEXT", "updated_at": "TEXT",
+        "updated_by": "INTEGER", "deleted_at": "TEXT", "deleted_by": "INTEGER",
+        "deletion_reason": "TEXT", "restored_at": "TEXT", "restored_by": "INTEGER",
+    })
     db.execute("CREATE UNIQUE INDEX IF NOT EXISTS audit_legacy_unique ON audit_events(legacy_audit_id) WHERE legacy_audit_id IS NOT NULL")
     if "audit_history" in {r["name"] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
         db.execute("""INSERT OR IGNORE INTO audit_events
@@ -229,23 +305,114 @@ def _migrate_legacy_schema(db):
           SELECT created_at,actor_id,'legacy',action,'legacy',target_id,details,'success',id FROM audit_history""")
     db.execute("CREATE UNIQUE INDEX IF NOT EXISTS engagement_message_unique ON engagement_events(chat_id,message_id)")
     db.execute("CREATE UNIQUE INDEX IF NOT EXISTS pop_creator_week_unique ON pop_submissions(telegram_id,week_key) WHERE week_key IS NOT NULL")
+    # Older creator rows predate the general member table. Backfill the shared identity so
+    # role-aware menus never disagree with the creator directory after migration.
+    now = utc_now()
+    db.execute("""INSERT INTO community_members
+      (telegram_id,member_type,display_name,username,created_at,updated_at)
+      SELECT telegram_id,'creator',display_name,username,COALESCE(registered_at,?),?
+      FROM creators WHERE 1
+      ON CONFLICT(telegram_id) DO UPDATE SET member_type='creator',
+      display_name=excluded.display_name,username=excluded.username,updated_at=excluded.updated_at""",(now,now))
 
 
 def register_creator(telegram_id, username, display_name, path=None):
+    """Register a creator without overwriting approval or archival state.
+
+    Telegram ID is the canonical identity and primary key, so duplicates cannot be
+    created. Repeat registration refreshes Telegram profile fields only.
+    """
     now = utc_now()
     with get_connection(path) as db:
+        existing = db.execute("SELECT * FROM creators WHERE telegram_id=?",(telegram_id,)).fetchone()
         db.execute("""INSERT INTO creators(telegram_id,username,display_name,registered_at)
           VALUES(?,?,?,?) ON CONFLICT(telegram_id) DO UPDATE SET
           username=excluded.username, display_name=excluded.display_name""",
           (telegram_id, username, display_name, now))
-        _audit(db, telegram_id, telegram_id, "creator_registered", {"username": username, "display_name": display_name}, now)
+        db.execute("""INSERT INTO community_members(telegram_id,member_type,display_name,username,created_at,updated_at)
+          VALUES(?,?,?,?,?,?) ON CONFLICT(telegram_id) DO UPDATE SET member_type='creator',
+          display_name=excluded.display_name,username=excluded.username,updated_at=excluded.updated_at""",
+          (telegram_id,"creator",display_name,username,now,now))
+        if existing:
+            audit_event(db,telegram_id,"creator_identity_refreshed","creator",telegram_id,telegram_id,
+                previous_value={"username":existing["username"],"display_name":existing["display_name"]},
+                new_value={"username":username,"display_name":display_name})
+            return "archived" if existing["deleted_at"] else existing["status"]
+        _audit(db,telegram_id,telegram_id,"creator_registered",{"username":username,"display_name":display_name},now)
         audit_event(db,telegram_id,"creator_registered","creator",telegram_id,telegram_id,
                     new_value={"username":username,"display_name":display_name})
+        return "created"
 
 
-def get_creator(telegram_id, path=None):
+def get_creator(telegram_id, path=None, include_deleted=False):
+    """Resolve the visible creator identity; archived rows are owner-history only."""
     with get_connection(path) as db:
-        return db.execute("SELECT * FROM creators WHERE telegram_id=?", (telegram_id,)).fetchone()
+        try:
+            sql = "SELECT * FROM creators WHERE telegram_id=?"
+            if not include_deleted:
+                sql += " AND deleted_at IS NULL"
+            return db.execute(sql,(telegram_id,)).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            return None
+
+
+def creator_identity_status(telegram_id, path=None):
+    """Explain registration, directory, and member-identity state for diagnostics."""
+    creator = get_creator(telegram_id,path,include_deleted=True)
+    member = get_member(telegram_id,path)
+    if not creator:
+        return {"state":"not_registered","creator":None,"member":member,"directory_visible":False}
+    archived = bool(creator["deleted_at"])
+    state = "archived" if archived else creator["status"]
+    return {"state":state,"creator":creator,"member":member,
+        "directory_visible":not archived,"identity_consistent":bool(member and member["member_type"] == "creator")}
+
+
+def register_member(telegram_id, username, display_name, member_type="buyer", path=None):
+    """Create or refresh a non-privileged community identity."""
+    if member_type not in {"buyer", "community"}:
+        raise ValueError("member_type must be buyer or community")
+    now = utc_now()
+    with get_connection(path) as db:
+        db.execute("""INSERT INTO community_members
+          (telegram_id,member_type,display_name,username,created_at,updated_at)
+          VALUES(?,?,?,?,?,?) ON CONFLICT(telegram_id) DO UPDATE SET
+          member_type=CASE WHEN community_members.member_type='creator' THEN 'creator' ELSE excluded.member_type END,
+          display_name=excluded.display_name,username=excluded.username,updated_at=excluded.updated_at""",
+          (telegram_id,member_type,display_name,username,now,now))
+
+
+def get_member(telegram_id, path=None):
+    with get_connection(path) as db:
+        try:
+            return db.execute("SELECT * FROM community_members WHERE telegram_id=?", (telegram_id,)).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            return None
+
+
+def record_bot_user(telegram_id,username,display_name,path=None):
+    """Remember a private /start without assigning any role."""
+    now=utc_now()
+    with get_connection(path) as db:
+        db.execute("""CREATE TABLE IF NOT EXISTS bot_users (
+          telegram_id INTEGER PRIMARY KEY, display_name TEXT NOT NULL, username TEXT,
+          first_started_at TEXT NOT NULL, last_started_at TEXT NOT NULL)""")
+        db.execute("""INSERT INTO bot_users(telegram_id,display_name,username,first_started_at,last_started_at)
+          VALUES(?,?,?,?,?) ON CONFLICT(telegram_id) DO UPDATE SET display_name=excluded.display_name,
+          username=excluded.username,last_started_at=excluded.last_started_at""",
+          (telegram_id,display_name,username,now,now))
+
+
+def pending_bot_users(owner_ids=(),admin_ids=(),lead_ids=(),path=None):
+    excluded=set(owner_ids)|set(admin_ids)|set(lead_ids)
+    with get_connection(path) as db:
+        rows=db.execute("""SELECT b.* FROM bot_users b LEFT JOIN community_members m ON m.telegram_id=b.telegram_id
+          WHERE m.telegram_id IS NULL ORDER BY b.last_started_at DESC""").fetchall()
+        return [row for row in rows if row["telegram_id"] not in excluded]
 
 
 def list_creators(path=None):
@@ -272,14 +439,15 @@ def set_availability(target_id, new_status, actor_id, reason=None, expires_at=No
         return True
 
 
-def create_absence_request(telegram_id, absence_type, start_date, end_date, note=None, path=None):
+def create_absence_request(telegram_id, absence_type, start_date, end_date, note=None, path=None, category=None):
     if absence_type not in {"vacation", "sick"} or date.fromisoformat(start_date) > date.fromisoformat(end_date):
         raise ValueError("Invalid absence request")
-    snapshot = {"type": absence_type, "start_date": start_date, "end_date": end_date, "note": note or ""}
+    category = category or ("vacation_trip" if absence_type == "vacation" else "not_feeling_well")
+    snapshot = {"type": absence_type, "category": category, "start_date": start_date, "end_date": end_date, "note": note or ""}
     with get_connection(path) as db:
         cur = db.execute("""INSERT INTO absence_requests
-          (telegram_id,absence_type,start_date,end_date,note,submitted_at,original_snapshot)
-          VALUES(?,?,?,?,?,?,?)""", (telegram_id,absence_type,start_date,end_date,(note or "")[:1000],utc_now(),json.dumps(snapshot,sort_keys=True)))
+          (telegram_id,absence_type,absence_category,start_date,end_date,note,submitted_at,original_snapshot)
+          VALUES(?,?,?,?,?,?,?,?)""", (telegram_id,absence_type,category,start_date,end_date,(note or "")[:1000],utc_now(),json.dumps(snapshot,sort_keys=True)))
         request_id = cur.lastrowid
         audit_event(db, telegram_id, "absence_requested", "absence_request", request_id,
                     telegram_id, new_value=snapshot, related_request_id=request_id)
@@ -409,15 +577,16 @@ def creator_pop_status(telegram_id, week_key, path=None):
         return row["status"] if row else "not submitted"
 
 
-def add_warning(telegram_id, warning_type, reason, actor_id, path=None):
+def add_warning(telegram_id, warning_type, reason, actor_id, path=None, template_key=None, notes=None):
     if warning_type not in {"warning", "strike"} or not reason.strip():
         return None
     with get_connection(path) as db:
         if not db.execute("SELECT 1 FROM creators WHERE telegram_id=? AND deleted_at IS NULL", (telegram_id,)).fetchone():
             return None
         cur = db.execute("""INSERT INTO creator_warnings
-          (telegram_id,warning_type,reason,issued_at,issued_by) VALUES(?,?,?,?,?)""",
-          (telegram_id,warning_type,reason[:1000],utc_now(),actor_id))
+          (telegram_id,warning_type,reason,issued_at,issued_by,template_key,notes)
+          VALUES(?,?,?,?,?,?,?)""",
+          (telegram_id,warning_type,reason[:1000],utc_now(),actor_id,template_key,(notes or "")[:1000] or None))
         audit_event(db,actor_id,f"{warning_type}_issued","creator_warning",cur.lastrowid,telegram_id,
                     new_value={"type":warning_type,"status":"active"},reason=reason)
         return cur.lastrowid
@@ -434,7 +603,7 @@ def warning_summary(telegram_id, path=None):
 
 def list_warnings(telegram_id, path=None):
     with get_connection(path) as db:
-        return db.execute("SELECT * FROM creator_warnings WHERE telegram_id=? ORDER BY issued_at DESC,id DESC", (telegram_id,)).fetchall()
+        return db.execute("SELECT * FROM creator_warnings WHERE telegram_id=? AND deleted_at IS NULL ORDER BY issued_at DESC,id DESC", (telegram_id,)).fetchall()
 
 
 def get_warning(warning_id, path=None):
@@ -476,25 +645,142 @@ def message_template(template_key, path=None):
         return db.execute("SELECT * FROM message_templates WHERE template_key=? AND active=1", (template_key,)).fetchone()
 
 
+def update_message_template(template_key, new_body, actor_id, reason="Owner update", path=None):
+    new_body = (new_body or "").strip()[:3500]
+    if not new_body:
+        return False
+    with get_connection(path) as db:
+        row = db.execute("SELECT * FROM message_templates WHERE template_key=?", (template_key,)).fetchone()
+        if not row or row["body"] == new_body:
+            return False
+        now = utc_now()
+        db.execute("INSERT INTO template_revisions(template_key,previous_body,new_body,changed_at,changed_by,reason) VALUES(?,?,?,?,?,?)",
+                   (template_key,row["body"],new_body,now,actor_id,reason[:1000]))
+        db.execute("UPDATE message_templates SET body=?,updated_at=?,updated_by=? WHERE template_key=?",
+                   (new_body,now,actor_id,template_key))
+        audit_event(db,actor_id,"message_template_changed","message_template",target_record_id=None,
+                    previous_value={"key":template_key,"body":row["body"]},
+                    new_value={"key":template_key,"body":new_body},reason=reason)
+        return True
+
+
 def dashboard_metrics(week_key, path=None):
     """Compact operational counts for mobile dashboards."""
     with get_connection(path) as db:
         scalar = lambda sql, params=(): db.execute(sql,params).fetchone()[0]
-        return {
+        metrics = {
             "active_creators": scalar("SELECT COUNT(*) FROM creators WHERE status='active' AND deleted_at IS NULL"),
             "pending_registrations": scalar("SELECT COUNT(*) FROM creators WHERE status='pending' AND deleted_at IS NULL"),
             "pending_vacations": scalar("SELECT COUNT(*) FROM absence_requests WHERE status='pending' AND absence_type='vacation' AND deleted_at IS NULL"),
             "pending_sick": scalar("SELECT COUNT(*) FROM absence_requests WHERE status='pending' AND absence_type='sick' AND deleted_at IS NULL"),
             "pending_pop": scalar("SELECT COUNT(*) FROM pop_submissions WHERE week_key=? AND status='pending' AND deleted_at IS NULL",(week_key,)),
-            "missing_pop": scalar("""SELECT COUNT(*) FROM creators c WHERE c.status='active' AND c.deleted_at IS NULL
-              AND NOT EXISTS(SELECT 1 FROM pop_submissions p WHERE p.telegram_id=c.telegram_id AND p.week_key=? AND p.deleted_at IS NULL)
-              AND NOT EXISTS(SELECT 1 FROM pop_excuses x WHERE x.telegram_id=c.telegram_id AND x.week_key=?)""",(week_key,week_key)),
+            "missing_pop": 0,
             "active_warnings": scalar("SELECT COUNT(*) FROM creator_warnings WHERE status IN ('active','acknowledged') AND warning_type='warning'"),
             "active_strikes": scalar("SELECT COUNT(*) FROM creator_warnings WHERE status IN ('active','acknowledged') AND warning_type='strike'"),
             "away_now": scalar("SELECT COUNT(*) FROM creators WHERE status='active' AND deleted_at IS NULL AND availability IN ('vacation','sick')"),
             "deleted_records": scalar("SELECT COUNT(*) FROM creators WHERE deleted_at IS NOT NULL"),
             "audit_events": scalar("SELECT COUNT(*) FROM audit_events"),
+            "audit_today": scalar("SELECT COUNT(*) FROM audit_events WHERE substr(occurred_at,1,10)=?", (datetime.now(ZoneInfo("America/New_York")).date().isoformat(),)),
+            "failed_notifications": scalar("SELECT COUNT(*) FROM audit_events WHERE result='error' AND action LIKE '%delivery_failed%'"),
+            "support_requests": scalar("SELECT COUNT(*) FROM support_requests WHERE status!='resolved'"),
         }
+        metrics["participation_flags"] = len(_participation_attention_rows(db, 48, 72))
+        metrics["needs_attention"] = (
+            metrics["pending_registrations"] + metrics["pending_vacations"] + metrics["pending_sick"]
+            + metrics["pending_pop"] + metrics["participation_flags"] + metrics["failed_notifications"]
+            + scalar("SELECT COUNT(*) FROM creator_warnings WHERE status='active'")
+        )
+        return metrics
+
+
+def pop_status_report(now=None, due_weekday=3, cutoff_time="23:59", timezone_name="America/New_York", path=None):
+    """Return every active creator's status from the shared POP deadline policy."""
+    now = now or datetime.now(ZoneInfo(timezone_name))
+    period = current_period(now,due_weekday,cutoff_time,timezone_name)
+    with get_connection(path) as db:
+        rows = db.execute("""SELECT c.telegram_id,c.display_name,c.registered_at,p.id,p.status AS submission_status,
+          p.submitted_at,CASE WHEN x.id IS NULL THEN 0 ELSE 1 END AS excused
+          FROM creators c
+          LEFT JOIN pop_submissions p ON p.telegram_id=c.telegram_id AND p.week_key=? AND p.deleted_at IS NULL
+          LEFT JOIN pop_excuses x ON x.telegram_id=c.telegram_id AND x.week_key=?
+          WHERE c.status='active' AND c.deleted_at IS NULL ORDER BY c.display_name COLLATE NOCASE""",
+          (period.week_key,period.week_key)).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["week_key"] = period.week_key
+            item["due_at"] = period.due_at
+            item["effective_status"] = calculate_status(now,submission_status=row["submission_status"],
+                excused=bool(row["excused"]),registered_at=row["registered_at"],due_weekday=due_weekday,
+                cutoff_time=cutoff_time,timezone_name=timezone_name)
+            result.append(item)
+        return result
+
+
+def pop_status_counts(now=None, due_weekday=3, cutoff_time="23:59", timezone_name="America/New_York", path=None):
+    rows = pop_status_report(now,due_weekday,cutoff_time,timezone_name,path)
+    keys = {"not_due","due_today","still_needed","missing","submitted","awaiting_review","excused","resubmission_requested","rejected"}
+    counts = {key:0 for key in keys}
+    for row in rows: counts[row["effective_status"]] = counts.get(row["effective_status"],0) + 1
+    counts["total"] = len(rows)
+    return counts
+
+
+def creator_current_pop_status(telegram_id, now=None, due_weekday=3, cutoff_time="23:59", timezone_name="America/New_York", path=None):
+    for row in pop_status_report(now,due_weekday,cutoff_time,timezone_name,path):
+        if row["telegram_id"] == telegram_id:
+            return row["effective_status"]
+    return "not_due"
+
+
+def _participation_attention_rows(connection, warning_hours, alert_hours):
+    now = datetime.now(timezone.utc)
+    rows = []
+    for row in connection.execute("""SELECT * FROM creators
+      WHERE status='active' AND deleted_at IS NULL AND availability NOT IN ('vacation','sick')""").fetchall():
+        anchor = row["last_meaningful_at"] or row["approved_at"] or row["registered_at"]
+        if not anchor:
+            continue
+        try:
+            hours = (now - datetime.fromisoformat(anchor).astimezone(timezone.utc)).total_seconds() / 3600
+        except (TypeError, ValueError):
+            continue
+        if hours >= max(0, warning_hours - 6):
+            item = dict(row)
+            item["hours"] = hours
+            rows.append(item)
+    return sorted(rows, key=lambda item: item["hours"], reverse=True)
+
+
+def participation_attention(warning_hours=48, alert_hours=72, path=None):
+    with get_connection(path) as connection:
+        return _participation_attention_rows(connection, warning_hours, alert_hours)
+
+
+def needs_attention_counts(week_key, path=None, now=None, due_weekday=3, cutoff_time="23:59", timezone_name="America/New_York"):
+    """Actionable owner/admin counts; informational metrics do not inflate the total."""
+    with get_connection(path) as connection:
+        scalar = lambda sql, params=(): connection.execute(sql, params).fetchone()[0]
+        attention = _participation_attention_rows(connection, 48, 72)
+        pop = pop_status_counts(now,due_weekday,cutoff_time,timezone_name,path)
+        counts = {
+            "registrations": scalar("SELECT COUNT(*) FROM creators WHERE status='pending' AND deleted_at IS NULL"),
+            "away_notices": scalar("SELECT COUNT(*) FROM absence_requests WHERE status='pending' AND deleted_at IS NULL"),
+            "pop_reviews": pop["awaiting_review"],
+            "missing_pop": pop["missing"],
+            "near_two_days": sum(42 <= row["hours"] < 72 for row in attention),
+            "three_day_alerts": sum(row["hours"] >= 72 for row in attention),
+            "unacknowledged_warnings": scalar("SELECT COUNT(*) FROM creator_warnings WHERE status='active'"),
+            "owner_reviews": scalar("""SELECT COUNT(*) FROM (
+              SELECT telegram_id FROM creator_warnings WHERE status!='removed' AND warning_type='strike'
+              GROUP BY telegram_id HAVING COUNT(*)>=3)"""),
+            "failed_notifications": scalar("SELECT COUNT(*) FROM audit_events WHERE result='error' AND action LIKE '%delivery_failed%'"),
+            "recent_archive_changes": scalar("""SELECT COUNT(*) FROM audit_events
+              WHERE action IN ('creator_soft_deleted','creator_restored')
+              AND occurred_at>=?""", ((datetime.now(ZoneInfo("America/New_York")) - timedelta(days=7)).isoformat(),)),
+        }
+        counts["total"] = sum(counts.values())
+        return counts
 
 
 def add_admin_note(telegram_id, note, actor_id, path=None):
@@ -555,10 +841,12 @@ def calendar_absences(start_date, end_date, path=None):
 
 def record_audit(actor_id, action, target_type=None, target_record_id=None,
                  target_telegram_id=None, previous_value=None, new_value=None,
-                 reason=None, result="success", path=None):
+                 reason=None, result="success", path=None, error_reference=None,
+                 related_request_id=None,related_submission_id=None):
     with get_connection(path) as connection:
         audit_event(connection,actor_id,action,target_type,target_record_id,target_telegram_id,
-                    previous_value,new_value,reason,result=result)
+                    previous_value,new_value,reason,related_request_id=related_request_id,
+                    related_submission_id=related_submission_id,result=result,error_reference=error_reference)
 
 
 def export_snapshot(path=None):
@@ -568,7 +856,12 @@ def export_snapshot(path=None):
             "creators": [dict(r) for r in db.execute("SELECT * FROM creators").fetchall()],
             "absences": [dict(r) for r in db.execute("SELECT * FROM absence_requests").fetchall()],
             "pop": [dict(r) for r in db.execute("SELECT * FROM pop_submissions").fetchall()],
+            "warnings": [dict(r) for r in db.execute("SELECT * FROM creator_warnings").fetchall()],
             "notifications": [dict(r) for r in db.execute("SELECT * FROM notifications").fetchall()],
+            "support_requests": [dict(r) for r in db.execute("SELECT * FROM support_requests").fetchall()],
+            "support_messages": [dict(r) for r in db.execute("SELECT * FROM support_messages").fetchall()],
+            "delivery_failures": [dict(r) for r in db.execute("SELECT * FROM delivery_failures").fetchall()],
+            "bot_users": [dict(r) for r in db.execute("SELECT * FROM bot_users").fetchall()],
             "audit": [dict(r) for r in db.execute("SELECT * FROM audit_events").fetchall()],
         }
 
@@ -576,8 +869,8 @@ def export_snapshot(path=None):
 def set_status(target_id, status, actor_id, path=None):
     now = utc_now()
     with get_connection(path) as db:
-        previous = db.execute("SELECT status FROM creators WHERE telegram_id=?", (target_id,)).fetchone()
-        cur = db.execute("UPDATE creators SET status=?, approved_at=CASE WHEN ?='active' THEN ? ELSE approved_at END, approved_by=CASE WHEN ?='active' THEN ? ELSE approved_by END WHERE telegram_id=?",
+        previous = db.execute("SELECT status FROM creators WHERE telegram_id=? AND deleted_at IS NULL", (target_id,)).fetchone()
+        cur = db.execute("UPDATE creators SET status=?, approved_at=CASE WHEN ?='active' THEN ? ELSE approved_at END, approved_by=CASE WHEN ?='active' THEN ? ELSE approved_by END WHERE telegram_id=? AND deleted_at IS NULL",
                          (status, status, now, status, actor_id, target_id))
         if not cur.rowcount:
             return False
@@ -678,6 +971,43 @@ def submit_pop(telegram_id, week_key, message_id, chat_id, thread_id, proof_type
             return False
 
 
+def claim_owner_summary(owner_id, cycle_key, path=None):
+    with get_connection(path) as db:
+        try:
+            db.execute("INSERT INTO owner_summary_deliveries(owner_id,cycle_key,claimed_at) VALUES(?,?,?)",
+                       (owner_id,cycle_key,utc_now()))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+def claim_daily_brief(cycle_date,path=None):
+    """Claim one normal Admin Brief per Eastern calendar day."""
+    with get_connection(path) as db:
+        try:
+            db.execute("INSERT INTO daily_brief_deliveries(cycle_date,claimed_at,status) VALUES(?,?,'pending')",(cycle_date,utc_now()))
+            return True
+        except sqlite3.IntegrityError:return False
+
+
+def finish_daily_brief(cycle_date,status,error_reference=None,path=None):
+    if status not in {"sent","failed"}:return False
+    with get_connection(path) as db:
+        cur=db.execute("UPDATE daily_brief_deliveries SET status=?,sent_at=CASE WHEN ?='sent' THEN ? ELSE sent_at END,error_reference=? WHERE cycle_date=?",
+            (status,status,utc_now(),error_reference,cycle_date))
+        return bool(cur.rowcount)
+
+
+def daily_brief_record(cycle_date,path=None):
+    with get_connection(path) as db:return db.execute("SELECT * FROM daily_brief_deliveries WHERE cycle_date=?",(cycle_date,)).fetchone()
+
+
+def resolve_delivery_failure(error_reference,path=None):
+    with get_connection(path) as db:
+        cur=db.execute("UPDATE delivery_failures SET resolved_at=? WHERE error_reference=? AND resolved_at IS NULL",(utc_now(),error_reference))
+        return bool(cur.rowcount)
+
+
 def get_pop_submission(submission_id, path=None):
     with get_connection(path) as db:
         return db.execute("SELECT * FROM pop_submissions WHERE id=?", (submission_id,)).fetchone()
@@ -711,6 +1041,115 @@ def history(limit=50, path=None):
         return db.execute("SELECT * FROM audit_events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
 
 
+def create_support_request(telegram_id, category, message, path=None):
+    """Create a durable request before attempting Telegram delivery."""
+    now=utc_now()
+    with get_connection(path) as db:
+        creator=db.execute("SELECT 1 FROM creators WHERE telegram_id=? AND deleted_at IS NULL",(telegram_id,)).fetchone()
+        if not creator:
+            return None
+        cur=db.execute("""INSERT INTO support_requests
+          (telegram_id,category,message,created_at,updated_at) VALUES(?,?,?,?,?)""",
+          (telegram_id,category,message,now,now))
+        request_id=cur.lastrowid
+        audit_event(db,telegram_id,"support_request_created","support_request",request_id,telegram_id,
+            new_value={"category":category,"length":len(message)})
+        return request_id
+
+
+def update_support_delivery(request_id, status, error_reference=None, path=None):
+    with get_connection(path) as db:
+        db.execute("UPDATE support_requests SET delivery_status=?,delivery_error_ref=?,updated_at=? WHERE id=?",
+            (status,error_reference,utc_now(),request_id))
+
+
+def support_requests_for(telegram_id, path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM support_requests WHERE telegram_id=? ORDER BY created_at DESC",(telegram_id,)).fetchall()
+
+
+def support_messages_for(request_id,telegram_id,path=None):
+    """Return replies only when the request belongs to the requesting creator."""
+    with get_connection(path) as db:
+        return db.execute("""SELECT m.* FROM support_messages m JOIN support_requests s ON s.id=m.request_id
+          WHERE m.request_id=? AND s.telegram_id=? ORDER BY m.created_at""",(request_id,telegram_id)).fetchall()
+
+
+def get_support_request(request_id,path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM support_requests WHERE id=?",(request_id,)).fetchone()
+
+
+def support_queue(path=None):
+    with get_connection(path) as db:
+        return db.execute("""SELECT s.*,c.display_name,c.username FROM support_requests s
+          JOIN creators c ON c.telegram_id=s.telegram_id
+          WHERE s.status!='resolved' ORDER BY s.created_at""").fetchall()
+
+
+def update_support_request(request_id, action, actor_id, note=None, path=None):
+    states={"assign":"assigned","escalate":"escalated","resolve":"resolved","open":"open"}
+    if action not in states: return False
+    now=utc_now();new_status=states[action]
+    with get_connection(path) as db:
+        row=db.execute("SELECT * FROM support_requests WHERE id=?",(request_id,)).fetchone()
+        if not row or row["status"]=="resolved": return False
+        db.execute("""UPDATE support_requests SET status=?,assigned_to=CASE WHEN ?='assign' THEN ? ELSE assigned_to END,
+          resolved_at=CASE WHEN ?='resolve' THEN ? ELSE resolved_at END,
+          resolved_by=CASE WHEN ?='resolve' THEN ? ELSE resolved_by END,
+          resolution_note=CASE WHEN ?='resolve' THEN ? ELSE resolution_note END,updated_at=? WHERE id=?""",
+          (new_status,action,actor_id,action,now,action,actor_id,action,note,now,request_id))
+        audit_event(db,actor_id,f"support_request_{action}","support_request",request_id,row["telegram_id"],
+            previous_value=row["status"],new_value=new_status,reason=note)
+        return True
+
+
+def add_support_message(request_id,sender_id,sender_role,body,path=None):
+    with get_connection(path) as db:
+        request=db.execute("SELECT * FROM support_requests WHERE id=?",(request_id,)).fetchone()
+        if not request:return None
+        cur=db.execute("INSERT INTO support_messages(request_id,sender_id,sender_role,body,created_at) VALUES(?,?,?,?,?)",
+            (request_id,sender_id,sender_role,body[:1500],utc_now()))
+        audit_event(db,sender_id,"support_reply_created","support_message",cur.lastrowid,request["telegram_id"],
+            related_request_id=request_id,new_value={"length":len(body)})
+        return cur.lastrowid,request["telegram_id"]
+
+
+def record_delivery_failure(error_reference,event_type,chat_id,thread_id,payload_summary,path=None):
+    with get_connection(path) as db:
+        db.execute("""INSERT OR IGNORE INTO delivery_failures
+          (error_reference,event_type,destination_chat_id,destination_thread_id,payload_summary,created_at)
+          VALUES(?,?,?,?,?,?)""",(error_reference,event_type,chat_id,thread_id,payload_summary,utc_now()))
+        audit_event(db,None,"notification_delivery_failed","delivery",new_value={"event":event_type,"destination":chat_id},
+            source_chat_id=chat_id,source_thread_id=thread_id,result="error",error_reference=error_reference)
+
+
+def open_delivery_failures(path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM delivery_failures WHERE resolved_at IS NULL ORDER BY created_at DESC").fetchall()
+
+
+def participation_monitor(path=None):
+    today=datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    with get_connection(path) as db:
+        scalar=lambda sql,args=(): db.execute(sql,args).fetchone()[0]
+        ignored=db.execute("""SELECT reason,COUNT(*) count FROM engagement_events
+          WHERE decision='rejected' AND substr(created_at,1,10)=? GROUP BY reason ORDER BY count DESC""",(today,)).fetchall()
+        return {"tracked":scalar("SELECT COUNT(*) FROM creators WHERE status='active' AND deleted_at IS NULL"),
+            "ignored_today":sum(r["count"] for r in ignored),"ignored_categories":ignored,
+            "last_detected":db.execute("SELECT updated_at AS created_at FROM system_state WHERE state_key='last_participation_message_detected'").fetchone()
+                or db.execute("SELECT created_at FROM engagement_events ORDER BY id DESC LIMIT 1").fetchone(),
+            "last_counted":db.execute("SELECT created_at FROM engagement_events WHERE decision='accepted' ORDER BY id DESC LIMIT 1").fetchone(),
+            "failures":scalar("SELECT COUNT(*) FROM delivery_failures WHERE resolved_at IS NULL")}
+
+
+def participation_events(limit=30,path=None):
+    with get_connection(path) as db:
+        return db.execute("""SELECT e.created_at,e.decision,e.reason,e.telegram_id,c.display_name
+          FROM engagement_events e LEFT JOIN creators c ON c.telegram_id=e.telegram_id
+          ORDER BY e.id DESC LIMIT ?""",(limit,)).fetchall()
+
+
 def reset_history(actor_id, path=None):
     raise PermissionError("The audit trail is append-only and cannot be reset.")
 
@@ -718,6 +1157,24 @@ def reset_history(actor_id, path=None):
 def audit_setting_change(actor_id, key, old_value, new_value, path=None):
     with get_connection(path) as db:
         audit_event(db, actor_id, "setting_changed", "setting", previous_value={key: old_value}, new_value={key: new_value})
+
+
+def set_system_state(key, value, path=None):
+    with get_connection(path) as db:
+        db.execute("""INSERT INTO system_state(state_key,state_value,updated_at) VALUES(?,?,?)
+          ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at=excluded.updated_at""",
+          (key,str(value),utc_now()))
+
+
+def system_state(path=None):
+    with get_connection(path) as db:
+        return {row["state_key"]:{"value":row["state_value"],"updated_at":row["updated_at"]}
+            for row in db.execute("SELECT * FROM system_state").fetchall()}
+
+
+def schema_version(path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT version FROM schema_version").fetchone()[0]
 
 
 def audit_event(db, actor_id, action, target_type=None, target_record_id=None,

@@ -60,25 +60,25 @@ class AuditVisibilityTests(unittest.IsolatedAsyncioTestCase):
             "Sorry, the private audit log is for owners only."
         )
 
-    async def test_admin_can_approve_creators(self):
-        update = self.update(30)
+    async def test_lead_admin_can_approve_creators(self):
+        update = self.update(20)
         with patch("tracker.db.set_status", return_value=True) as set_status:
             await approve(update, self.context(["99"]))
-        set_status.assert_called_once_with(99, "active", 30)
+        set_status.assert_called_once_with(99, "active", 20)
         update.message.reply_text.assert_awaited_once_with("Creator 99 is approved and ready to participate.")
 
-    async def test_admin_can_manage_other_creator_vacations(self):
-        update = self.update(30)
+    async def test_lead_admin_can_manage_other_creator_vacations(self):
+        update = self.update(20)
         with patch("tracker.db.set_vacation", return_value=True) as set_vacation:
             await vacation(update, self.context(["99", "2026-07-31"]))
-        set_vacation.assert_called_once_with(99, "2026-07-31", 30)
+        set_vacation.assert_called_once_with(99, "2026-07-31", 20)
 
-    async def test_admin_can_approve_pop_submissions(self):
-        update = self.update(30)
+    async def test_lead_admin_can_approve_pop_submissions(self):
+        update = self.update(20)
         with patch("tracker.db.get_pop_submission", return_value=None), \
              patch("tracker.db.review_pop", return_value=True) as review_pop:
             await pop_approve(update, self.context(["7", "verified"]))
-        review_pop.assert_called_once_with(7, "approved", 30, "verified")
+        review_pop.assert_called_once_with(7, "approved", 20, "verified")
 
     async def test_admin_can_run_creator_reports(self):
         update = self.update(30)
@@ -87,14 +87,15 @@ class AuditVisibilityTests(unittest.IsolatedAsyncioTestCase):
         list_creators.assert_called_once_with()
         self.assertIn("No creators are registered yet.", update.message.reply_text.await_args.args[0])
 
-    async def test_admin_can_make_day_to_day_configuration_changes(self):
+    async def test_admin_cannot_change_owner_configuration(self):
         update = self.update(30)
         ctx = self.context(["warning_hours", "36"])
         ctx.bot_data["config"].warning_hours = 48
         with patch("tracker.db.audit_setting_change") as audit_change:
             await setting_set(update, ctx)
-        self.assertEqual(ctx.bot_data["config"].warning_hours, 36)
-        audit_change.assert_called_once_with(30, "warning_hours", 48, 36)
+        self.assertEqual(ctx.bot_data["config"].warning_hours, 48)
+        audit_change.assert_not_called()
+        self.assertIn("permission",update.message.reply_text.await_args.args[0].casefold())
 
 
 if __name__ == "__main__":

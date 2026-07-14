@@ -9,6 +9,9 @@ from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
 import database as db
 from engagement import classify
 from permissions import can_manage_sensitive, can_mutate, can_read, can_view_audit, has_permission, role_for
+from pop_policy import label as pop_label
+from routing import send_routed
+from briefing import daily_admin_brief_job
 
 
 def config(ctx):
@@ -135,9 +138,9 @@ def week_key(now):
 
 async def pop_report_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await require_permission(update, ctx, "view_creator_reports"): return
-    key = ctx.args[0] if ctx.args else week_key(datetime.now(config(ctx).timezone))
-    rows = db.pop_report(key)
-    lines = [f"POP report {key}"] + [f"{r['display_name']} ({r['telegram_id']}): {r['status'] or 'missing'}" + (f" [submission {r['id']}]" if r['id'] else "") for r in rows]
+    cfg=config(ctx);now=datetime.now(cfg.timezone)
+    rows=db.pop_status_report(now,getattr(cfg,"pop_due_weekday",3),getattr(cfg,"pop_cutoff_time","23:59"),getattr(cfg,"timezone_name","America/New_York"))
+    lines = ["Thursday POP Report"] + [f"{r['display_name']}: {pop_label(r['effective_status'])}" for r in rows]
     await update.message.reply_text("\n".join(lines)[:4000])
 
 
@@ -208,12 +211,51 @@ async def setting_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"{key} changed from {old_value} to {value}. Replit Secrets remain the restart source of truth.")
 
 
+def participation_enabled(config, chat_id, thread_id):
+    """Return whether a message is in a configured participation location."""
+    configured_chat = getattr(config, "participation_chat_id", None) or getattr(config, "girls_chat_id", None)
+    if configured_chat is None or chat_id != configured_chat:
+        return False
+    topics = frozenset(getattr(config, "participation_topic_ids", frozenset()) or ())
+    legacy_topic = getattr(config, "girls_thread_id", None)
+    if getattr(config,"participation_chat_id",None) is None and legacy_topic is not None:
+        topics = topics | {legacy_topic}
+    # An empty topic list intentionally means General only, never every forum topic.
+    return thread_id in topics if topics else thread_id is None
+
+
 async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg, user, cfg = update.effective_message, update.effective_user, config(ctx)
-    if not msg or not user or not cfg.girls_chat_id or update.effective_chat.id != cfg.girls_chat_id:
+    if not msg or not user:
         return
+    # Owner-guided test messages are evaluated without touching real engagement totals.
+    state=db.system_state();code=state.get("readiness:test_code",{}).get("value","");mode=state.get("readiness:test_mode",{}).get("value","")
+    prefix=f"VAD-SAFE-{code}:{mode}:" if code and mode else ""
+    if prefix and (msg.text or "").startswith(prefix):
+        creator=db.get_creator(user.id);in_location=participation_enabled(cfg,msg.chat_id,msg.message_thread_id)
+        body=(msg.text or "")[len(prefix):].strip()
+        decision=classify("hi" if mode=="ignored" else body,media=False,
+            is_repeat=lambda digest,since:False,min_words=getattr(cfg,"meaningful_min_words",3),
+            min_characters=getattr(cfg,"meaningful_min_characters",12),repeat_window_days=getattr(cfg,"repeat_window_days",7))
+        passed=bool(creator and creator["status"]=="active" and (
+            (mode=="meaningful" and in_location and decision.accepted) or
+            (mode=="ignored" and in_location and not decision.accepted) or
+            (mode=="wrong_topic" and msg.chat_id==getattr(cfg,"participation_chat_id",None) and not in_location) or
+            (mode=="wrong_group" and msg.chat_id!=getattr(cfg,"participation_chat_id",None) and not in_location)))
+        if passed:
+            db.set_system_state(f"readiness:{mode}_test",datetime.now(cfg.timezone).isoformat())
+            db.record_audit(user.id,"safe_readiness_test_passed","readiness_test",new_value={"mode":mode,"chat":msg.chat_id,"thread":msg.message_thread_id})
+            await msg.reply_text("🟢 Safe test passed. Real participation totals were not changed.")
+        else:
+            await msg.reply_text("⚪ Safe test detected, but the location or test creator was not eligible. No operational data changed.")
+        return
+    in_participation_chat = msg.chat_id == (getattr(cfg,"participation_chat_id",None) or getattr(cfg,"girls_chat_id",None))
+    if in_participation_chat:
+        db.set_system_state("last_participation_message_detected",datetime.now(cfg.timezone).isoformat())
     creator = db.get_creator(user.id)
     if not creator or creator["status"] != "active":
+        if in_participation_chat and participation_enabled(cfg,msg.chat_id,msg.message_thread_id):
+            db.record_audit(None,"engagement_ignored","participation_event",target_telegram_id=user.id,new_value={"reason":"unregistered_user"})
         return
     local_now = datetime.now(cfg.timezone)
     if db.approved_absence_on(user.id, local_now.date()):
@@ -223,15 +265,23 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     thread_id = msg.message_thread_id
     media = bool(msg.photo or msg.sticker or msg.animation or msg.video or msg.voice or msg.document)
     pop_caption = (msg.caption or "").casefold() if media else ""
-    if media and "pop" in pop_caption and cfg.pop_thread_id and thread_id == cfg.pop_thread_id and local_now.weekday() == 3:
+    pop_chat_id = getattr(cfg,"pop_chat_id",None) or getattr(cfg,"girls_chat_id",None)
+    if (media and "pop" in pop_caption and pop_chat_id == msg.chat_id and cfg.pop_thread_id
+            and thread_id == cfg.pop_thread_id and local_now.weekday() == 3):
         proof_type = "photo" if msg.photo else "document" if msg.document else "media"
         if db.submit_pop(user.id, week_key(local_now), msg.message_id, msg.chat_id, thread_id, proof_type):
             await msg.reply_text("Thursday POP received! 📸 It’s now waiting for review.")
+            # A normal receipt is visible in the review queue and Daily Brief; it is not urgent.
         return
-    if cfg.girls_thread_id is not None and thread_id != cfg.girls_thread_id:
+    if not participation_enabled(cfg,msg.chat_id,thread_id):
+        if in_participation_chat:
+            db.record_audit(None,"engagement_ignored","participation_event",target_telegram_id=user.id,new_value={"reason":"wrong_topic"})
         return
     decision = classify(msg.text, media=media,
-        is_repeat=lambda digest, since: db.recent_hash_exists(user.id, digest, since))
+        is_repeat=lambda digest, since: db.recent_hash_exists(user.id, digest, since),
+        min_words=getattr(cfg,"meaningful_min_words",3),
+        min_characters=getattr(cfg,"meaningful_min_characters",12),
+        repeat_window_days=getattr(cfg,"repeat_window_days",7))
     db.record_engagement(user.id, msg.message_id, msg.chat_id, thread_id, decision.digest or None,
                          "accepted" if decision.accepted else "rejected", decision.reason)
 
@@ -241,6 +291,7 @@ async def inactivity_job(ctx: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(timezone.utc)
     local_date = now.astimezone(cfg.timezone).date()
     db.sync_absence_availability(local_date)
+    db.set_system_state("last_scheduled_check",datetime.now(cfg.timezone).isoformat())
     for creator in db.due_creators():
         absence = db.approved_absence_on(creator["telegram_id"], local_date)
         if absence or (creator["vacation_until"] and date.fromisoformat(creator["vacation_until"]) >= local_date):
@@ -256,20 +307,64 @@ async def inactivity_job(ctx: ContextTypes.DEFAULT_TYPE):
                 started = grace_start
         hours = (now - started.astimezone(timezone.utc)).total_seconds() / 3600
         if hours >= cfg.alert_hours and db.claim_notification(creator["telegram_id"], anchor, "alert"):
-            if cfg.admin_chat_id:
-                try:
-                    await ctx.bot.send_message(cfg.admin_chat_id,
-                        f"3-day inactivity alert: {escape(creator['display_name'])} ({creator['telegram_id']})",
-                        message_thread_id=cfg.reports_thread_id)
-                    db.record_audit(None,"alert_delivered","notification",target_telegram_id=creator["telegram_id"])
-                except Exception:
-                    db.record_audit(None,"alert_delivery_failed","notification",target_telegram_id=creator["telegram_id"],result="error")
+            full_creator=db.get_creator(creator["telegram_id"])
+            username=f"@{full_creator['username']}" if full_creator and full_creator["username"] else "No username"
+            await send_routed(ctx.bot,cfg,"participation_alert",
+                f"🔴 Admin follow-up required\n{escape(creator['display_name'])} · {username}\nTelegram ID: {creator['telegram_id']}\n"
+                f"Last meaningful participation: {anchor}\nElapsed: {hours:.1f} hours\nAway Notice: None active\nOpen Admin Home → Participation Alerts.",
+                target_telegram_id=creator["telegram_id"])
+            db.set_system_state("last_admin_notification",datetime.now(cfg.timezone).isoformat())
         elif hours >= cfg.warning_hours and db.claim_notification(creator["telegram_id"], anchor, "warning"):
             try:
-                await ctx.bot.send_message(creator["telegram_id"], "Friendly reminder: no meaningful girls-group engagement has been recorded for two days.")
+                await ctx.bot.send_message(creator["telegram_id"],
+                    "🟠 Participation reminder\n\nIt has been two days since your last meaningful participation. "
+                    "Meaningful participation means adding value to a genuine conversation—not simply checking in. "
+                    "Another full day without participation will notify the Admin team. Taking time away? You can record an Away Notice.")
                 db.record_audit(None,"warning_delivered","notification",target_telegram_id=creator["telegram_id"])
             except Exception:
                 db.record_audit(None,"warning_delivery_failed","notification",target_telegram_id=creator["telegram_id"],result="error")
+            await send_routed(ctx.bot,cfg,"participation_flag",
+                f"🟠 Two-day participation flag\n{escape(creator['display_name'])}\nTelegram ID: {creator['telegram_id']}\n"
+                f"Last meaningful participation: {anchor}\nElapsed: {hours:.1f} hours\nAway Notice: None active.",
+                target_telegram_id=creator["telegram_id"])
+    # Missing POP becomes time-sensitive only after the centralized ET deadline.
+    pop_rows = (db.pop_status_report(datetime.now(cfg.timezone),cfg.pop_due_weekday,cfg.pop_cutoff_time,cfg.timezone_name)
+                if hasattr(cfg,"pop_due_weekday") else ())
+    for row in pop_rows:
+        if row["effective_status"] == "missing" and db.claim_notification(row["telegram_id"],row["week_key"],"pop_exception"):
+            await send_routed(ctx.bot,cfg,"pop_review",
+                f"🔴 Thursday POP needs attention\n{escape(row['display_name'])}\nThe deadline passed without POP or an applicable excusal.",
+                target_telegram_id=row["telegram_id"])
+
+
+async def daily_owner_summary_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """Optional and disabled by default; delivery is deduplicated per owner and Eastern date."""
+    cfg = config(ctx)
+    if not cfg.daily_owner_summary_enabled:
+        return
+    now = datetime.now(cfg.timezone)
+    key = week_key(now)
+    metrics = db.dashboard_metrics(key)
+    attention = db.needs_attention_counts(key)
+    body = (
+        "📊 VAD Daily Summary\n\n"
+        f"🚨 Needs attention: {attention['total']}\n"
+        f"👥 Active creators: {metrics['active_creators']}\n"
+        f"💙 Away now: {metrics['away_now']}\n"
+        f"📸 POP awaiting review: {metrics['pending_pop']}\n"
+        f"🟠 Participation alerts: {metrics['participation_flags']}\n"
+        f"⚠️ Warnings / strikes: {metrics['active_warnings']} / {metrics['active_strikes']}\n"
+        + ("🟢 System healthy" if metrics["failed_notifications"] == 0 else "🟠 Delivery failures need review")
+    )
+    for owner_id in cfg.owner_user_ids:
+        cycle = f"owner-summary:{now.date().isoformat()}"
+        if not db.claim_owner_summary(owner_id, cycle):
+            continue
+        try:
+            await ctx.bot.send_message(owner_id, body)
+            db.record_audit(None,"owner_summary_delivered","notification",target_telegram_id=owner_id)
+        except Exception:
+            db.record_audit(None,"owner_summary_delivery_failed","notification",target_telegram_id=owner_id,result="error")
 
 
 def register_handlers(app):
@@ -296,3 +391,12 @@ def register_handlers(app):
     )
     app.add_handler(MessageHandler(pop_media, observe), group=10)
     app.job_queue.run_repeating(inactivity_job, interval=1800, first=60, name="inactivity-monitor")
+    # A repeating check allows Owner settings to take effect without rescheduling jobs.
+    app.job_queue.run_repeating(daily_admin_brief_job, interval=900, first=90, name="daily-admin-brief")
+    cfg = app.bot_data.get("config")
+    if cfg and getattr(cfg, "daily_owner_summary_enabled", False):
+        try:
+            hour, minute = map(int, getattr(cfg,"daily_owner_summary_time","09:00").split(":", 1))
+            app.job_queue.run_daily(daily_owner_summary_job, time=time(hour,minute,tzinfo=cfg.timezone), name="daily-owner-summary")
+        except (ValueError, TypeError):
+            pass

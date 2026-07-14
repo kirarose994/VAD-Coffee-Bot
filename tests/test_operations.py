@@ -100,12 +100,12 @@ class MenuAndPermissionTests(unittest.TestCase):
 
     def test_both_configured_owners_have_equal_owner_menu(self):
         self.assertEqual(self.labels(1), self.labels(2))
-        self.assertIn("🔐 Owner Dashboard", self.labels(1))
+        self.assertIn("👑 Owner Home", self.labels(1))
 
     def test_creator_cannot_see_admin_or_owner_menu(self):
         labels = self.labels(99)
         self.assertNotIn("👑 Admin Dashboard", labels)
-        self.assertNotIn("🔐 Owner Dashboard", labels)
+        self.assertNotIn("👑 Owner Home", labels)
 
     def test_individual_admin_permissions_are_enforced(self):
         cfg = self.config()
@@ -160,7 +160,7 @@ class CallbackSecurityTests(unittest.IsolatedAsyncioTestCase):
         query = SimpleNamespace(data="op:menu:admin",answer=AsyncMock(),edit_message_text=AsyncMock())
         update = SimpleNamespace(callback_query=query,effective_user=SimpleNamespace(id=4))
         ctx = SimpleNamespace(user_data={"menu_nonce":"menu"},bot_data={"config":cfg})
-        with patch("navigation.db.dashboard_metrics",return_value=self.metrics()):
+        with patch("navigation.db.dashboard_metrics",return_value=self.metrics()),patch("navigation.db.pop_status_counts",return_value={"awaiting_review":0,"missing":0}):
             await callback(update,ctx)
         markup = query.edit_message_text.await_args.kwargs["reply_markup"]
         labels = [button.text for row in markup.inline_keyboard for button in row]
@@ -181,10 +181,13 @@ class CallbackSecurityTests(unittest.IsolatedAsyncioTestCase):
         query = SimpleNamespace(data="op:menu:owner",answer=AsyncMock(),edit_message_text=AsyncMock())
         update = SimpleNamespace(callback_query=query,effective_user=SimpleNamespace(id=1))
         ctx = SimpleNamespace(user_data={"menu_nonce":"menu"},bot_data={"config":cfg})
-        with patch("navigation.db.dashboard_metrics",return_value=self.metrics()):
+        with patch("navigation.db.dashboard_metrics",return_value=self.metrics()),patch("navigation.db.pop_status_counts",return_value={"awaiting_review":0,"missing":0}):
             await callback(update,ctx)
         markup = query.edit_message_text.await_args.kwargs["reply_markup"]
-        self.assertLessEqual(len(markup.inline_keyboard),5)
+        labels = [button.text for row in markup.inline_keyboard for button in row]
+        self.assertEqual(labels[0],"🚨 Needs Attention")
+        self.assertNotIn("❌ Cancel",labels)
+        self.assertTrue(all(len(row) <= 2 for row in markup.inline_keyboard))
 
 
 if __name__ == "__main__": unittest.main()
