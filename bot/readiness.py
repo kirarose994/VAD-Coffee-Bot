@@ -30,6 +30,7 @@ def readiness_items(config,path=None,now=None):
     """Calculate honest, actionable status without claiming external verification."""
     state=db.system_state(path); failures=db.open_delivery_failures(path); now=now or datetime.now(config.timezone)
     topics=frozenset(getattr(config,"participation_topic_ids",frozenset()) or ())
+    general_verified="config:participation_topic_ids" in state and not topics
     owners=frozenset(getattr(config,"owner_user_ids",frozenset()) or ())
     backup=state.get("last_database_backup")
     backup_recent=False
@@ -56,7 +57,8 @@ def readiness_items(config,path=None,now=None):
         _item("alex","Alex’s Owner ID configured","ready" if len(owners)>=2 else "setup","The bot can verify that two numeric Owner IDs exist; Kira must confirm the second belongs to Alex.","copy_alex_instructions"),
         _item("token","Bot token available","ready" if bool(getattr(config,"token",None)) else "problem","The token is checked without displaying its value.","readiness_token_help"),
         _item("main","Main participation group configured","ready" if main==EXPECTED_MAIN_CHAT_ID else "problem" if main else "setup",f"Expected Main VAD group: {EXPECTED_MAIN_CHAT_ID}.","location_main"),
-        _item("participation_topic","Participation topic configured","ready" if topics else "setup","The General participation topic must be verified; it is never guessed.","location_participation"),
+        _item("participation_topic","Participation topic configured","ready" if topics or general_verified else "setup",
+            "General is explicitly verified." if general_verified else "The General participation topic must be verified; it is never guessed.","location_participation"),
         _item("privacy","Telegram group-message access","ready" if message_access_ready else "problem" if privacy=="false" else "unverified",
             "Ready when Telegram privacy mode is disabled or an ordinary participation message has been observed.","location_participation"),
         _item("ordinary_messages","Bot can read ordinary messages in participation area","ready" if detected or counted else "unverified","Send a meaningful test message in the verified participation topic.","test_meaningful"),
@@ -67,7 +69,7 @@ def readiness_items(config,path=None,now=None):
     for key,label,attr,action in route_specs:
         items.append(_item(key,label,"ready" if _configured(getattr(config,attr,None)) else "setup",f"Verify the dedicated {label.lower()}.",action))
     active_creators=len([r for r in db.list_creators(path) if r["status"]=="active"])
-    participation_verified=bool(topics and active_creators and counted and message_access_ready)
+    participation_verified=bool((topics or general_verified) and active_creators and counted and message_access_ready)
     items.extend([
         _item("registration_queue","Registration queue working","ready" if verified("readiness:registration_route_test") else "unverified","Run the safe registration routing test after configuring its topic.","test_route_registration"),
         _item("identity","Creator identity isolation working","ready","Self-service lookups use immutable Telegram IDs and have automated coverage.","test_privacy"),

@@ -25,6 +25,10 @@ this list is empty, only non-topic General messages match; forum General must be
 added if Telegram supplies a thread ID. Environment values bootstrap the database; audited
 Owner Setup overrides then take precedence after startup.
 
+For the current Main VAD layout, General arrives with no thread ID. Owners should verify it and
+choose **Use General for Participation**, which persists an explicit empty allow-list. Do not put
+the Admin reports topic ID in `PARTICIPATION_TOPIC_IDS` or `PARTICIPATION_THREAD_IDS`.
+
 Routing topic bootstrap keys are `REGISTRATION_THREAD_ID`, `AWAY_THREAD_ID`,
 `POP_REVIEW_THREAD_ID`, `REPORTS_THREAD_ID`, `MODERATION_THREAD_ID`, `SUPPORT_THREAD_ID`,
 `OWNER_REVIEW_THREAD_ID`, and `HEALTH_THREAD_ID`. Owners can later verify and persist these

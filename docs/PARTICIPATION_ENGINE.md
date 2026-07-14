@@ -26,8 +26,14 @@ full days, if no meaningful participation or approved Away Notice exists, the bo
 the Admin team for supportive follow-up.
 
 Participation is evaluated only when chat and topic match the owner-managed allow-list. The
-initial Participation Group is the Main VAD supergroup (`-1003543892255`); its General topic
-ID must be detected, never guessed.
+initial Participation Group is the Main VAD supergroup (`-1003543892255`). Telegram currently
+delivers its intended General discussion area with no `message_thread_id`, so the verified
+General-only configuration is represented by an empty participation-topic allow-list. Numbered
+Admin routing topics, including the reports topic, must never be reused for participation.
+
+Owners can explicitly select **Use General for Participation** from Telegram Locations or the
+Participation Monitor. This audited action replaces any incorrect numbered participation topics
+with General-only; it does not broaden tracking to every forum topic.
 
 The sender must have an approved, unarchived creator record and no active approved absence.
 Buyer identities and administrators without approved creator profiles never count. POP-topic

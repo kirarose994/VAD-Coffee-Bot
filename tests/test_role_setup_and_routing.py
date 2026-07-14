@@ -89,6 +89,19 @@ class SetupMenuTests(unittest.IsolatedAsyncioTestCase):
         result = await self.screen("setup",user_id=2)
         self.assertIn("only to owners",result.args[0])
 
+    async def test_owner_can_explicitly_replace_numbered_topics_with_general(self):
+        cfg=self.cfg();chat=SimpleNamespace(id=-100,title="VAD Main Group",is_forum=True)
+        message=SimpleNamespace(chat=chat,message_thread_id=None)
+        ctx=SimpleNamespace(user_data={"menu_nonce":"menu"},bot_data={"config":cfg})
+        query=SimpleNamespace(data="op:menu:setup_prepare_participation_general",message=message,answer=AsyncMock(),edit_message_text=AsyncMock())
+        update=SimpleNamespace(callback_query=query,effective_user=SimpleNamespace(id=1),effective_chat=chat)
+        await callback(update,ctx)
+        self.assertEqual(ctx.user_data["setup_pending"],{"key":"participation_general","value":"general"})
+        query.data=f"op:{ctx.user_data['menu_nonce']}:setup_confirm_change"
+        with patch("navigation.persist_setting") as persist:
+            await callback(update,ctx)
+        persist.assert_called_once_with(cfg,"participation_topic_ids",frozenset(),1)
+
 
 class ParticipationRoutingTests(unittest.TestCase):
     def test_multiple_topics_are_allow_listed(self):
