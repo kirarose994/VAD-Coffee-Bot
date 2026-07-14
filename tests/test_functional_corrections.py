@@ -10,10 +10,10 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0,str(Path(__file__).parents[1]/"bot"))
 
 import database as db
-from handlers.error import error_handler
+from handlers.error import error_handler, safe_error_details
 from navigation import callback
 from pop_policy import calculate_status, current_period
-from presentation import actor_name, audit_entry, friendly_timestamp
+from presentation import actor_name, audit_entry, friendly_timestamp, system_error_detail
 from telegram.error import BadRequest
 
 ET=ZoneInfo("America/New_York")
@@ -73,6 +73,20 @@ class PresentationTests(unittest.TestCase):
         text=audit_entry(row)
         self.assertIn("System",text);self.assertNotIn("actor=None",text)
 
+    def test_system_error_detail_displays_stored_exception(self):
+        row={"action":"system_error","occurred_at":datetime.now(ET).isoformat(),"error_reference":"ERR-0047",
+            "new_value":'{"exception_type":"ValueError","message":"bad setup value","traceback":"Traceback line"}'}
+        text=system_error_detail(row)
+        self.assertIn("ValueError",text);self.assertIn("bad setup value",text);self.assertIn("Traceback line",text)
+
+    def test_error_capture_redacts_telegram_token_shape(self):
+        fake_token="123456789:"+"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
+        try:raise RuntimeError("token "+fake_token)
+        except RuntimeError as error:details=safe_error_details(error)
+        self.assertEqual(details["exception_type"],"RuntimeError")
+        self.assertIn("[REDACTED TELEGRAM TOKEN]",details["message"])
+        self.assertNotIn(fake_token,details["traceback"])
+
 
 class GuidedScreenTests(unittest.IsolatedAsyncioTestCase):
     def cfg(self): return SimpleNamespace(owner_user_ids=frozenset(),lead_admin_user_ids=frozenset(),
@@ -93,6 +107,19 @@ class GuidedScreenTests(unittest.IsolatedAsyncioTestCase):
         with patch("handlers.error.db.record_audit") as audit:
             await error_handler(None,ctx)
         audit.assert_not_called()
+
+    async def test_system_errors_filter_offers_owner_detail_button(self):
+        cfg=SimpleNamespace(owner_user_ids=frozenset({1}),lead_admin_user_ids=frozenset(),admin_user_ids=frozenset(),
+            admin_permissions={},timezone=ET,timezone_name="America/New_York")
+        row={"id":47,"actor_id":None,"actor_name":None,"actor_role":"system","action":"system_error",
+            "previous_value":None,"new_value":'{"exception_type":"ValueError","message":"bad","traceback":"trace"}',
+            "occurred_at":datetime.now(ET).isoformat(),"error_reference":"ERR-0047","result":"error"}
+        query=SimpleNamespace(data="op:menu:audit_filter_errors",answer=AsyncMock(),edit_message_text=AsyncMock())
+        update=SimpleNamespace(callback_query=query,effective_user=SimpleNamespace(id=1))
+        ctx=SimpleNamespace(user_data={"menu_nonce":"menu"},bot_data={"config":cfg})
+        with patch("navigation.db.history",return_value=[row]),patch("navigation.db.get_creator",return_value=None):await callback(update,ctx)
+        labels=[b.text for buttons in query.edit_message_text.await_args.kwargs["reply_markup"].inline_keyboard for b in buttons]
+        self.assertIn("View ERR-0047",labels)
 
     async def screen(self,action,user_id=1,cfg=None):
         cfg=cfg or SimpleNamespace(owner_user_ids=frozenset({1}),lead_admin_user_ids=frozenset(),
