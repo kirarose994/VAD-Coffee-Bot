@@ -1,5 +1,12 @@
 # Troubleshooting
 
+## Temporary Telegram connection incidents
+
+Short-lived Telegram read failures are retried with bounded exponential backoff. If retries are
+exhausted, the original delivery failure remains stored and one grouped system incident is opened.
+Owners can review first seen, last seen, occurrence count, status, and sanitized traceback under
+Audit Log → System Errors. A successful Telegram recovery check marks the incident Resolved.
+
 ## Bot receives no messages
 
 Confirm exactly one polling process. Telegram `Conflict: terminated by other getUpdates`

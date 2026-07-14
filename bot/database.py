@@ -202,10 +202,21 @@ def initialize_database(path: Path | None = None):
           status TEXT NOT NULL CHECK(status IN ('pending','sent','failed')),
           sent_at TEXT, error_reference TEXT
         );
+        CREATE TABLE IF NOT EXISTS system_incidents (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, fingerprint TEXT NOT NULL,
+          error_reference TEXT NOT NULL UNIQUE, category TEXT NOT NULL,
+          source TEXT NOT NULL, exception_type TEXT NOT NULL, message TEXT,
+          traceback TEXT, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+          occurrence_count INTEGER NOT NULL DEFAULT 1,
+          status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved')),
+          resolved_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS system_incidents_one_open
+          ON system_incidents(fingerprint) WHERE status='open';
         """)
         _migrate_legacy_schema(db)
         _seed_message_templates(db)
-        db.execute("UPDATE schema_version SET version=7")
+        db.execute("UPDATE schema_version SET version=8")
 
 
 DEFAULT_MESSAGE_TEMPLATES = {
@@ -1044,6 +1055,39 @@ def history(limit=50, path=None):
 def get_audit_event(audit_id,path=None):
     with get_connection(path) as db:
         return db.execute("SELECT * FROM audit_events WHERE id=?",(audit_id,)).fetchone()
+
+
+def record_system_incident(fingerprint,reference,category,source,details,path=None):
+    """Create one open incident or atomically count a repeated occurrence."""
+    now=utc_now()
+    with get_connection(path) as db:
+        row=db.execute("SELECT * FROM system_incidents WHERE fingerprint=? AND status='open'",(fingerprint,)).fetchone()
+        if row:
+            db.execute("""UPDATE system_incidents SET last_seen=?,occurrence_count=occurrence_count+1,
+              exception_type=?,message=?,traceback=? WHERE id=?""",
+              (now,details["exception_type"],details.get("message"),details.get("traceback"),row["id"]))
+            return db.execute("SELECT * FROM system_incidents WHERE id=?",(row["id"],)).fetchone(),False
+        cur=db.execute("""INSERT INTO system_incidents
+          (fingerprint,error_reference,category,source,exception_type,message,traceback,first_seen,last_seen)
+          VALUES(?,?,?,?,?,?,?,?,?)""",(fingerprint,reference,category,source,details["exception_type"],
+          details.get("message"),details.get("traceback"),now,now))
+        return db.execute("SELECT * FROM system_incidents WHERE id=?",(cur.lastrowid,)).fetchone(),True
+
+
+def get_system_incident(incident_id,path=None):
+    with get_connection(path) as db:return db.execute("SELECT * FROM system_incidents WHERE id=?",(incident_id,)).fetchone()
+
+
+def resolve_transient_incidents(path=None):
+    """Resolve open transport incidents after confirmed Telegram communication."""
+    now=utc_now()
+    with get_connection(path) as db:
+        rows=db.execute("SELECT * FROM system_incidents WHERE category='transient_network' AND status='open'").fetchall()
+        for row in rows:
+            db.execute("UPDATE system_incidents SET status='resolved',resolved_at=? WHERE id=?",(now,row["id"]))
+            audit_event(db,None,"system_incident_resolved","system_incident",row["id"],
+                previous_value="open",new_value="resolved",error_reference=row["error_reference"],actor_role="system")
+        return len(rows)
 
 
 def create_support_request(telegram_id, category, message, path=None):

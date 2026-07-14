@@ -642,7 +642,8 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         raw=action.removeprefix("system_error_");audit_raw,page_raw=raw.rsplit("_",1);audit_id,page=int(audit_raw),max(0,int(page_raw));row=db.get_audit_event(audit_id)
         if not row or row["action"]!="system_error":
             return await _show(query,"That system error record is unavailable.",menu_markup(ctx,[],"audit_filter_errors"))
-        detail=system_error_detail(row,getattr(cfg,"timezone_name","America/New_York"));size=3400;pages=[detail[i:i+size] for i in range(0,len(detail),size)] or [detail]
+        details=json.loads(row["new_value"]) if row["new_value"] else {};incident=db.get_system_incident(details.get("incident_id")) if isinstance(details,dict) and details.get("incident_id") else None
+        detail=system_error_detail(row,getattr(cfg,"timezone_name","America/New_York"),incident);size=3400;pages=[detail[i:i+size] for i in range(0,len(detail),size)] or [detail]
         page=min(page,len(pages)-1);actions=[]
         if page:actions.append(("◀️ Previous Trace Page",f"system_error_{audit_id}_{page-1}"))
         if page+1<len(pages):actions.append(("Next Trace Page ▶️",f"system_error_{audit_id}_{page+1}"))

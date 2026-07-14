@@ -93,14 +93,20 @@ def audit_entry(row, resolver=None, timezone_name="America/New_York"):
     return "\n".join(parts)
 
 
-def system_error_detail(row,timezone_name="America/New_York"):
+def system_error_detail(row,timezone_name="America/New_York",incident=None):
     """Render stored diagnostics for the Owner-only Telegram detail screen."""
     details=_value(row["new_value"])
     if not isinstance(details,dict) or not details.get("exception_type"):
         return (f"⚠️ System Error\n\nReference: {row['error_reference'] or 'Unavailable'}\n"
             f"Time: {friendly_timestamp(row['occurred_at'],timezone_name=timezone_name)}\nStatus: Needs review\n\n"
             "Detailed exception data was not stored for this historical error. Match the reference in the Replit console logs to recover its stack trace.")
+    incident_lines=""
+    if incident:
+        incident_lines=(f"First seen: {friendly_timestamp(incident['first_seen'],timezone_name=timezone_name)}\n"
+            f"Last seen: {friendly_timestamp(incident['last_seen'],timezone_name=timezone_name)}\n"
+            f"Occurrences: {incident['occurrence_count']}\nStatus: {incident['status'].title()}\n")
+    status_lines=incident_lines or "Status: Needs review\n"
     return (f"⚠️ System Error\n\nReference: {row['error_reference']}\n"
         f"Time: {friendly_timestamp(row['occurred_at'],timezone_name=timezone_name)}\n"
         f"Exception: {details.get('exception_type','Unknown')}\nMessage: {details.get('message','Unavailable')}\n"
-        f"Status: Needs review\n\nStack trace\n{details.get('traceback','Traceback unavailable.')}")
+        f"{status_lines}\nStack trace\n{(incident['traceback'] if incident else details.get('traceback')) or 'Traceback unavailable.'}")

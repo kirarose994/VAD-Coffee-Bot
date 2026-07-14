@@ -12,6 +12,7 @@ from permissions import can_manage_sensitive, can_mutate, can_read, can_view_aud
 from pop_policy import label as pop_label
 from routing import send_routed
 from briefing import daily_admin_brief_job
+from telegram_io import retry_telegram
 
 
 def config(ctx):
@@ -367,6 +368,16 @@ async def daily_owner_summary_job(ctx: ContextTypes.DEFAULT_TYPE):
             db.record_audit(None,"owner_summary_delivery_failed","notification",target_telegram_id=owner_id,result="error")
 
 
+async def telegram_recovery_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """Confirm transport recovery without creating another failure incident."""
+    try:
+        await retry_telegram(lambda: ctx.bot.get_me(),attempts=2)
+        db.resolve_transient_incidents()
+    except Exception:
+        # Polling/send failures are recorded by their normal paths. This probe stays quiet.
+        return
+
+
 def register_handlers(app):
     app.add_handler(CommandHandler("creator_register", register))
     app.add_handler(CommandHandler("creator_approve", approve))
@@ -393,6 +404,7 @@ def register_handlers(app):
     app.job_queue.run_repeating(inactivity_job, interval=1800, first=60, name="inactivity-monitor")
     # A repeating check allows Owner settings to take effect without rescheduling jobs.
     app.job_queue.run_repeating(daily_admin_brief_job, interval=900, first=90, name="daily-admin-brief")
+    app.job_queue.run_repeating(telegram_recovery_job,interval=120,first=30,name="telegram-recovery-check")
     cfg = app.bot_data.get("config")
     if cfg and getattr(cfg, "daily_owner_summary_enabled", False):
         try:
