@@ -56,6 +56,12 @@ class ReadinessCalculationTests(unittest.TestCase):
         self.assertEqual(items["registration_queue"]["state"],"ready")
         self.assertIn("successful real registration",items["registration_queue"]["detail"])
 
+    def test_successful_real_away_notice_delivery_verifies_routing(self):
+        db.set_system_state("last_route_success:away_notice",datetime.now(ZoneInfo("America/New_York")).isoformat(),self.path)
+        items={item["key"]:item for item in readiness_items(config(),self.path)}
+        self.assertEqual(items["away_route"]["state"],"ready")
+        self.assertIn("successful real Away Notice",items["away_route"]["detail"])
+
     def test_pending_start_does_not_assign_any_role(self):
         db.record_bot_user(50,"person","Known Person",self.path)
         rows=db.pending_bot_users({1},{2},{3},self.path)
