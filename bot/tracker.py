@@ -107,6 +107,8 @@ async def creator_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update, ctx): return
     rows = db.list_creators()
     lines = ["Creator report"] + [f"{r['display_name']} ({r['telegram_id']}): {r['status']}; last meaningful: {r['last_meaningful_at'] or 'never'}; vacation: {r['vacation_until'] or 'off'}" for r in rows]
+    if not rows:
+        lines.append("No creators are registered yet.")
     await update.message.reply_text("\n".join(lines)[:4000])
 
 
@@ -244,5 +246,10 @@ def register_handlers(app):
     app.add_handler(CommandHandler("history_reset", reset_history_command))
     app.add_handler(CommandHandler("settings", settings_command))
     app.add_handler(CommandHandler("setting_set", setting_set))
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, observe), group=10)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, observe), group=10)
+    pop_media = (
+        filters.PHOTO | filters.Sticker.ALL | filters.ANIMATION |
+        filters.VIDEO | filters.VOICE | filters.Document.ALL
+    )
+    app.add_handler(MessageHandler(pop_media, observe), group=10)
     app.job_queue.run_repeating(inactivity_job, interval=1800, first=60, name="inactivity-monitor")
