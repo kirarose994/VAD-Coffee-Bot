@@ -1384,10 +1384,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action in {"access_owners","access_admins"}:
         if role is not Role.OWNER: return await _show(query,"Access management is owner-only.",home_markup(ctx,user_id))
         ids = cfg.owner_user_ids if action.endswith("owners") else cfg.admin_user_ids
-        names = []
-        for member_id in ids:
-            member = db.get_creator(member_id)
-            names.append(member["display_name"] if member else f"Configured account ending in {str(member_id)[-4:]}")
+        names = [person["display_name"] for person in db.people_for_ids(ids)]
         return await _show(query,"\n".join(names) or "No accounts are configured in this role.",menu_markup(ctx,[],"roles"))
     if action == "access_add":
         if role is not Role.OWNER: return await _show(query,"Access management is owner-only.",home_markup(ctx,user_id))
@@ -1431,7 +1428,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await _show(query,text,menu_markup(ctx,[],"roles"))
     if action == "dual_roles":
         if role is not Role.OWNER:return await _show(query,"People & Roles is owner-only.",home_markup(ctx,user_id))
-        ids=set(cfg.admin_user_ids)|set(cfg.owner_user_ids);rows=[db.get_creator(i) for i in ids];rows=[r for r in rows if r]
+        ids=set(cfg.admin_user_ids)|set(cfg.owner_user_ids);rows=db.people_for_ids(ids)
         return await _show(query,"🔄 Multi-Role Members\n\nEvery Admin includes Creator access. Every Owner includes Admin and Creator access. Each person still has only one creator profile.\n\n"+("\n".join(r["display_name"] for r in rows) or "No multi-role members."),menu_markup(ctx,[],"roles"))
     if action in {"copy_creator_instructions","copy_admin_instructions","copy_alex_instructions"}:
         if role is not Role.OWNER:return await _show(query,"Owner access is required.",home_markup(ctx,user_id))
@@ -1443,7 +1440,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action in {"access_edit","access_remove"}:
         if role is not Role.OWNER: return await _show(query,"Access management is owner-only.",home_markup(ctx,user_id))
         ids = sorted(set(cfg.admin_user_ids)|set(cfg.owner_user_ids))
-        buttons = [[((db.get_creator(i)["display_name"] if db.get_creator(i) else f"Admin •••{str(i)[-4:]}")[:40],f"access_member_{i}")] for i in ids]
+        buttons = [[(person["display_name"][:40],f"access_member_{person['telegram_id']}")] for person in db.people_for_ids(ids)]
         return await _show(query,"Select an administrator.",grid_markup(ctx,buttons,"roles"))
     if action.startswith("access_member_"):
         if role is not Role.OWNER: return await _show(query,"Access management is owner-only.",home_markup(ctx,user_id))
