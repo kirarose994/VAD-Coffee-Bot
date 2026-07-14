@@ -1,4 +1,5 @@
 import sys
+import json
 import tempfile
 import unittest
 from datetime import datetime
@@ -76,7 +77,7 @@ class SafeTestIsolationTests(unittest.IsolatedAsyncioTestCase):
         msg=SimpleNamespace(text="I appreciate this thoughtful community discussion today.",chat_id=EXPECTED_MAIN_CHAT_ID,
             message_thread_id=10,message_id=88,photo=None,sticker=None,animation=None,video=None,voice=None,document=None,caption=None)
         update=SimpleNamespace(effective_message=msg,effective_user=SimpleNamespace(id=20));ctx=SimpleNamespace(bot_data={"config":cfg})
-        creator={"status":"active","vacation_until":None}
+        creator={"telegram_id":20,"status":"active","vacation_until":None}
         with patch("tracker.db.system_state",return_value={}),patch("tracker.db.get_creator",return_value=creator), \
              patch("tracker.db.approved_absence_on",return_value=None),patch("tracker.db.recent_hash_exists",return_value=False), \
              patch("tracker.db.record_engagement",return_value=True) as record,patch("tracker.db.set_system_state") as state:
@@ -85,6 +86,33 @@ class SafeTestIsolationTests(unittest.IsolatedAsyncioTestCase):
         keys=[call.args[0] for call in state.call_args_list]
         self.assertIn("last_participation_message_detected",keys);self.assertIn("last_meaningful_participation_counted",keys)
         self.assertIn("readiness:meaningful_test",keys)
+
+    async def test_wrong_chat_records_exact_creator_diagnostic(self):
+        cfg=config(participation_topic_ids=frozenset({10}))
+        msg=SimpleNamespace(text="I appreciate this thoughtful community discussion today.",chat_id=-999,
+            message_thread_id=10,message_id=89,photo=None,sticker=None,animation=None,video=None,voice=None,document=None,caption=None)
+        update=SimpleNamespace(effective_message=msg,effective_user=SimpleNamespace(id=20));ctx=SimpleNamespace(bot_data={"config":cfg})
+        creator={"telegram_id":20,"status":"active","vacation_until":None}
+        with patch("tracker.db.system_state",return_value={}),patch("tracker.db.get_creator",return_value=creator), \
+             patch("tracker.db.approved_absence_on",return_value=None),patch("tracker.db.set_system_state") as state:
+            await observe(update,ctx)
+        diagnostic=next(call for call in state.call_args_list if call.args[0]=="participation:last_creator:20")
+        payload=json.loads(diagnostic.args[1])
+        self.assertEqual(payload["reason"],"wrong_chat");self.assertEqual(payload["observed_chat_id"],-999)
+        self.assertEqual(payload["configured_chat_id"],EXPECTED_MAIN_CHAT_ID);self.assertFalse(payload["chat_matches"])
+
+    async def test_wrong_topic_records_exact_creator_diagnostic(self):
+        cfg=config(participation_topic_ids=frozenset({10}))
+        msg=SimpleNamespace(text="I appreciate this thoughtful community discussion today.",chat_id=EXPECTED_MAIN_CHAT_ID,
+            message_thread_id=77,message_id=90,photo=None,sticker=None,animation=None,video=None,voice=None,document=None,caption=None)
+        update=SimpleNamespace(effective_message=msg,effective_user=SimpleNamespace(id=20));ctx=SimpleNamespace(bot_data={"config":cfg})
+        creator={"telegram_id":20,"status":"active","vacation_until":None}
+        with patch("tracker.db.system_state",return_value={}),patch("tracker.db.get_creator",return_value=creator), \
+             patch("tracker.db.approved_absence_on",return_value=None),patch("tracker.db.set_system_state") as state,patch("tracker.db.record_audit"):
+            await observe(update,ctx)
+        diagnostic=next(call for call in state.call_args_list if call.args[0]=="participation:last_creator:20")
+        payload=json.loads(diagnostic.args[1])
+        self.assertEqual(payload["reason"],"wrong_topic");self.assertTrue(payload["chat_matches"]);self.assertFalse(payload["topic_matches"])
 
 
 class OwnerFlowTests(unittest.IsolatedAsyncioTestCase):

@@ -1,6 +1,7 @@
 """Telegram handlers for creators, engagement, inactivity, POP, and reports."""
 
 from datetime import date, datetime, time, timedelta, timezone
+import json
 from html import escape
 
 from telegram import Update
@@ -225,6 +226,32 @@ def participation_enabled(config, chat_id, thread_id):
     return thread_id in topics if topics else thread_id is None
 
 
+def _participation_location(config):
+    """Return the exact configured chat and topics used by the eligibility rule."""
+    chat_id = getattr(config, "participation_chat_id", None) or getattr(config, "girls_chat_id", None)
+    topics = set(getattr(config, "participation_topic_ids", frozenset()) or ())
+    legacy_topic = getattr(config, "girls_thread_id", None)
+    if getattr(config, "participation_chat_id", None) is None and legacy_topic is not None:
+        topics.add(legacy_topic)
+    return chat_id, sorted(topics)
+
+
+def _record_creator_participation_diagnostic(config, creator, message, reason):
+    """Persist an approved creator's last outcome without retaining message text."""
+    configured_chat, configured_topics = _participation_location(config)
+    payload = {
+        "observed_at": datetime.now(config.timezone).isoformat(),
+        "observed_chat_id": message.chat_id,
+        "observed_thread_id": message.message_thread_id,
+        "configured_chat_id": configured_chat,
+        "configured_thread_ids": configured_topics,
+        "chat_matches": message.chat_id == configured_chat,
+        "topic_matches": participation_enabled(config, message.chat_id, message.message_thread_id),
+        "reason": reason,
+    }
+    db.set_system_state(f"participation:last_creator:{creator['telegram_id']}", json.dumps(payload, separators=(",", ":")))
+
+
 async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg, user, cfg = update.effective_message, update.effective_user, config(ctx)
     if not msg or not user:
@@ -267,8 +294,10 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     local_now = datetime.now(cfg.timezone)
     if db.approved_absence_on(user.id, local_now.date()):
+        _record_creator_participation_diagnostic(cfg,creator,msg,"active_away_notice")
         return
     if creator["vacation_until"] and date.fromisoformat(creator["vacation_until"]) >= local_now.date():
+        _record_creator_participation_diagnostic(cfg,creator,msg,"legacy_vacation_active")
         return
     thread_id = msg.message_thread_id
     media = bool(msg.photo or msg.sticker or msg.animation or msg.video or msg.voice or msg.document)
@@ -280,8 +309,12 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if db.submit_pop(user.id, week_key(local_now), msg.message_id, msg.chat_id, thread_id, proof_type):
             await msg.reply_text("Thursday POP received! 📸 It’s now waiting for review.")
             # A normal receipt is visible in the review queue and Daily Brief; it is not urgent.
+        _record_creator_participation_diagnostic(cfg,creator,msg,"pop_workflow_message")
         return
     if not participation_enabled(cfg,msg.chat_id,thread_id):
+        configured_chat,_configured_topics=_participation_location(cfg)
+        reason="wrong_chat" if msg.chat_id != configured_chat else "wrong_topic"
+        _record_creator_participation_diagnostic(cfg,creator,msg,reason)
         if in_participation_chat:
             db.record_audit(None,"engagement_ignored","participation_event",target_telegram_id=user.id,new_value={"reason":"wrong_topic"})
         return
@@ -293,12 +326,16 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     stored=db.record_engagement(user.id,msg.message_id,msg.chat_id,thread_id,decision.digest or None,
                          "accepted" if decision.accepted else "rejected",decision.reason)
     if stored and decision.accepted:
+        _record_creator_participation_diagnostic(cfg,creator,msg,"accepted")
         counted_at=datetime.now(cfg.timezone).isoformat()
         db.set_system_state("last_meaningful_participation_counted",counted_at)
         # A real accepted event is stronger evidence than the isolated safe test.
         db.set_system_state("readiness:meaningful_test",counted_at)
     elif stored:
+        _record_creator_participation_diagnostic(cfg,creator,msg,decision.reason)
         db.set_system_state("readiness:ignored_test",datetime.now(cfg.timezone).isoformat())
+    else:
+        _record_creator_participation_diagnostic(cfg,creator,msg,"duplicate_telegram_update")
 
 
 async def inactivity_job(ctx: ContextTypes.DEFAULT_TYPE):

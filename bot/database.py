@@ -1199,6 +1199,25 @@ def participation_events(limit=30,path=None):
           ORDER BY e.id DESC LIMIT ?""",(limit,)).fetchall()
 
 
+def creator_participation_diagnostics(path=None):
+    """Return active creators and their latest sanitized observer outcome."""
+    with get_connection(path) as db:
+        creators=db.execute("""SELECT telegram_id,display_name,username FROM creators
+          WHERE status='active' AND deleted_at IS NULL ORDER BY display_name COLLATE NOCASE""").fetchall()
+        states={row["state_key"].rsplit(":",1)[-1]:row for row in db.execute("""SELECT state_key,state_value,updated_at
+          FROM system_state WHERE state_key LIKE 'participation:last_creator:%'""").fetchall()}
+    results=[]
+    for creator in creators:
+        state=states.get(str(creator["telegram_id"]));diagnostic=None
+        if state:
+            try:
+                diagnostic=json.loads(state["state_value"])
+            except (TypeError,json.JSONDecodeError):
+                diagnostic={"reason":"unreadable_diagnostic","observed_at":state["updated_at"]}
+        results.append({"creator":creator,"diagnostic":diagnostic})
+    return results
+
+
 def reset_history(actor_id, path=None):
     raise PermissionError("The audit trail is append-only and cannot be reset.")
 
