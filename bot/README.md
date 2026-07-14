@@ -1,108 +1,90 @@
-# VAD Coffee Lounge Bot
+# VAD Operations Bot
 
-A Telegram ordering bot for VAD Coffee Lounge. Guides users through a 6-step ordering flow with inline keyboards, calculates a price receipt, and forwards orders to an admin group.
+Telegram operations application for creator registration, availability, absences,
+meaningful engagement, inactivity, Thursday POP, operational reporting, announcements,
+and owner oversight.
 
-## Flow
+The creator experience opens with a supportive explanation of the bot and Away Notices,
+then presents a status card covering participation, weekly POP, standing, latest Away
+Notice, and availability. Warning/strike records are documented community memory—not
+automatic punishment—and creators can acknowledge warnings from their dashboard.
 
-1. **/start** — Welcome message + barista selection (choose ≥ 2)
-2. **Size** — Tall / Grande / Venti (price × baristas)
-3. **Roast** — Light / Medium / Dark (price × baristas)
-4. **Flavor Shots** — Vanilla, Caramel, Hazelnut (free) · Cinnamon (+$15 × baristas) · Skip
-5. **Bakery** — Croissant / Cake Pop / Breakfast Sandwich (price × baristas) · Skip
-6. **Caffeine Shot** — Yes (+$30 × baristas) / No
-7. **Receipt** — Full itemised total with Submit / Cancel
+Mobile UX uses compact two-column action grids, concise status cards, permission-filtered
+admin tools, consolidated owner navigation, supportive empty states, and consistent
+Home/Back/Cancel controls. Creator-facing copy describes independent community
+participation rather than employment or workplace management.
 
-## Commands
+The active application starts with `cd bot && python main.py`. Coffee Date ordering is
+not imported or registered. Its historical implementation remains only in
+`bot_backup_before_tracker/`.
 
-| Command    | Description |
-|------------|-------------|
-| `/start`   | Start or restart an order |
-| `/cancel`  | Cancel the current order at any step |
-| `/groupid` | (Use inside a group) Returns the group's chat ID |
-| `/topicid` | Returns the current Telegram topic ID |
-| `/creator_register` | Submit creator registration for approval |
-| `/vacation YYYY-MM-DD` | Pause tracking through an Eastern Time date |
+## Roles
 
-Role-based access uses immutable Telegram IDs from Replit Secrets:
+- Creator: self-service registration, availability, absence requests, POP, personal
+  status/history, and admin contact.
+- Admin and lead admin: operational actions filtered by `ADMIN_PERMISSIONS_JSON`.
+- Owner: every operational action plus complete audit, deleted records, restoration,
+  roles/permissions, exports, settings history, and system health.
 
-- `lead_admin`: all commands, including approvals, rejections, creator deletion,
-  deactivation, other-user vacation changes, POP decisions, history reset, topic/chat
-  discovery, and runtime configuration changes.
-- `admin`: read-only `/creator_report`, `/pop_report`, `/admin_history`, and `/settings`.
-  Admins cannot mutate creators, records, history, configuration, or roles.
+Owners are identified only by immutable numeric Telegram IDs. Both supported owner
+variables are combined; use `OWNER_USER_IDS` for continuity. Never store IDs in code.
 
-Creator self-service registration and vacation commands remain available to the creator.
-Every mutation is written to the audit history with actor, target, action, details, and time.
+## Environment variables
 
-Temporary setup commands are enabled only while `SETUP_MODE=true`: `/myid` returns the
-requester's numeric user ID; `/chatid` and `/threadid` return the current group/topic IDs
-only after Telegram confirms the requester is an administrator of that group. Disable setup
-mode after collecting the IDs. These commands never display secrets or environment values.
+Required:
 
-## Project structure
+- `TELEGRAM_BOT_TOKEN`
+- `OWNER_USER_IDS` — comma-separated numeric owner IDs
 
-```
-bot/
-├── main.py           # Entry point
-├── config.py         # Config class + all menu data
-├── order.py          # Full ConversationHandler (all steps & keyboards)
-├── receipt.py        # Price calculation + receipt formatting
-├── requirements.txt  # Python dependencies
-└── handlers/
-    └── error.py      # Global error handler
-```
+Operational:
 
-## Setup
+- `ADMIN_USER_IDS`
+- `LEAD_ADMIN_USER_IDS`
+- `ADMIN_PERMISSIONS_JSON` — optional JSON object mapping Telegram IDs to permission lists
+- `ADMIN_CHAT_ID`
+- `GIRLS_CHAT_ID`
+- `GIRLS_THREAD_ID`
+- `POP_THREAD_ID`
+- `REPORTS_THREAD_ID`
+- `TIMEZONE` — defaults to `America/New_York`
+- `INACTIVITY_WARNING_HOURS` — defaults to `48`
+- `INACTIVITY_ALERT_HOURS` — defaults to `72`
+- `SETUP_MODE` — temporary ID-discovery mode; normally `false`
+- `LOG_LEVEL` — defaults to `INFO`
 
-### 1. Create a bot with @BotFather
+`OWNER_TELEGRAM_IDS` is accepted as an alias for owner IDs. Do not configure real IDs
+in repository files.
 
-Send `/newbot` to @BotFather and copy the token you receive.
+## Admin permissions
 
-### 2. Add required secret
+Available permissions include `review_registrations`, `review_vacations`,
+`review_sick_days`, `review_pop`, `view_creator_reports`, `manage_creators`,
+`add_admin_notes`, `send_announcements`, and `adjust_warnings`. Owners always have all
+permissions. Missing per-admin configuration defaults authorized admins to the normal
+operational permission set.
 
-Add `TELEGRAM_BOT_TOKEN` as a Replit Secret.
+## Safety
 
-### 3. Connect an admin group (optional)
+- Callback actions use per-user nonces and are single-use.
+- Every callback and command rechecks server-side authorization.
+- Audit events are append-only; `/history_reset` refuses deletion.
+- Creator removal is soft deletion; owner restoration preserves history.
+- Existing creator, engagement, notification, and POP data are migrated in place.
+- SQLite uses foreign keys, WAL mode, busy timeouts, indexes, and uniqueness constraints.
+- Secrets and runtime databases are ignored by Git.
 
-1. Add the bot to your admin group.
-2. Send `/groupid` in that group — the bot replies with the chat ID.
-3. Add `ADMIN_CHAT_ID` as a Replit Secret with that value.
-4. Restart the **VAD Coffee Lounge Bot** workflow.
+## Community memory and messaging
 
-### 4. Optional environment variables
+- `/warning_add TELEGRAM_ID warning|strike reason` records an audited warning or strike.
+- Creators view and acknowledge active warnings from the Creator dashboard.
+- `/warning_remove WARNING_ID reason` removes an item from standing calculations while
+  preserving its timeline and audit history.
+- Three active strikes display `Owner review required`; the bot does not automatically
+  impose disciplinary action.
+- `/template_list` lists reusable messages and `/template_preview` previews and confirms
+  delivery. Default templates cover friendly, participation, POP, welcome, community
+  check-in, warning, and strike messaging.
+- `/creator_timeline TELEGRAM_ID` provides authorized, paginated chronological history.
 
-| Variable       | Default | Description |
-|----------------|---------|-------------|
-| `ADMIN_CHAT_ID`| _(none)_| Group chat ID for order forwarding |
-| `LOG_LEVEL`    | `INFO`  | Logging level |
-| `LEAD_ADMIN_USER_IDS` | _(none)_ | Comma-separated Telegram IDs allowed all administrative actions |
-| `ADMIN_USER_IDS` | _(none)_ | Comma-separated Telegram IDs allowed read-only reports |
-| `GIRLS_CHAT_ID` | _(none)_ | Group where registered-creator engagement is tracked |
-| `GIRLS_THREAD_ID` | _(none)_ | Optional topic containing ordinary engagement |
-| `POP_THREAD_ID` | _(none)_ | Thursday POP-proof topic |
-| `REPORTS_THREAD_ID` | _(none)_ | Optional admin report topic |
-| `TIMEZONE` | `America/New_York` | Display and scheduling timezone |
-| `INACTIVITY_WARNING_HOURS` | `48` | Warning threshold |
-| `INACTIVITY_ALERT_HOURS` | `72` | Admin-alert threshold |
-| `SETUP_MODE` | `false` | Temporarily enables numeric Telegram ID discovery commands |
-
-Credentials and chat configuration belong in Replit Secrets/environment variables.
-The SQLite tracker stores UTC instants and uses Eastern Time for Thursday and vacation rules.
-
-## Pricing logic
-
-All prices marked **"each"** are multiplied by the number of selected baristas.
-
-| Item | Price |
-|------|-------|
-| Tall | $30 × baristas |
-| Grande | $60 × baristas |
-| Venti | $120 × baristas |
-| Light Roast | $10 × baristas |
-| Medium Roast | $20 × baristas |
-| Dark Roast | $40 × baristas |
-| Cinnamon shot | $15 × baristas |
-| Croissant | $75 × baristas |
-| Cake Pop | $150 × baristas |
-| Breakfast Sandwich | $200 × baristas |
-| Caffeine shot | $30 × baristas |
+See [OPERATIONS_ROLLOUT.md](../docs/OPERATIONS_ROLLOUT.md) for migration, deployment,
+rollback, menus, permissions, and manual testing.

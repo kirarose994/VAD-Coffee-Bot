@@ -18,10 +18,10 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "VAD Coffee Date Bot"
+args = "VAD Operations Bot"
 
 [[workflows.workflow]]
-name = "VAD Coffee Date Bot"
+name = "VAD Operations Bot"
 author = "agent"
 
 [[workflows.workflow.tasks]]

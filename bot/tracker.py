@@ -8,7 +8,7 @@ from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
 
 import database as db
 from engagement import classify
-from permissions import can_mutate, can_read, role_for
+from permissions import can_manage_sensitive, can_mutate, can_read, can_view_audit, has_permission, role_for
 
 
 def config(ctx):
@@ -23,11 +23,27 @@ async def require_admin(update, ctx):
     return False
 
 
-async def require_lead_admin(update, ctx):
+async def require_operational_admin(update, ctx):
     user_id = update.effective_user.id if update.effective_user else None
     if can_mutate(user_id, config(ctx)):
         return True
-    await update.effective_message.reply_text("Sorry, this command is for lead admins only.")
+    await update.effective_message.reply_text("Sorry, this command is for operational admins only.")
+    return False
+
+
+async def require_permission(update, ctx, permission):
+    user_id = update.effective_user.id if update.effective_user else None
+    if has_permission(user_id, config(ctx), permission):
+        return True
+    await update.effective_message.reply_text("You do not have permission for this operational action.")
+    return False
+
+
+async def require_owner(update, ctx):
+    user_id = update.effective_user.id if update.effective_user else None
+    if can_manage_sensitive(user_id, config(ctx)):
+        return True
+    await update.effective_message.reply_text("Sorry, this command is for owners only.")
     return False
 
 
@@ -41,39 +57,39 @@ def parse_target(ctx):
 async def register(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     db.register_creator(user.id, user.username, user.full_name)
-    await update.message.reply_text("Registration submitted for admin approval.")
+    await update.message.reply_text("You’re registered! Your profile is waiting for a quick community review. 💛")
 
 
 async def approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await require_lead_admin(update, ctx): return
+    if not await require_permission(update, ctx, "review_registrations"): return
     target = parse_target(ctx)
     if not target or not db.set_status(target, "active", update.effective_user.id):
         return await update.message.reply_text("Usage: /creator_approve TELEGRAM_ID (registered creator required)")
-    await update.message.reply_text(f"Creator {target} approved.")
+    await update.message.reply_text(f"Creator {target} is approved and ready to participate.")
 
 
 async def deactivate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await require_lead_admin(update, ctx): return
+    if not await require_permission(update, ctx, "manage_creators"): return
     target = parse_target(ctx)
     if not target or not db.set_status(target, "inactive", update.effective_user.id):
         return await update.message.reply_text("Usage: /creator_deactivate TELEGRAM_ID")
-    await update.message.reply_text(f"Creator {target} deactivated.")
+    await update.message.reply_text(f"Creator {target} is now inactive. Their history is preserved.")
 
 
 async def reject_creator(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await require_lead_admin(update, ctx): return
+    if not await require_permission(update, ctx, "review_registrations"): return
     target = parse_target(ctx)
     if not target or not db.set_status(target, "rejected", update.effective_user.id):
         return await update.message.reply_text("Usage: /creator_reject TELEGRAM_ID")
-    await update.message.reply_text(f"Creator {target} rejected.")
+    await update.message.reply_text(f"Registration for creator {target} was not approved. The decision is recorded.")
 
 
 async def delete_creator(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await require_lead_admin(update, ctx): return
+    if not await require_permission(update, ctx, "manage_creators"): return
     target = parse_target(ctx)
     if not target or not db.delete_creator(target, update.effective_user.id):
         return await update.message.reply_text("Usage: /creator_delete TELEGRAM_ID")
-    await update.message.reply_text(f"Creator {target} and related tracker records deleted.")
+    await update.message.reply_text(f"Creator {target} archived with history preserved.")
 
 
 async def vacation(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -81,7 +97,7 @@ async def vacation(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     target = user.id
     raw = ctx.args[0] if ctx.args else ""
     if len(ctx.args) >= 2:
-        if not await require_lead_admin(update, ctx): return
+        if not await require_permission(update, ctx, "review_vacations"): return
         target, raw = parse_target(ctx), ctx.args[1]
     try:
         until = date.fromisoformat(raw).isoformat()
@@ -94,7 +110,7 @@ async def vacation(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def vacation_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if ctx.args:
-        if not await require_lead_admin(update, ctx): return
+        if not await require_permission(update, ctx, "review_vacations"): return
         target = parse_target(ctx)
     else:
         target = update.effective_user.id
@@ -104,7 +120,7 @@ async def vacation_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def creator_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await require_admin(update, ctx): return
+    if not await require_permission(update, ctx, "view_creator_reports"): return
     rows = db.list_creators()
     lines = ["Creator report"] + [f"{r['display_name']} ({r['telegram_id']}): {r['status']}; last meaningful: {r['last_meaningful_at'] or 'never'}; vacation: {r['vacation_until'] or 'off'}" for r in rows]
     if not rows:
@@ -118,7 +134,7 @@ def week_key(now):
 
 
 async def pop_report_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await require_admin(update, ctx): return
+    if not await require_permission(update, ctx, "view_creator_reports"): return
     key = ctx.args[0] if ctx.args else week_key(datetime.now(config(ctx).timezone))
     rows = db.pop_report(key)
     lines = [f"POP report {key}"] + [f"{r['display_name']} ({r['telegram_id']}): {r['status'] or 'missing'}" + (f" [submission {r['id']}]" if r['id'] else "") for r in rows]
@@ -126,30 +142,39 @@ async def pop_report_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def pop_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE, status):
-    if not await require_lead_admin(update, ctx): return
+    if not await require_permission(update, ctx, "review_pop"): return
     try: submission_id = int(ctx.args[0])
     except (IndexError, ValueError): return await update.message.reply_text(f"Usage: /pop_{status} SUBMISSION_ID [note]")
     note = " ".join(ctx.args[1:])
+    submission = db.get_pop_submission(submission_id)
     if not db.review_pop(submission_id, status, update.effective_user.id, note):
         return await update.message.reply_text("Pending submission not found.")
+    if submission:
+        try:
+            await ctx.bot.send_message(submission["telegram_id"], f"Your Thursday POP submission was {status.replace('_', ' ')}." + (f" Note: {note}" if note else ""))
+        except Exception:
+            pass
     await update.message.reply_text(f"POP submission {submission_id} {status}.")
 
 
 async def pop_approve(update, ctx): return await pop_review(update, ctx, "approved")
 async def pop_reject(update, ctx): return await pop_review(update, ctx, "rejected")
+async def pop_resubmit(update, ctx): return await pop_review(update, ctx, "resubmission_requested")
 
 
 async def history_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await require_admin(update, ctx): return
+    user_id = update.effective_user.id if update.effective_user else None
+    if not can_view_audit(user_id, config(ctx)):
+        await update.effective_message.reply_text("Sorry, the private audit log is for owners only.")
+        return
     rows = db.history()
-    lines = ["Admin history"] + [f"{r['created_at']} actor={r['actor_id']} target={r['target_id']} {r['action']} {r['details'] or ''}" for r in rows]
+    lines = ["Owner audit log"] + [f"{r['occurred_at']} actor={r['actor_id']} target={r['target_telegram_id']} {r['action']} {r['new_value'] or ''}" for r in rows]
     await update.message.reply_text("\n".join(lines)[:4000])
 
 
 async def reset_history_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await require_lead_admin(update, ctx): return
-    deleted = db.reset_history(update.effective_user.id)
-    await update.message.reply_text(f"Audit history reset. {deleted} earlier entries removed; this reset was audited.")
+    if not await require_owner(update, ctx): return
+    await update.message.reply_text("The audit log is append-only and cannot be altered or erased.")
 
 
 SETTING_FIELDS = {
@@ -168,7 +193,7 @@ async def settings_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def setting_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await require_lead_admin(update, ctx): return
+    if not await require_permission(update, ctx, "change_settings"): return
     if len(ctx.args) != 2 or ctx.args[0] not in SETTING_FIELDS:
         return await update.message.reply_text("Usage: /setting_set KEY INTEGER_OR_NONE")
     key, raw = ctx.args
@@ -191,14 +216,17 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not creator or creator["status"] != "active":
         return
     local_now = datetime.now(cfg.timezone)
+    if db.approved_absence_on(user.id, local_now.date()):
+        return
     if creator["vacation_until"] and date.fromisoformat(creator["vacation_until"]) >= local_now.date():
         return
     thread_id = msg.message_thread_id
     media = bool(msg.photo or msg.sticker or msg.animation or msg.video or msg.voice or msg.document)
-    if media and cfg.pop_thread_id and thread_id == cfg.pop_thread_id and local_now.weekday() == 3:
+    pop_caption = (msg.caption or "").casefold() if media else ""
+    if media and "pop" in pop_caption and cfg.pop_thread_id and thread_id == cfg.pop_thread_id and local_now.weekday() == 3:
         proof_type = "photo" if msg.photo else "document" if msg.document else "media"
         if db.submit_pop(user.id, week_key(local_now), msg.message_id, msg.chat_id, thread_id, proof_type):
-            await msg.reply_text("POP proof received and pending admin approval.")
+            await msg.reply_text("Thursday POP received! 📸 It’s now waiting for review.")
         return
     if cfg.girls_thread_id is not None and thread_id != cfg.girls_thread_id:
         return
@@ -212,22 +240,36 @@ async def inactivity_job(ctx: ContextTypes.DEFAULT_TYPE):
     cfg = config(ctx)
     now = datetime.now(timezone.utc)
     local_date = now.astimezone(cfg.timezone).date()
+    db.sync_absence_availability(local_date)
     for creator in db.due_creators():
-        if creator["vacation_until"] and date.fromisoformat(creator["vacation_until"]) >= local_date:
+        absence = db.approved_absence_on(creator["telegram_id"], local_date)
+        if absence or (creator["vacation_until"] and date.fromisoformat(creator["vacation_until"]) >= local_date):
             continue
         anchor = creator["last_meaningful_at"] or creator["approved_at"] or creator["registered_at"]
         started = datetime.fromisoformat(anchor)
+        recent = db.calendar_absences("1900-01-01", local_date.isoformat())
+        creator_absences = [r for r in recent if r["telegram_id"] == creator["telegram_id"]]
+        if creator_absences:
+            last_end = max(date.fromisoformat(r["end_date"]) for r in creator_absences)
+            grace_start = datetime.combine(last_end + timedelta(days=1), time.min, cfg.timezone)
+            if grace_start > started:
+                started = grace_start
         hours = (now - started.astimezone(timezone.utc)).total_seconds() / 3600
         if hours >= cfg.alert_hours and db.claim_notification(creator["telegram_id"], anchor, "alert"):
             if cfg.admin_chat_id:
-                await ctx.bot.send_message(cfg.admin_chat_id,
-                    f"3-day inactivity alert: {escape(creator['display_name'])} ({creator['telegram_id']})",
-                    message_thread_id=cfg.reports_thread_id)
+                try:
+                    await ctx.bot.send_message(cfg.admin_chat_id,
+                        f"3-day inactivity alert: {escape(creator['display_name'])} ({creator['telegram_id']})",
+                        message_thread_id=cfg.reports_thread_id)
+                    db.record_audit(None,"alert_delivered","notification",target_telegram_id=creator["telegram_id"])
+                except Exception:
+                    db.record_audit(None,"alert_delivery_failed","notification",target_telegram_id=creator["telegram_id"],result="error")
         elif hours >= cfg.warning_hours and db.claim_notification(creator["telegram_id"], anchor, "warning"):
             try:
                 await ctx.bot.send_message(creator["telegram_id"], "Friendly reminder: no meaningful girls-group engagement has been recorded for two days.")
+                db.record_audit(None,"warning_delivered","notification",target_telegram_id=creator["telegram_id"])
             except Exception:
-                pass
+                db.record_audit(None,"warning_delivery_failed","notification",target_telegram_id=creator["telegram_id"],result="error")
 
 
 def register_handlers(app):
@@ -242,6 +284,7 @@ def register_handlers(app):
     app.add_handler(CommandHandler("pop_report", pop_report_command))
     app.add_handler(CommandHandler("pop_approve", pop_approve))
     app.add_handler(CommandHandler("pop_reject", pop_reject))
+    app.add_handler(CommandHandler("pop_resubmit", pop_resubmit))
     app.add_handler(CommandHandler("admin_history", history_command))
     app.add_handler(CommandHandler("history_reset", reset_history_command))
     app.add_handler(CommandHandler("settings", settings_command))
