@@ -476,6 +476,27 @@ def message_template(template_key, path=None):
         return db.execute("SELECT * FROM message_templates WHERE template_key=? AND active=1", (template_key,)).fetchone()
 
 
+def dashboard_metrics(week_key, path=None):
+    """Compact operational counts for mobile dashboards."""
+    with get_connection(path) as db:
+        scalar = lambda sql, params=(): db.execute(sql,params).fetchone()[0]
+        return {
+            "active_creators": scalar("SELECT COUNT(*) FROM creators WHERE status='active' AND deleted_at IS NULL"),
+            "pending_registrations": scalar("SELECT COUNT(*) FROM creators WHERE status='pending' AND deleted_at IS NULL"),
+            "pending_vacations": scalar("SELECT COUNT(*) FROM absence_requests WHERE status='pending' AND absence_type='vacation' AND deleted_at IS NULL"),
+            "pending_sick": scalar("SELECT COUNT(*) FROM absence_requests WHERE status='pending' AND absence_type='sick' AND deleted_at IS NULL"),
+            "pending_pop": scalar("SELECT COUNT(*) FROM pop_submissions WHERE week_key=? AND status='pending' AND deleted_at IS NULL",(week_key,)),
+            "missing_pop": scalar("""SELECT COUNT(*) FROM creators c WHERE c.status='active' AND c.deleted_at IS NULL
+              AND NOT EXISTS(SELECT 1 FROM pop_submissions p WHERE p.telegram_id=c.telegram_id AND p.week_key=? AND p.deleted_at IS NULL)
+              AND NOT EXISTS(SELECT 1 FROM pop_excuses x WHERE x.telegram_id=c.telegram_id AND x.week_key=?)""",(week_key,week_key)),
+            "active_warnings": scalar("SELECT COUNT(*) FROM creator_warnings WHERE status IN ('active','acknowledged') AND warning_type='warning'"),
+            "active_strikes": scalar("SELECT COUNT(*) FROM creator_warnings WHERE status IN ('active','acknowledged') AND warning_type='strike'"),
+            "away_now": scalar("SELECT COUNT(*) FROM creators WHERE status='active' AND deleted_at IS NULL AND availability IN ('vacation','sick')"),
+            "deleted_records": scalar("SELECT COUNT(*) FROM creators WHERE deleted_at IS NOT NULL"),
+            "audit_events": scalar("SELECT COUNT(*) FROM audit_events"),
+        }
+
+
 def add_admin_note(telegram_id, note, actor_id, path=None):
     with get_connection(path) as db:
         cur = db.execute("INSERT INTO admin_notes(telegram_id,note,created_at,created_by) VALUES(?,?,?,?)",

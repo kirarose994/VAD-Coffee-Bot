@@ -30,15 +30,15 @@ def _token(ctx, key):
 async def absence_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE, absence_type):
     creator = db.get_creator(update.effective_user.id)
     if not creator or creator["status"] != "active":
-        return await update.effective_message.reply_text("Only approved registered creators can submit absence requests.")
+        return await update.effective_message.reply_text("Away Notices become available once your creator profile is approved. 💛")
     if len(ctx.args) < 2:
-        return await update.effective_message.reply_text(f"Usage: /{absence_type}_request START_DATE END_DATE [optional note]")
+        return await update.effective_message.reply_text(f"Send /{absence_type}_request START_DATE END_DATE [optional note]\nExample: /{absence_type}_request 2026-08-01 2026-08-03 Family plans")
     try:
         start, end = date.fromisoformat(ctx.args[0]), date.fromisoformat(ctx.args[1])
         if end < start or (end - start).days > 366:
             raise ValueError
     except ValueError:
-        return await update.effective_message.reply_text("Enter valid YYYY-MM-DD dates with the end on or after the start.")
+        return await update.effective_message.reply_text("Those dates don’t look quite right. Use YYYY-MM-DD, with the end date on or after the start date.")
     note = _clean(" ".join(ctx.args[2:]))
     token = _token(ctx, "absence_nonce")
     ctx.user_data["absence_draft"] = {"type": absence_type, "start": start.isoformat(), "end": end.isoformat(), "note": note}
@@ -47,7 +47,7 @@ async def absence_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE, absenc
         InlineKeyboardButton("❌ Cancel", callback_data=f"absence:{token}:cancel"),
     ]])
     await update.effective_message.reply_text(
-        f"Confirm {absence_type} request\nStart: {start}\nEnd: {end}\nNote: {note or 'none'}",
+        f"Confirm Away Notice\n\nType · {absence_type.title()}\nDates · {start} → {end}\nNote · {note or 'No note'}",
         reply_markup=keyboard,
     )
 
@@ -61,14 +61,14 @@ async def absence_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     parts = (query.data or "").split(":")
     if len(parts) != 3 or parts[1] != ctx.user_data.pop("absence_nonce", None):
         await query.answer("This confirmation expired or was already used.", show_alert=True)
-        return await query.edit_message_text("Request not submitted. Return to /start.")
+        return await query.edit_message_text("This confirmation expired. Nothing was submitted. Use /start to return home.")
     draft = ctx.user_data.pop("absence_draft", None)
     if parts[2] != "confirm" or not draft:
         await query.answer()
-        return await query.edit_message_text("Request cancelled. Use /start to return home.")
+        return await query.edit_message_text("Away Notice cancelled. Nothing was submitted.")
     request_id = db.create_absence_request(update.effective_user.id, draft["type"], draft["start"], draft["end"], draft["note"])
     await query.answer("Submitted")
-    await query.edit_message_text(f"Request #{request_id} submitted for administrator review. Use /start to return home.")
+    await query.edit_message_text(f"Away Notice #{request_id} sent for review. 💛\n\nYou’ll receive an update here when it’s reviewed. Use /start to return home.")
     cfg = ctx.bot_data["config"]
     if cfg.admin_chat_id:
         try:
@@ -88,7 +88,7 @@ async def absence_queue(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await update.effective_message.reply_text("You do not have permission to review these requests.")
     rows = db.list_absence_requests("pending", requested_type)
     if not rows:
-        return await update.effective_message.reply_text("No pending absence requests.")
+        return await update.effective_message.reply_text("All caught up! No Away Notices are waiting. ✨")
     for row in rows[:20]:
         token = _token(ctx, f"review_nonce_{row['id']}")
         buttons = InlineKeyboardMarkup([[
@@ -130,7 +130,7 @@ async def review_confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE
     parts = (query.data or "").split(":")
     if len(parts) != 3 or parts[1] != ctx.user_data.pop("review_confirm_nonce", None):
         await query.answer("This confirmation expired or was already used.", show_alert=True)
-        return await query.edit_message_text("Decision not recorded. Refresh the queue.")
+        return await query.edit_message_text("This review expired. No decision was saved; refresh the queue and try again.")
     draft = ctx.user_data.pop("review_draft", None)
     if parts[2] != "yes" or not draft:
         await query.answer()
@@ -141,7 +141,8 @@ async def review_confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         await query.answer("Already reviewed or unavailable.", show_alert=True)
         return await query.edit_message_text("No change was recorded.")
     await query.answer("Recorded")
-    await query.edit_message_text(f"Request #{request_id}: {decision}. The action was audited.")
+    friendly = {"approved":"approved","denied":"not approved","clarification":"waiting for clarification"}[decision]
+    await query.edit_message_text(f"Away Notice #{request_id} is now {friendly}. The update was saved to its history.")
     if request_row:
         try:
             await ctx.bot.send_message(request_row["telegram_id"],
@@ -163,14 +164,14 @@ async def absence_calendar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def add_note(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not has_permission(update.effective_user.id, ctx.bot_data["config"], "add_admin_notes"):
-        return await update.effective_message.reply_text("You do not have permission to add admin notes.")
+        return await update.effective_message.reply_text("Private notes aren’t included in your access.")
     if len(ctx.args) < 2:
         return await update.effective_message.reply_text("Usage: /admin_note TELEGRAM_ID note")
     try: target = int(ctx.args[0])
     except ValueError: return await update.effective_message.reply_text("Telegram ID must be numeric.")
     note = _clean(" ".join(ctx.args[1:]), 2000)
     note_id = db.add_admin_note(target, note, update.effective_user.id)
-    await update.effective_message.reply_text(f"Private admin note #{note_id} saved and audited.")
+    await update.effective_message.reply_text(f"Private note #{note_id} saved to the creator timeline.")
 
 
 async def view_notes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -254,14 +255,14 @@ async def contact_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def announce(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cfg, user_id = ctx.bot_data["config"], update.effective_user.id
     if not has_permission(user_id, cfg, "send_announcements"):
-        return await update.effective_message.reply_text("You do not have permission to send announcements.")
+        return await update.effective_message.reply_text("Community messages aren’t included in your access.")
     if len(ctx.args) < 2 or ctx.args[0] not in {"all", "available", "away", "admins", "owners"}:
         return await update.effective_message.reply_text("Usage: /announce all|available|away|admins|owners message")
     audience, body = ctx.args[0], _clean(" ".join(ctx.args[1:]), 3500)
     announcement_id = db.create_announcement(audience, body, user_id)
     token = _token(ctx, "announcement_nonce")
     ctx.user_data["announcement_id"] = announcement_id
-    await update.effective_message.reply_text(f"Announcement preview for {audience}:\n\n{body}",
+    await update.effective_message.reply_text(f"Message Preview\nAudience · {audience.title()}\n\n{body}",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Send", callback_data=f"announce:{token}:send"),
             InlineKeyboardButton("❌ Cancel", callback_data=f"announce:{token}:cancel"),

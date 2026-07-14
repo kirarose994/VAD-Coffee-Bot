@@ -57,7 +57,7 @@ def parse_target(ctx):
 async def register(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     db.register_creator(user.id, user.username, user.full_name)
-    await update.message.reply_text("Registration submitted for admin approval.")
+    await update.message.reply_text("You’re registered! Your profile is waiting for a quick community review. 💛")
 
 
 async def approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -65,7 +65,7 @@ async def approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     target = parse_target(ctx)
     if not target or not db.set_status(target, "active", update.effective_user.id):
         return await update.message.reply_text("Usage: /creator_approve TELEGRAM_ID (registered creator required)")
-    await update.message.reply_text(f"Creator {target} approved.")
+    await update.message.reply_text(f"Creator {target} is approved and ready to participate.")
 
 
 async def deactivate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -73,7 +73,7 @@ async def deactivate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     target = parse_target(ctx)
     if not target or not db.set_status(target, "inactive", update.effective_user.id):
         return await update.message.reply_text("Usage: /creator_deactivate TELEGRAM_ID")
-    await update.message.reply_text(f"Creator {target} deactivated.")
+    await update.message.reply_text(f"Creator {target} is now inactive. Their history is preserved.")
 
 
 async def reject_creator(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -81,7 +81,7 @@ async def reject_creator(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     target = parse_target(ctx)
     if not target or not db.set_status(target, "rejected", update.effective_user.id):
         return await update.message.reply_text("Usage: /creator_reject TELEGRAM_ID")
-    await update.message.reply_text(f"Creator {target} rejected.")
+    await update.message.reply_text(f"Registration for creator {target} was not approved. The decision is recorded.")
 
 
 async def delete_creator(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -226,7 +226,7 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if media and "pop" in pop_caption and cfg.pop_thread_id and thread_id == cfg.pop_thread_id and local_now.weekday() == 3:
         proof_type = "photo" if msg.photo else "document" if msg.document else "media"
         if db.submit_pop(user.id, week_key(local_now), msg.message_id, msg.chat_id, thread_id, proof_type):
-            await msg.reply_text("POP proof received and pending admin approval.")
+            await msg.reply_text("Thursday POP received! 📸 It’s now waiting for review.")
         return
     if cfg.girls_thread_id is not None and thread_id != cfg.girls_thread_id:
         return

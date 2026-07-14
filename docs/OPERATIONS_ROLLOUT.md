@@ -41,16 +41,38 @@ is the supported rollback because older code does not understand approved absenc
 
 ## Menu map
 
-- Home
-  - Creator: registration, availability, vacation, sick day, POP, activity, status, history, contact
-  - Admin: registration/absence/POP queues, alerts, creators, search, reports, calendar, announcements
-  - Owner: audit, deleted records, roles, histories, analytics, settings, export, restore, health
-  - Reports
-  - Calendar
-  - Resources
-  - Support
+- Home — includes the creator’s live status card when registered
+  - My Dashboard
+    - Unregistered: Register, Resources, Get Help
+    - Registered: Available, Unavailable, Vacation Notice, Sick-Day Notice, POP Help,
+      Standing, Timeline, Get Help
+  - Admin Dashboard — visible only to admins; buttons are filtered by assigned permission
+    - Registrations
+    - Vacation / Sick Day review queues
+    - POP Reviews
+    - Creator Directory / Away Calendar
+    - Standing / Messages
+  - Owner Dashboard — visible only to owners
+    - Audit / Archive
+    - Access / Settings
+    - Reports / Health
+    - Export / Restore
+  - Resources / Support
 
 Every submenu has Home, Back, and Cancel. Expired/reused menu buttons return safely to Home.
+
+## Phase 3 mobile UX standards
+
+- Two-column button grids keep primary screens short and thumb-friendly.
+- Creator status appears on Home and the Creator dashboard, removing a discovery tap.
+- Duplicate Admin and Owner destinations were consolidated.
+- Empty queues use positive “all caught up” language.
+- Creator-facing language uses community, participation, support, and Away Notice—not
+  employee-management terminology.
+- Status cards use one fact per line and consistent `Icon · Value` formatting.
+- Admin buttons are permission-filtered before display, while server-side checks remain.
+- Queue, calendar, directory, template, settings, access, and health buttons now show useful
+  information immediately instead of only pointing to another command.
 
 ## Permission matrix
 

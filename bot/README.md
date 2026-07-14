@@ -9,6 +9,11 @@ then presents a status card covering participation, weekly POP, standing, latest
 Notice, and availability. Warning/strike records are documented community memory—not
 automatic punishment—and creators can acknowledge warnings from their dashboard.
 
+Mobile UX uses compact two-column action grids, concise status cards, permission-filtered
+admin tools, consolidated owner navigation, supportive empty states, and consistent
+Home/Back/Cancel controls. Creator-facing copy describes independent community
+participation rather than employment or workplace management.
+
 The active application starts with `cd bot && python main.py`. Coffee Date ordering is
 not imported or registered. Its historical implementation remains only in
 `bot_backup_before_tracker/`.

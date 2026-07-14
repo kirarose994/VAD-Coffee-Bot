@@ -4,7 +4,7 @@ import unittest
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "bot"))
@@ -100,12 +100,12 @@ class MenuAndPermissionTests(unittest.TestCase):
 
     def test_both_configured_owners_have_equal_owner_menu(self):
         self.assertEqual(self.labels(1), self.labels(2))
-        self.assertIn("🔐 Owner", self.labels(1))
+        self.assertIn("🔐 Owner Dashboard", self.labels(1))
 
     def test_creator_cannot_see_admin_or_owner_menu(self):
         labels = self.labels(99)
-        self.assertNotIn("👑 Admin", labels)
-        self.assertNotIn("🔐 Owner", labels)
+        self.assertNotIn("👑 Admin Dashboard", labels)
+        self.assertNotIn("🔐 Owner Dashboard", labels)
 
     def test_individual_admin_permissions_are_enforced(self):
         cfg = self.config()
@@ -131,12 +131,16 @@ class MenuAndPermissionTests(unittest.TestCase):
 
 
 class CallbackSecurityTests(unittest.IsolatedAsyncioTestCase):
+    def metrics(self):
+        return {key:0 for key in ("active_creators","pending_registrations","pending_vacations","pending_sick","pending_pop","missing_pop","active_warnings","active_strikes","away_now","deleted_records","audit_events")}
+
     async def test_start_explains_support_and_fair_away_notices(self):
         cfg = SimpleNamespace(owner_user_ids=frozenset(),lead_admin_user_ids=frozenset(),admin_user_ids=frozenset(),admin_permissions={})
         message = SimpleNamespace(reply_text=AsyncMock())
         update = SimpleNamespace(effective_user=SimpleNamespace(id=99,first_name="Kira"),effective_message=message)
         ctx = SimpleNamespace(user_data={},bot_data={"config":cfg})
-        await start(update,ctx)
+        with patch("navigation.db.get_creator",return_value=None):
+            await start(update,ctx)
         text = message.reply_text.await_args.args[0]
         self.assertIn("here to help",text)
         self.assertIn("Away Notices",text)
@@ -150,6 +154,37 @@ class CallbackSecurityTests(unittest.IsolatedAsyncioTestCase):
         await callback(update,ctx)
         query.answer.assert_awaited_once()
         self.assertIn("expired", query.edit_message_text.await_args.args[0].casefold())
+
+    async def test_admin_dashboard_hides_unassigned_tools(self):
+        cfg = SimpleNamespace(owner_user_ids=frozenset(),lead_admin_user_ids=frozenset(),admin_user_ids=frozenset({4}),admin_permissions={4:frozenset({"review_pop"})},timezone=ZoneInfo("America/New_York"))
+        query = SimpleNamespace(data="op:menu:admin",answer=AsyncMock(),edit_message_text=AsyncMock())
+        update = SimpleNamespace(callback_query=query,effective_user=SimpleNamespace(id=4))
+        ctx = SimpleNamespace(user_data={"menu_nonce":"menu"},bot_data={"config":cfg})
+        with patch("navigation.db.dashboard_metrics",return_value=self.metrics()):
+            await callback(update,ctx)
+        markup = query.edit_message_text.await_args.kwargs["reply_markup"]
+        labels = [button.text for row in markup.inline_keyboard for button in row]
+        self.assertIn("📸 POP Reviews",labels)
+        self.assertNotIn("📝 Registrations",labels)
+        self.assertNotIn("💬 Messages",labels)
+
+    async def test_hidden_admin_tool_still_rechecks_permission(self):
+        cfg = SimpleNamespace(owner_user_ids=frozenset(),lead_admin_user_ids=frozenset(),admin_user_ids=frozenset({4}),admin_permissions={4:frozenset({"review_pop"})},timezone=ZoneInfo("America/New_York"))
+        query = SimpleNamespace(data="op:menu:registration_queue",answer=AsyncMock(),edit_message_text=AsyncMock())
+        update = SimpleNamespace(callback_query=query,effective_user=SimpleNamespace(id=4))
+        ctx = SimpleNamespace(user_data={"menu_nonce":"menu"},bot_data={"config":cfg})
+        await callback(update,ctx)
+        self.assertIn("isn’t included",query.edit_message_text.await_args.args[0])
+
+    async def test_owner_dashboard_is_compact_and_scannable(self):
+        cfg = SimpleNamespace(owner_user_ids=frozenset({1}),lead_admin_user_ids=frozenset(),admin_user_ids=frozenset(),admin_permissions={},timezone=ZoneInfo("America/New_York"))
+        query = SimpleNamespace(data="op:menu:owner",answer=AsyncMock(),edit_message_text=AsyncMock())
+        update = SimpleNamespace(callback_query=query,effective_user=SimpleNamespace(id=1))
+        ctx = SimpleNamespace(user_data={"menu_nonce":"menu"},bot_data={"config":cfg})
+        with patch("navigation.db.dashboard_metrics",return_value=self.metrics()):
+            await callback(update,ctx)
+        markup = query.edit_message_text.await_args.kwargs["reply_markup"]
+        self.assertLessEqual(len(markup.inline_keyboard),5)
 
 
 if __name__ == "__main__": unittest.main()

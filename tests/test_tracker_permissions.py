@@ -65,7 +65,7 @@ class AuditVisibilityTests(unittest.IsolatedAsyncioTestCase):
         with patch("tracker.db.set_status", return_value=True) as set_status:
             await approve(update, self.context(["99"]))
         set_status.assert_called_once_with(99, "active", 30)
-        update.message.reply_text.assert_awaited_once_with("Creator 99 approved.")
+        update.message.reply_text.assert_awaited_once_with("Creator 99 is approved and ready to participate.")
 
     async def test_admin_can_manage_other_creator_vacations(self):
         update = self.update(30)
