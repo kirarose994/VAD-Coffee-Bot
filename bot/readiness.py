@@ -70,8 +70,10 @@ def readiness_items(config,path=None,now=None):
         items.append(_item(key,label,"ready" if _configured(getattr(config,attr,None)) else "setup",f"Verify the dedicated {label.lower()}.",action))
     active_creators=len([r for r in db.list_creators(path) if r["status"]=="active"])
     participation_verified=bool((topics or general_verified) and active_creators and counted and message_access_ready)
+    registration_verified=verified("last_route_success:registration") or verified("readiness:registration_route_test")
     items.extend([
-        _item("registration_queue","Registration queue working","ready" if verified("readiness:registration_route_test") else "unverified","Run the safe registration routing test after configuring its topic.","test_route_registration"),
+        _item("registration_queue","Registration queue working","ready" if registration_verified else "unverified",
+            "Verified by a successful real registration delivery." if verified("last_route_success:registration") else "Run the safe registration routing test after configuring its topic.","test_route_registration"),
         _item("identity","Creator identity isolation working","ready","Self-service lookups use immutable Telegram IDs and have automated coverage.","test_privacy"),
         _item("monitor","Participation monitor active","ready" if participation_verified else "unverified","Ready requires message access, a verified topic, an approved creator, and one successfully counted meaningful message.","test_center"),
         _item("two_day","Two-day reminders configured","ready" if getattr(config,"warning_hours",None) else "setup",f"Current threshold: {getattr(config,'warning_hours','not set')} hours.","settings_warning"),
