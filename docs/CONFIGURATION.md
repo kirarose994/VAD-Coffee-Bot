@@ -17,3 +17,8 @@ message thresholds.
 this list is empty, only non-topic General messages match; forum General must be detected and
 added if Telegram supplies a thread ID. Environment values bootstrap the database; audited
 Owner Setup overrides then take precedence after startup.
+
+Routing topic bootstrap keys are `REGISTRATION_THREAD_ID`, `AWAY_THREAD_ID`,
+`POP_REVIEW_THREAD_ID`, `REPORTS_THREAD_ID`, `MODERATION_THREAD_ID`, `SUPPORT_THREAD_ID`,
+`OWNER_REVIEW_THREAD_ID`, and `HEALTH_THREAD_ID`. Owners can later verify and persist these
+non-secret destinations through Telegram Locations without changing code.

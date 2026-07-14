@@ -6,3 +6,6 @@ only when an Owner grants their corresponding permission.
 
 Admins cannot access owner history, configuration, exports, restoration, security health, or
 role management. Every moderation and messaging action is audited.
+
+Support Requests can be assigned, replied to, noted, escalated, or resolved when the Admin
+has that permission. Replies are stored before delivery so a blocked private message is not lost.

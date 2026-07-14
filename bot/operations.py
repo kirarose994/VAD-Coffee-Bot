@@ -11,6 +11,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, Mes
 
 import database as db
 from permissions import Role, has_permission, role_for
+from routing import send_routed
 
 
 def _clean(text, limit=1000):
@@ -76,14 +77,11 @@ async def absence_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer("Submitted")
     await query.edit_message_text(f"Away Notice #{request_id} sent for review. 💛\n\nYou’ll receive an update here when it’s reviewed. Use /start to return home.")
     cfg = ctx.bot_data["config"]
-    if cfg.admin_chat_id:
-        try:
-            await ctx.bot.send_message(cfg.admin_chat_id,
-                f"Pending {draft['type']} request #{request_id}\nCreator: {update.effective_user.full_name} ({update.effective_user.id})\n"
-                f"Dates: {draft['start']} to {draft['end']}\nNote: {draft['note'] or 'none'}\nUse /absence_queue {draft['type']} to review.",
-                message_thread_id=getattr(cfg,"away_thread_id",None) or cfg.reports_thread_id)
-        except Exception:
-            pass
+    await send_routed(ctx.bot,cfg,"away_notice",
+        f"💙 Away Notice awaiting review\nCreator: {update.effective_user.full_name}\n"
+        f"Dates: {draft['start']} to {draft['end']}\nCategory: {draft['category'].replace('_',' ').title()}\n"
+        f"Note: {draft['note'] or 'None'}\nOpen Admin Home → Away Notices.",
+        target_telegram_id=update.effective_user.id,related_request_id=request_id)
 
 
 async def absence_queue(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -251,9 +249,9 @@ async def contact_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await update.effective_message.reply_text("Admin messaging is not configured. Please try again later.")
     ctx.user_data["last_contact_admin"] = now
     try:
-        await ctx.bot.send_message(cfg.admin_chat_id,
-            f"Creator support message from {update.effective_user.full_name} ({update.effective_user.id}):\n{body}",
-            message_thread_id=cfg.reports_thread_id)
+        await send_routed(ctx.bot,cfg,"support",
+            f"📨 Support request\nCreator: {update.effective_user.full_name}\nTelegram ID: {update.effective_user.id}\n\n{body}",
+            target_telegram_id=update.effective_user.id)
         await update.effective_message.reply_text("Your message was sent to the admin team.")
     except Exception:
         await update.effective_message.reply_text("The message could not be delivered. Please try again later.")
@@ -261,6 +259,23 @@ async def contact_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def guided_contact_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     guided = ctx.user_data.get("guided_input")
+    if guided == "support_reply":
+        cfg,actor=ctx.bot_data["config"],update.effective_user.id
+        if not has_permission(actor,cfg,"manage_support"):
+            ctx.user_data.clear();return await update.effective_message.reply_text("Support access is required.")
+        request_id=ctx.user_data.pop("support_reply_id",None);ctx.user_data.pop("guided_input",None)
+        body=_clean(update.effective_message.text,1500)
+        saved=db.add_support_message(request_id,actor,role_for(actor,cfg).name.lower(),body) if request_id and body else None
+        if not saved:return await update.effective_message.reply_text("That support request is unavailable. No reply was saved.")
+        message_id,target=saved
+        try:
+            await ctx.bot.send_message(target,f"💬 Admin reply to support request #{request_id}\n\n{body}")
+            db.record_audit(actor,"support_reply_delivered","support_message",message_id,target,related_request_id=request_id)
+            return await update.effective_message.reply_text("✅ Reply recorded and delivered.")
+        except Exception:
+            ref="SUP-"+secrets.token_hex(4).upper()
+            db.record_delivery_failure(ref,"support_reply",target,None,f"Support reply #{message_id}")
+            return await update.effective_message.reply_text(f"The reply was saved, but delivery needs attention. Reference: {ref}")
     if guided == "admin_note":
         cfg,actor=ctx.bot_data["config"],update.effective_user.id
         if not has_permission(actor,cfg,"add_admin_notes"):
@@ -346,14 +361,14 @@ async def guided_contact_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await update.effective_message.reply_text(
             f"🔎 Search Results\n\nSelect a creator below." if rows else "No creator matched that search.",
             reply_markup=InlineKeyboardMarkup(buttons))
-    if guided != "contact_admin":
+    if guided not in {"contact_admin","support_message"}:
         return
     body = _clean(update.effective_message.text,1500)
     if not body:
         return await update.effective_message.reply_text("Please write a short message, without private medical details.")
     ctx.user_data.pop("guided_input",None)
     token = _token(ctx,"contact_nonce")
-    ctx.user_data["contact_draft"] = body
+    ctx.user_data["contact_draft"] = {"body":body,"category":ctx.user_data.pop("support_category","General Question")}
     await update.effective_message.reply_text("💬 Message Preview\n\n" + body,
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Send to Admin",callback_data=f"contactflow:{token}:send"),
@@ -366,25 +381,25 @@ async def guided_contact_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE
     parts = (query.data or "").split(":")
     if len(parts) != 3 or parts[1] != ctx.user_data.pop("contact_nonce",None):
         return await query.answer("This message preview expired.",show_alert=True)
-    body = ctx.user_data.pop("contact_draft",None)
-    if parts[2] != "send" or not body:
+    draft = ctx.user_data.pop("contact_draft",None)
+    if parts[2] != "send" or not draft:
         await query.answer()
         return await query.edit_message_text("Message cancelled. Nothing was sent.")
     cfg = ctx.bot_data["config"]
-    if not cfg.admin_chat_id:
+    body,category=draft["body"],draft["category"]
+    request_id=db.create_support_request(update.effective_user.id,category,body)
+    if request_id is None:
         await query.answer()
-        return await query.edit_message_text("Admin messaging is not configured yet. Please try again later.")
-    try:
-        await ctx.bot.send_message(cfg.admin_chat_id,
-            f"💬 Creator support request\nFrom: {update.effective_user.full_name}\n\n{body}",
-            message_thread_id=cfg.reports_thread_id)
-        db.record_audit(update.effective_user.id,"support_message_delivered","notification",
-            target_telegram_id=update.effective_user.id,new_value={"length":len(body)})
-        text = "✅ Your message was delivered to the admin team."
-    except Exception:
-        db.record_audit(update.effective_user.id,"support_message_delivery_failed","notification",
-            target_telegram_id=update.effective_user.id,result="error")
-        text = "Your message could not be delivered right now. It was not lost from the preview; please try again later."
+        return await query.edit_message_text("Please register as a creator before opening a tracked support request.")
+    delivered,error_ref=await send_routed(ctx.bot,cfg,"support",
+        f"💬 Support Request #{request_id}\nCreator: {update.effective_user.full_name}\nUsername: "+
+        (f"@{update.effective_user.username}" if update.effective_user.username else "No username")+
+        f"\nTelegram ID: {update.effective_user.id}\nCategory: {category}\n\n{body}",
+        payload_summary=f"Support request #{request_id}",target_telegram_id=update.effective_user.id,
+        related_request_id=request_id)
+    db.update_support_delivery(request_id,"delivered" if delivered else "failed",error_ref)
+    text = (f"✅ Support request #{request_id} was received by the admin team." if delivered else
+        f"Your request #{request_id} was saved, but delivery needs attention. Reference: {error_ref}")
     await query.answer()
     await query.edit_message_text(text)
 

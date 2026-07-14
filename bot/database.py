@@ -169,10 +169,34 @@ def initialize_database(path: Path | None = None):
         CREATE TABLE IF NOT EXISTS system_state (
           state_key TEXT PRIMARY KEY, state_value TEXT NOT NULL, updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS support_requests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER NOT NULL,
+          category TEXT NOT NULL, message TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','assigned','escalated','resolved')),
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, assigned_to INTEGER,
+          resolved_at TEXT, resolved_by INTEGER, resolution_note TEXT,
+          delivery_status TEXT NOT NULL DEFAULT 'pending', delivery_error_ref TEXT,
+          FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id)
+        );
+        CREATE INDEX IF NOT EXISTS support_queue ON support_requests(status,created_at);
+        CREATE TABLE IF NOT EXISTS support_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, request_id INTEGER NOT NULL,
+          sender_id INTEGER NOT NULL, sender_role TEXT NOT NULL, body TEXT NOT NULL,
+          created_at TEXT NOT NULL, delivered_at TEXT, delivery_error_ref TEXT,
+          FOREIGN KEY(request_id) REFERENCES support_requests(id)
+        );
+        CREATE TABLE IF NOT EXISTS delivery_failures (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, error_reference TEXT NOT NULL UNIQUE,
+          event_type TEXT NOT NULL, destination_chat_id INTEGER,
+          destination_thread_id INTEGER, payload_summary TEXT,
+          created_at TEXT NOT NULL, resolved_at TEXT, retry_claimed_at TEXT,
+          retry_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS delivery_failures_open ON delivery_failures(resolved_at,created_at);
         """)
         _migrate_legacy_schema(db)
         _seed_message_templates(db)
-        db.execute("UPDATE schema_version SET version=4")
+        db.execute("UPDATE schema_version SET version=5")
 
 
 DEFAULT_MESSAGE_TEMPLATES = {
@@ -628,6 +652,7 @@ def dashboard_metrics(week_key, path=None):
             "audit_events": scalar("SELECT COUNT(*) FROM audit_events"),
             "audit_today": scalar("SELECT COUNT(*) FROM audit_events WHERE substr(occurred_at,1,10)=?", (datetime.now(ZoneInfo("America/New_York")).date().isoformat(),)),
             "failed_notifications": scalar("SELECT COUNT(*) FROM audit_events WHERE result='error' AND action LIKE '%delivery_failed%'"),
+            "support_requests": scalar("SELECT COUNT(*) FROM support_requests WHERE status!='resolved'"),
         }
         metrics["participation_flags"] = len(_participation_attention_rows(db, 48, 72))
         metrics["needs_attention"] = (
@@ -786,10 +811,12 @@ def calendar_absences(start_date, end_date, path=None):
 
 def record_audit(actor_id, action, target_type=None, target_record_id=None,
                  target_telegram_id=None, previous_value=None, new_value=None,
-                 reason=None, result="success", path=None, error_reference=None):
+                 reason=None, result="success", path=None, error_reference=None,
+                 related_request_id=None,related_submission_id=None):
     with get_connection(path) as connection:
         audit_event(connection,actor_id,action,target_type,target_record_id,target_telegram_id,
-                    previous_value,new_value,reason,result=result,error_reference=error_reference)
+                    previous_value,new_value,reason,related_request_id=related_request_id,
+                    related_submission_id=related_submission_id,result=result,error_reference=error_reference)
 
 
 def export_snapshot(path=None):
@@ -951,6 +978,103 @@ def pop_report(week_key, path=None):
 def history(limit=50, path=None):
     with get_connection(path) as db:
         return db.execute("SELECT * FROM audit_events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+
+
+def create_support_request(telegram_id, category, message, path=None):
+    """Create a durable request before attempting Telegram delivery."""
+    now=utc_now()
+    with get_connection(path) as db:
+        creator=db.execute("SELECT 1 FROM creators WHERE telegram_id=? AND deleted_at IS NULL",(telegram_id,)).fetchone()
+        if not creator:
+            return None
+        cur=db.execute("""INSERT INTO support_requests
+          (telegram_id,category,message,created_at,updated_at) VALUES(?,?,?,?,?)""",
+          (telegram_id,category,message,now,now))
+        request_id=cur.lastrowid
+        audit_event(db,telegram_id,"support_request_created","support_request",request_id,telegram_id,
+            new_value={"category":category,"length":len(message)})
+        return request_id
+
+
+def update_support_delivery(request_id, status, error_reference=None, path=None):
+    with get_connection(path) as db:
+        db.execute("UPDATE support_requests SET delivery_status=?,delivery_error_ref=?,updated_at=? WHERE id=?",
+            (status,error_reference,utc_now(),request_id))
+
+
+def support_requests_for(telegram_id, path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM support_requests WHERE telegram_id=? ORDER BY created_at DESC",(telegram_id,)).fetchall()
+
+
+def support_queue(path=None):
+    with get_connection(path) as db:
+        return db.execute("""SELECT s.*,c.display_name,c.username FROM support_requests s
+          JOIN creators c ON c.telegram_id=s.telegram_id
+          WHERE s.status!='resolved' ORDER BY s.created_at""").fetchall()
+
+
+def update_support_request(request_id, action, actor_id, note=None, path=None):
+    states={"assign":"assigned","escalate":"escalated","resolve":"resolved","open":"open"}
+    if action not in states: return False
+    now=utc_now();new_status=states[action]
+    with get_connection(path) as db:
+        row=db.execute("SELECT * FROM support_requests WHERE id=?",(request_id,)).fetchone()
+        if not row or row["status"]=="resolved": return False
+        db.execute("""UPDATE support_requests SET status=?,assigned_to=CASE WHEN ?='assign' THEN ? ELSE assigned_to END,
+          resolved_at=CASE WHEN ?='resolve' THEN ? ELSE resolved_at END,
+          resolved_by=CASE WHEN ?='resolve' THEN ? ELSE resolved_by END,
+          resolution_note=CASE WHEN ?='resolve' THEN ? ELSE resolution_note END,updated_at=? WHERE id=?""",
+          (new_status,action,actor_id,action,now,action,actor_id,action,note,now,request_id))
+        audit_event(db,actor_id,f"support_request_{action}","support_request",request_id,row["telegram_id"],
+            previous_value=row["status"],new_value=new_status,reason=note)
+        return True
+
+
+def add_support_message(request_id,sender_id,sender_role,body,path=None):
+    with get_connection(path) as db:
+        request=db.execute("SELECT * FROM support_requests WHERE id=?",(request_id,)).fetchone()
+        if not request:return None
+        cur=db.execute("INSERT INTO support_messages(request_id,sender_id,sender_role,body,created_at) VALUES(?,?,?,?,?)",
+            (request_id,sender_id,sender_role,body[:1500],utc_now()))
+        audit_event(db,sender_id,"support_reply_created","support_message",cur.lastrowid,request["telegram_id"],
+            related_request_id=request_id,new_value={"length":len(body)})
+        return cur.lastrowid,request["telegram_id"]
+
+
+def record_delivery_failure(error_reference,event_type,chat_id,thread_id,payload_summary,path=None):
+    with get_connection(path) as db:
+        db.execute("""INSERT OR IGNORE INTO delivery_failures
+          (error_reference,event_type,destination_chat_id,destination_thread_id,payload_summary,created_at)
+          VALUES(?,?,?,?,?,?)""",(error_reference,event_type,chat_id,thread_id,payload_summary,utc_now()))
+        audit_event(db,None,"notification_delivery_failed","delivery",new_value={"event":event_type,"destination":chat_id},
+            source_chat_id=chat_id,source_thread_id=thread_id,result="error",error_reference=error_reference)
+
+
+def open_delivery_failures(path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM delivery_failures WHERE resolved_at IS NULL ORDER BY created_at DESC").fetchall()
+
+
+def participation_monitor(path=None):
+    today=datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    with get_connection(path) as db:
+        scalar=lambda sql,args=(): db.execute(sql,args).fetchone()[0]
+        ignored=db.execute("""SELECT reason,COUNT(*) count FROM engagement_events
+          WHERE decision='rejected' AND substr(created_at,1,10)=? GROUP BY reason ORDER BY count DESC""",(today,)).fetchall()
+        return {"tracked":scalar("SELECT COUNT(*) FROM creators WHERE status='active' AND deleted_at IS NULL"),
+            "ignored_today":sum(r["count"] for r in ignored),"ignored_categories":ignored,
+            "last_detected":db.execute("SELECT updated_at AS created_at FROM system_state WHERE state_key='last_participation_message_detected'").fetchone()
+                or db.execute("SELECT created_at FROM engagement_events ORDER BY id DESC LIMIT 1").fetchone(),
+            "last_counted":db.execute("SELECT created_at FROM engagement_events WHERE decision='accepted' ORDER BY id DESC LIMIT 1").fetchone(),
+            "failures":scalar("SELECT COUNT(*) FROM delivery_failures WHERE resolved_at IS NULL")}
+
+
+def participation_events(limit=30,path=None):
+    with get_connection(path) as db:
+        return db.execute("""SELECT e.created_at,e.decision,e.reason,e.telegram_id,c.display_name
+          FROM engagement_events e LEFT JOIN creators c ON c.telegram_id=e.telegram_id
+          ORDER BY e.id DESC LIMIT ?""",(limit,)).fetchall()
 
 
 def reset_history(actor_id, path=None):

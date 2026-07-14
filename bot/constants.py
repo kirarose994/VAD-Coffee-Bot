@@ -29,4 +29,12 @@ PERSISTED_SETTING_ATTRIBUTES = {
     "meaningful_min_words": "meaningful_min_words",
     "meaningful_min_characters": "meaningful_min_characters",
     "repeat_window_days": "repeat_window_days",
+    "pop_review_thread_id": "pop_review_thread_id",
+    "support_thread_id": "support_thread_id",
+    "owner_review_thread_id": "owner_review_thread_id",
+    "reports_thread_id": "reports_thread_id",
+    "away_thread_id": "away_thread_id",
+    "registration_thread_id": "registration_thread_id",
+    "moderation_thread_id": "moderation_thread_id",
+    "health_thread_id": "health_thread_id",
 }

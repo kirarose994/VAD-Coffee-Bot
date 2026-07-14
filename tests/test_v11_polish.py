@@ -29,7 +29,7 @@ class V11DatabaseTests(unittest.TestCase):
 
     def test_additive_schema_v4_preserves_creator_and_general_member_identity(self):
         with db.get_connection(self.path) as connection:
-            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()[0],4)
+            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()[0],5)
             member = connection.execute("SELECT * FROM community_members WHERE telegram_id=10").fetchone()
         self.assertEqual(member["member_type"],"creator")
 
@@ -120,8 +120,8 @@ class V11NavigationTests(unittest.IsolatedAsyncioTestCase):
              patch("tracker.db.approved_absence_on",return_value=None),patch("tracker.db.calendar_absences",return_value=[]), \
              patch("tracker.db.claim_notification",side_effect=[True,False]),patch("tracker.db.record_audit"):
             await inactivity_job(ctx); await inactivity_job(ctx)
-        self.assertEqual(bot.send_message.await_count,1)
-        self.assertIn("Another day",bot.send_message.await_args.args[1])
+        self.assertEqual(bot.send_message.await_count,2)  # creator reminder plus one admin flag
+        self.assertTrue(any("Another day" in call.args[1] for call in bot.send_message.await_args_list))
 
     async def test_three_day_alert_goes_to_admin_topic(self):
         anchor = (datetime.now(timezone.utc)-timedelta(hours=73)).isoformat()
@@ -137,7 +137,7 @@ class V11NavigationTests(unittest.IsolatedAsyncioTestCase):
             await inactivity_job(ctx)
         self.assertEqual(bot.send_message.await_args.args[0],-100)
         self.assertEqual(bot.send_message.await_args.kwargs["message_thread_id"],7)
-        self.assertIn("three-day",bot.send_message.await_args.args[1])
+        self.assertIn("Admin follow-up required",bot.send_message.await_args.args[1])
 
 
 class V11ConfigTests(unittest.TestCase):

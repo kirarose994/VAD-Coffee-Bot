@@ -12,3 +12,6 @@ warnings, messaging, and owner oversight. The historical ordering application is
 
 Documentation changes are required whenever behavior, configuration, permissions, data,
 routing, deployment, or recovery procedures change.
+
+Operational references include [PARTICIPATION_ENGINE.md](PARTICIPATION_ENGINE.md),
+[POP_ENGINE.md](POP_ENGINE.md), and [SUPPORT_REQUEST_WORKFLOW.md](SUPPORT_REQUEST_WORKFLOW.md).

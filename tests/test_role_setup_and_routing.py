@@ -31,25 +31,25 @@ class RoleSeparationTests(unittest.TestCase):
 
     def test_creator_sees_only_creator_functions(self):
         visible = self.menu(20,{"telegram_id":20},None)
-        self.assertIn("👤 My Creator Hub",visible)
-        for hidden in ("🛡️ Admin Tools","🔐 Owner Dashboard"):
+        self.assertIn("💛 My VAD Home",visible)
+        for hidden in ("🛡️ Admin Home","👑 Owner Home"):
             self.assertNotIn(hidden,visible)
 
     def test_buyer_sees_only_buyer_functions(self):
         visible = self.menu(21,None,{"telegram_id":21,"member_type":"buyer"})
         self.assertIn("🛍️ Buyer Home",visible)
-        self.assertNotIn("👤 My Creator Hub",visible)
-        self.assertNotIn("🛡️ Admin Tools",visible)
+        self.assertNotIn("💛 My VAD Home",visible)
+        self.assertNotIn("🛡️ Admin Home",visible)
 
     def test_admin_and_owner_menus_are_distinct(self):
         admin = self.menu(3,None,None)
         owner = self.menu(1,None,None)
-        self.assertIn("🛡️ Admin Tools",admin)
-        self.assertNotIn("🔐 Owner Dashboard",admin)
-        self.assertIn("🔐 Owner Dashboard",owner)
+        self.assertIn("🛡️ Admin Home",admin)
+        self.assertNotIn("👑 Owner Home",admin)
+        self.assertIn("👑 Owner Home",owner)
 
     def test_owner_without_creator_profile_can_register_as_creator(self):
-        self.assertIn("✨ I'm a Creator / Seller",self.menu(1,None,None))
+        self.assertIn("👑 Owner Home",self.menu(1,None,None))
 
 
 class SetupMenuTests(unittest.IsolatedAsyncioTestCase):

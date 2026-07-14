@@ -67,6 +67,9 @@ class Config:
     meaningful_min_words: int = DEFAULT_MIN_MEANINGFUL_WORDS
     meaningful_min_characters: int = DEFAULT_MIN_MEANINGFUL_CHARACTERS
     repeat_window_days: int = DEFAULT_REPEAT_WINDOW_DAYS
+    pop_review_thread_id: int | None = None
+    support_thread_id: int | None = None
+    owner_review_thread_id: int | None = None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -87,7 +90,7 @@ class Config:
         owners = _parse_ids("OWNER_USER_IDS") | _parse_ids("OWNER_TELEGRAM_IDS")
         girls_chat_id = _parse_int_env("GIRLS_CHAT_ID")
         girls_thread_id = _parse_int_env("GIRLS_THREAD_ID")
-        participation_topics = set(_parse_ids("PARTICIPATION_TOPIC_IDS"))
+        participation_topics = set(_parse_ids("PARTICIPATION_TOPIC_IDS")) | set(_parse_ids("PARTICIPATION_THREAD_IDS"))
         explicit_participation_chat = _parse_int_env("PARTICIPATION_CHAT_ID") or _parse_int_env("MAIN_CHAT_ID")
         if not explicit_participation_chat and not participation_topics and girls_thread_id is not None:
             participation_topics.add(girls_thread_id)
@@ -123,6 +126,9 @@ class Config:
             meaningful_min_words=int(os.environ.get("MEANINGFUL_MIN_WORDS", str(DEFAULT_MIN_MEANINGFUL_WORDS))),
             meaningful_min_characters=int(os.environ.get("MEANINGFUL_MIN_CHARACTERS", str(DEFAULT_MIN_MEANINGFUL_CHARACTERS))),
             repeat_window_days=int(os.environ.get("MEANINGFUL_REPEAT_DAYS", str(DEFAULT_REPEAT_WINDOW_DAYS))),
+            pop_review_thread_id=_parse_int_env("POP_REVIEW_THREAD_ID"),
+            support_thread_id=_parse_int_env("SUPPORT_THREAD_ID"),
+            owner_review_thread_id=_parse_int_env("OWNER_REVIEW_THREAD_ID"),
         )
 
     @property
@@ -140,4 +146,12 @@ RESOURCE_DEFAULTS = {
     "pop": ("Thursday POP Instructions", "Submit proof in the configured Thursday POP topic."),
     "faq": ("Frequently Asked Questions", "Contact an administrator if your question is not answered here."),
     "contact": ("Contact Admin", "Use Contact Admin from your Creator dashboard."),
+    "admin_registrations": ("Review New Creators", "Review identity details, then approve or decline. The creator receives the result and the decision is audited."),
+    "admin_pop": ("Review POP", "Use POP Reviews for submissions awaiting a decision. Every decision is recorded and sent privately to the creator."),
+    "admin_away": ("Review Away Notices", "Acknowledge, clarify, or record eligible dates as excused. Original details remain in history."),
+    "admin_alerts": ("Participation Alerts", "Use alerts for supportive follow-up. The bot never removes a member automatically."),
+    "admin_support": ("Support Requests", "Assign creator questions, respond, escalate when needed, and resolve them without exposing private details."),
+    "owner_locations": ("Telegram Locations", "Verify groups and topics from inside Telegram, preview the match, and confirm before saving routing changes."),
+    "owner_monitor": ("Participation Monitor", "Confirm that the approved participation area is connected and review concise counted, ignored, and failure totals."),
+    "owner_audit": ("Audit and Recovery", "The append-oriented audit trail records protected actions. Only owners can view full actor identities, archives, and restoration tools."),
 }

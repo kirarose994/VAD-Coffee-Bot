@@ -1,6 +1,6 @@
 # Database Schema
 
-SQLite schema version 4 is initialized and migrated by `database.initialize_database()`.
+SQLite schema version 5 is initialized and migrated by `database.initialize_database()`.
 
 | Table | Purpose |
 |---|---|
@@ -16,6 +16,8 @@ SQLite schema version 4 is initialized and migrated by `database.initialize_data
 | `message_templates`, `template_revisions` | Reusable messaging and edit history |
 | `resources` | Configurable Help Center content |
 | `system_state` | Health markers and audited operational configuration overrides |
+| `support_requests`, `support_messages` | Private creator-bound support history |
+| `delivery_failures` | Durable routing failures with safe references and retry state |
 
 Telegram ID is the creator/member primary key, so duplicate creator identities cannot exist.
 Foreign keys, unique indexes, WAL mode, and a busy timeout protect consistency.

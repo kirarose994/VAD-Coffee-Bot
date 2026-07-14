@@ -14,6 +14,7 @@ from permissions import Role, has_permission, role_for
 from pop_policy import current_period, label as pop_label
 from presentation import audit_entry, friendly_timestamp, timeline_entry
 from runtime_config import persist_setting
+from routing import ROUTES, routing_summary, send_routed
 
 
 def _nonce(ctx):
@@ -45,8 +46,12 @@ def home_markup(ctx, user_id):
     creator = db.get_creator(user_id)
     member = db.get_member(user_id)
     rows = []
-    if creator:
-        rows.append([_button("👤 My Creator Hub", nonce, "creator")])
+    if role is Role.OWNER:
+        rows.append([_button("👑 Owner Home",nonce,"owner")])
+    elif role >= Role.ADMIN:
+        rows.append([_button("🛡️ Admin Home",nonce,"admin")])
+    elif creator:
+        rows.append([_button("💛 My VAD Home", nonce, "creator")])
     elif member and member["member_type"] == "creator":
         rows.append([_button("👤 Registration Status",nonce,"registration_status")])
     elif not member:
@@ -55,13 +60,8 @@ def home_markup(ctx, user_id):
             rows.append([_button("🛍️ I'm a Buyer", nonce, "join_buyer")])
     elif role is Role.NONE:
         rows.append([_button("🛍️ Buyer Home", nonce, "buyer")])
-    if role >= Role.ADMIN:
-        rows.append([_button("🛡️ Admin Tools", nonce, "admin")])
-    if role is Role.OWNER:
-        rows.append([_button("🔐 Owner Dashboard", nonce, "owner")])
-    rows.extend([
-        [_button("📚 Help Center", nonce, "resources"), _button("💬 Get Help", nonce, "support")],
-    ])
+    rows.append([_button("📚 Help Center", nonce, "resources")])
+    if role is Role.NONE: rows.append([_button("💬 Contact an Admin",nonce,"support")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -256,13 +256,9 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return await _show(query,"Your creator profile is already approved and active.",home_markup(ctx,user_id))
         if outcome in {"inactive","rejected"}:
             return await _show(query,f"Your creator profile is currently {outcome}. Contact an owner if you need another review.",home_markup(ctx,user_id))
-        if getattr(cfg,"admin_chat_id",None) and outcome == "created":
-            try:
-                await ctx.bot.send_message(cfg.admin_chat_id,
-                    f"📝 New creator\n{update.effective_user.full_name} is ready for review.",
-                    message_thread_id=getattr(cfg,"registration_thread_id",None) or getattr(cfg,"reports_thread_id",None))
-            except Exception:
-                db.record_audit(None,"registration_notification_delivery_failed","notification",target_telegram_id=user_id,result="error")
+        if outcome == "created":
+            await send_routed(ctx.bot,cfg,"registration",
+                f"📝 New creator\n{update.effective_user.full_name} is ready for review.",target_telegram_id=user_id)
         return await _show(query,"Welcome! 💛\n\nYour creator profile is ready for community review.",home_markup(ctx,user_id))
     if action == "registration_status":
         status = db.creator_identity_status(user_id)
@@ -290,11 +286,14 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         creator = db.get_creator(user_id)
         if not creator:
             return await _show(query,"Creator access is not available for this account.",home_markup(ctx,user_id))
-        return await _show(query, "👤 My Creator Hub\n\nSee your participation, POP, time away, and community standing.\n\n" + creator_card(user_id, cfg), grid_markup(ctx, [
+        return await _show(query, "💛 My VAD Home\n\nPrivately check your participation, POP, Away Notices, reminders, and personal history.\n\n" + creator_card(user_id, cfg), grid_markup(ctx, [
             [("🟢 Available","available"),("⚪ Unavailable","unavailable")],
             [("💙 Let Us Know You’ll Be Away","away_help")],
-            [("📸 POP Help","pop_help"),("💛 My Standing","my_warnings")],
-            [("📜 Timeline","timeline_0"),("💬 Get Help","contact")],
+            [("🤝 My Participation","my_status"),("📸 My Thursday POP","pop_help")],
+            [("💛 View My Community Standing","my_warnings")],
+            [("💙 My Away Notices","my_away_notices"),("📜 View My Activity History","timeline_0")],
+            [("📨 My Support Requests","my_support"),("💬 Contact an Admin","contact")],
+            [("📚 Help Center","resources")],
         ]))
     if action == "admin":
         if role < Role.ADMIN:
@@ -309,17 +308,27 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if has_permission(user_id,cfg,"adjust_warnings"): tools.append(("💛 Creator Standing","warnings_help"))
         if has_permission(user_id,cfg,"send_announcements"): tools.append(("💬 Message Center","templates_help"))
         if tools: rows.append(tools)
-        return await _show(query, "🛡️ Admin Tools\n\nReview community items assigned to your role.\n\n" + admin_card(cfg), grid_markup(ctx,rows))
+        if has_permission(user_id,cfg,"manage_support"):rows.append([("📨 Support Requests","support_queue")])
+        rows.append([("📚 Help Center","resources")])
+        return await _show(query, "🛡️ Admin Home\n\nYou are signed in as an Admin. Review requests, alerts, and tools assigned to your role.\n\n" + admin_card(cfg), grid_markup(ctx,rows))
     if action == "owner":
         if role is not Role.OWNER:
             return await _show(query, "Owner access is required.", home_markup(ctx, user_id))
-        return await _show(query, "👑 Owner Dashboard\n\n" + owner_card(cfg), grid_markup(ctx,[
+        return await _show(query, "👑 Owner Home\n\nYou are signed in as an Owner. Review anything needing attention, manage community operations, and access protected Owner tools.\n\n" + owner_card(cfg), grid_markup(ctx,[
             [("🚨 Needs Attention","needs_attention")],
-            [("📊 Reports","reports"),("👥 Access","roles")],
-            [("🔐 Audit","audit"),("🗃️ Archive","deleted")],
+            [("📋 My Status","my_account_status"),("📸 My POP","pop_help")],
+            [("💙 My Away Notices","my_away_notices"),("📜 My Timeline","timeline_0")],
+            [("👥 Creator Directory","creator_report"),("📸 Review POP Submissions","pop_queue")],
+            [("💙 Review Away Notices","away_queue"),("🟠 Participation Alerts","participation_queue")],
+            [("⚠️ Warnings and Strikes","warnings_help"),("💬 Message Center","templates_help")],
+            [("📨 Support Requests","support_queue"),("📅 Calendar","calendar")],
+            [("📊 Reports","reports")],
+            [("📍 Telegram Locations","telegram_locations"),("📈 Participation Monitor","participation_monitor")],
+            [("🧾 Participation Event Log","participation_events"),("🔐 Audit Log","audit")],
+            [("👥 Manage Admin Access","roles"),("🗃️ Archive","deleted")],
             [("♻️ Restore","restore_help")],
             [("🧭 Setup","setup"),("🩺 Health","health")],
-            [("💾 Export","export_help")],
+            [("💾 Export","export_help"),("📚 Help Center","resources")],
         ]))
     if action == "register":
         member = db.get_member(user_id)
@@ -332,14 +341,9 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return await _show(query,"Your creator profile is already approved and active.",home_markup(ctx,user_id))
         if outcome in {"inactive","rejected"}:
             return await _show(query,f"Your creator profile is currently {outcome}. Contact an owner if you need another review.",home_markup(ctx,user_id))
-        if getattr(cfg,"admin_chat_id",None) and outcome == "created":
-            try:
-                await ctx.bot.send_message(cfg.admin_chat_id,
-                    f"📝 New registration\n{update.effective_user.full_name} is waiting for review.",
-                    message_thread_id=getattr(cfg,"registration_thread_id",None) or getattr(cfg,"reports_thread_id",None))
-                db.record_audit(None,"registration_notification_delivered","notification",target_telegram_id=user_id)
-            except Exception:
-                db.record_audit(None,"registration_notification_delivery_failed","notification",target_telegram_id=user_id,result="error")
+        if outcome == "created":
+            await send_routed(ctx.bot,cfg,"registration",
+                f"📝 New registration\n{update.effective_user.full_name} is waiting for review.",target_telegram_id=user_id)
         return await _show(query, "You’re registered! 💛\n\nYour profile is waiting for a quick community review. We’ll update your dashboard when it’s ready.", menu_markup(ctx, [], "creator"))
     if action in {"needs_attention", "admin_queue"}:
         if action == "needs_attention" and role is not Role.OWNER:
@@ -367,6 +371,8 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 ("⚠️ Unacknowledged",counts["unacknowledged_warnings"],"warnings_help"),
                 ("🔴 Owner review",counts["owner_reviews"],"warnings_help"),
             ])
+        if has_permission(user_id,cfg,"manage_support"):
+            permitted.append(("📨 Support requests",counts.get("support_requests",0),"support_queue"))
         if role is Role.OWNER:
             permitted.extend([
                 ("📭 Failed notifications",counts["failed_notifications"],"health"),
@@ -420,6 +426,15 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action in {"my_activity", "my_status"}:
         text = creator_card(user_id, cfg)
         return await _show(query, text, menu_markup(ctx, [], "creator"))
+    if action == "my_account_status":
+        return await _show(query,"📋 My Status\n\nReview your own creator status and current community information.\n\n"+
+            (creator_card(user_id,cfg) if db.get_creator(user_id) else "No creator profile is registered for this Owner account."),menu_markup(ctx,[],"owner"))
+    if action == "my_away_notices":
+        if not db.get_creator(user_id): return await _show(query,"No creator profile is registered for this account.",menu_markup(ctx,[],"home"))
+        rows=db.creator_absences(user_id)
+        text="💙 My Away Notices\n\nReview only the time-away notices connected to your account.\n\n"+(
+            "\n".join(f"{r['start_date']}–{r['end_date']} · {r['status'].title()}" for r in rows[:10]) if rows else "No Away Notices yet.")
+        return await _show(query,text,menu_markup(ctx,[],"creator" if role is Role.NONE else "owner"))
     if action == "my_warnings":
         rows = db.list_warnings(user_id)
         summary = db.warning_summary(user_id)
@@ -458,14 +473,62 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = "My Absence Calendar\n" + ("\n".join(f"{r['start_date']}–{r['end_date']} {r['absence_type']} ({r['status']})" for r in rows) or "No absence requests.")
         return await _show(query, text[:3900], menu_markup(ctx, [], "home"))
     if action in {"contact", "support"}:
-        ctx.user_data["guided_input"] = "contact_admin"
         back = "creator" if db.get_creator(user_id) else "buyer" if db.get_member(user_id) else "home"
-        return await _show(query, "💬 Contact Admin\n\nWhat do you need help with? Send one message below. Please do not include private medical details.\n\nYou’ll preview it before anything is sent.", menu_markup(ctx, [], back))
+        return await _show(query,"💬 Contact an Admin\n\nChoose what we can help you with today.",menu_markup(ctx,[
+            ("General Question","support_category_general"),("Thursday POP","support_category_pop"),
+            ("Away Notice","support_category_away"),("Participation","support_category_participation"),
+            ("Account or Verification","support_category_account"),("Report an Issue","support_category_issue"),
+            ("Something Else","support_category_other")],back))
+    if action.startswith("support_category_"):
+        if not db.get_creator(user_id):
+            return await _show(query,"Tracked support requests are available after creator registration.",menu_markup(ctx,[],"home"))
+        category=action.removeprefix("support_category_").replace("_"," ").title()
+        ctx.user_data["support_category"]=category;ctx.user_data["guided_input"]="support_message"
+        return await _show(query,"💬 New Support Request\n\nType your message. You’ll preview and confirm it before sending.",menu_markup(ctx,[],"creator"))
+    if action == "my_support":
+        if not db.get_creator(user_id):
+            return await _show(query,"Register as a creator to view support requests.",home_markup(ctx,user_id))
+        rows=db.support_requests_for(user_id)
+        text="📨 My Support Requests\n\nTrack your questions and their current status.\n\n"+(
+            "\n\n".join(f"#{r['id']} · {r['category']}\n{r['status'].title()} · {friendly_timestamp(r['created_at'],timezone_name=cfg.timezone_name)}" for r in rows[:10])
+            if rows else "No support requests yet.")
+        return await _show(query,text,menu_markup(ctx,[],"creator"))
+    if action == "support_queue":
+        if not has_permission(user_id,cfg,"manage_support"):
+            return await _show(query,"Support Requests isn’t included in your access.",home_markup(ctx,user_id))
+        rows=db.support_queue();buttons=[[(f"#{r['id']} · {r['display_name']}",f"support_select_{r['id']}")] for r in rows[:20]]
+        return await _show(query,"📨 Support Requests\n\nReview creator questions and track them until resolved.",grid_markup(ctx,buttons,"admin"))
+    if action.startswith("support_select_"):
+        if not has_permission(user_id,cfg,"manage_support"): return await _show(query,"Support access is required.",home_markup(ctx,user_id))
+        request_id=int(action.removeprefix("support_select_"));row=next((r for r in db.support_queue() if r["id"]==request_id),None)
+        if not row:return await _show(query,"That request is no longer open.",menu_markup(ctx,[],"support_queue"))
+        username=f"@{row['username']}" if row["username"] else "No username"
+        text=(f"📨 Support Request #{request_id}\n\nCreator: {row['display_name']}\nUsername: {username}\n"
+            f"Telegram ID: {row['telegram_id']}\nCategory: {row['category']}\nStatus: {row['status'].title()}\n\n{row['message']}")
+        return await _show(query,text,menu_markup(ctx,[("Assign to Me",f"support_action_assign_{request_id}"),("Reply",f"support_reply_{request_id}"),
+            ("Open Creator Profile",f"creator_select_{row['telegram_id']}"),("Add Private Note",f"notes_member_{row['telegram_id']}"),
+            ("Escalate to Owner",f"support_action_escalate_{request_id}"),("Mark Resolved",f"support_action_resolve_{request_id}")],"support_queue"))
+    if action.startswith("support_reply_"):
+        if not has_permission(user_id,cfg,"manage_support"):return await _show(query,"Support access is required.",home_markup(ctx,user_id))
+        ctx.user_data["support_reply_id"]=int(action.removeprefix("support_reply_"));ctx.user_data["guided_input"]="support_reply"
+        return await _show(query,"💬 Reply to Support Request\n\nType your reply. It will be recorded before delivery.",menu_markup(ctx,[],"support_queue"))
+    if action.startswith("support_action_"):
+        if not has_permission(user_id,cfg,"manage_support"): return await _show(query,"Support access is required.",home_markup(ctx,user_id))
+        raw=action.removeprefix("support_action_");kind,request_raw=raw.rsplit("_",1)
+        changed=db.update_support_request(int(request_raw),kind,user_id)
+        return await _show(query,"✅ Support request updated and audited." if changed else "That request was already resolved.",menu_markup(ctx,[],"support_queue"))
     if action == "resources":
         help_actions = [("⭐ Getting Started","resource_about"),("📜 Community Rules","resource_rules"),
             ("📈 Participation Guide","resource_engagement"),("📸 Thursday POP Guide","resource_pop"),
             ("💙 Away Notice Guide","resource_vacation"),("❓ Frequently Asked Questions","resource_faq"),
             ("💬 Contact Admin","contact")]
+        if role >= Role.ADMIN:
+            help_actions.extend([("🛡️ Review New Creators","resource_admin_registrations"),("🛡️ Review POP","resource_admin_pop"),
+                ("🛡️ Review Away Notices","resource_admin_away"),("🛡️ Participation Alerts","resource_admin_alerts"),
+                ("🛡️ Support Requests","resource_admin_support")])
+        if role is Role.OWNER:
+            help_actions.extend([("👑 Telegram Locations","resource_owner_locations"),("👑 Participation Monitor","resource_owner_monitor"),
+                ("👑 Audit and Recovery","resource_owner_audit")])
         return await _show(query, "📚 Help Center\n\nChoose a topic below.", menu_markup(ctx, help_actions))
     if action.startswith("resource_"):
         key = action.removeprefix("resource_")
@@ -743,6 +806,70 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"Last success: {when('last_admin_notification')}\n🟢 Database schema current: {db.schema_version()}\n"
             f"Last restart: {when('last_restart')}\nDatabase backup: Not tracked by the bot\n\n🔒 Secret values are never displayed.")
         return await _show(query,text,menu_markup(ctx,[("🔄 Refresh","health"),("⚠️ Review Errors","audit_filter_errors")],"owner"))
+    if action == "telegram_locations":
+        if role is not Role.OWNER:return await _show(query,"Telegram Locations is owner-only.",home_markup(ctx,user_id))
+        return await _show(query,"📍 Telegram Locations\n\nConfigure where participation is counted and where operational notifications are delivered.",menu_markup(ctx,[
+            ("Verify Main Group","location_main"),("Verify Participation Topic","location_participation"),
+            ("Verify Sellers Group","location_sellers"),("Verify POP Topic","location_pop"),
+            ("Verify POP Review Topic","location_pop_review"),
+            ("Verify Admin Group","location_admin"),("Verify Reports Topic","location_reports"),
+            ("Verify Away Notice Topic","location_away"),("Verify Registration Topic","location_registration"),
+            ("Verify Moderation Topic","location_moderation"),("Verify Support Topic","location_support"),
+            ("Verify Health Topic","location_health"),("View Routing Summary","routing_summary")],"owner"))
+    if action.startswith("location_"):
+        if role is not Role.OWNER:return await _show(query,"Telegram Locations is owner-only.",home_markup(ctx,user_id))
+        purpose=action.removeprefix("location_");chat=getattr(query.message,"chat",None) or update.effective_chat
+        chat_id=getattr(chat,"id",None);thread_id=getattr(query.message,"message_thread_id",None)
+        topic_purposes={"participation","pop","pop_review","reports","away","registration","moderation","support","health"}
+        value=thread_id if purpose in topic_purposes else chat_id
+        current={"main":getattr(cfg,"participation_chat_id",None),"sellers":getattr(cfg,"creator_group_id",None),
+            "admin":getattr(cfg,"admin_chat_id",None),"participation":sorted(getattr(cfg,"participation_topic_ids",frozenset())),
+            "pop":getattr(cfg,"pop_thread_id",None),"reports":getattr(cfg,"reports_thread_id",None),
+            "pop_review":getattr(cfg,"pop_review_thread_id",None),
+            "away":getattr(cfg,"away_thread_id",None),"registration":getattr(cfg,"registration_thread_id",None),
+            "moderation":getattr(cfg,"moderation_thread_id",None),"support":getattr(cfg,"support_thread_id",None),
+            "health":getattr(cfg,"health_thread_id",None)}.get(purpose)
+        match=value in current if purpose=="participation" and isinstance(current,list) else value==current
+        title=getattr(chat,"title",None) or "Private chat";forum=bool(getattr(chat,"is_forum",False))
+        recommendation="Open this tool inside the intended forum topic." if value is None else f"Use {value} for {purpose.replace('_',' ')}"
+        key={"main":"participation_chat","sellers":"creator_group","admin":"admin_chat","participation":"participation_topic",
+            "pop":"pop_topic","pop_review":"pop_review_topic","reports":"reports_topic","away":"away_topic","registration":"registration_topic",
+            "moderation":"moderation_topic","support":"support_topic","health":"health_topic"}.get(purpose)
+        bot_permissions="Unable to verify; check that the bot is present"
+        bot=getattr(ctx,"bot",None)
+        if chat_id and bot and hasattr(bot,"get_chat_member") and getattr(chat,"type",None) in {"group","supergroup","channel"}:
+            try:
+                member=await bot.get_chat_member(chat_id,bot.id)
+                allowed=[name.replace("can_","").replace("_"," ").title() for name in
+                    ("can_send_messages","can_post_messages","can_manage_topics","can_delete_messages") if getattr(member,name,False)]
+                bot_permissions=str(getattr(member,"status","member")).title()+(f" · {', '.join(allowed)}" if allowed else "")
+            except Exception:
+                pass
+        text=(f"📍 Verify {purpose.replace('_',' ').title()}\n\nConfirm this Telegram location before saving it.\n\n"
+            f"Chat title: {title}\nChat type: {getattr(chat,'type','unknown')}\nChat ID: {chat_id}\nForum enabled: {'Yes' if forum else 'No'}\n"
+            f"Topic title: {'General' if thread_id is None else 'Current topic (title unavailable)'}\nTopic ID: {thread_id or 'None'}\n"
+            f"Bot membership and permissions: {bot_permissions}\nCurrent configured destination: {current if current is not None else 'Not configured'}\n"
+            f"Participation enabled here: {'Yes' if purpose == 'participation' and match else 'No'}\nMatch: {'Yes' if match else 'No'}\nRecommended correction: {recommendation}")
+        actions=[] if value is None else [("Use This Location",f"setup_prepare_{key}")]
+        return await _show(query,text,menu_markup(ctx,actions,"telegram_locations"))
+    if action == "routing_summary":
+        if role is not Role.OWNER:return await _show(query,"Routing Summary is owner-only.",home_markup(ctx,user_id))
+        lines=[f"{event.replace('_',' ').title()}: {chat or 'Not configured'} · topic {thread if thread is not None else 'none'}" for event,chat,thread in routing_summary(cfg)]
+        return await _show(query,"📍 Routing Summary\n\nReview every operational delivery destination.\n\n"+"\n".join(lines),menu_markup(ctx,[],"telegram_locations"))
+    if action == "participation_monitor":
+        if role is not Role.OWNER:return await _show(query,"Participation Monitor is owner-only.",home_markup(ctx,user_id))
+        monitor=db.participation_monitor();cats=", ".join(f"{r['reason']}: {r['count']}" for r in monitor["ignored_categories"]) or "None"
+        last=lambda row: friendly_timestamp(row["created_at"],timezone_name=cfg.timezone_name) if row else "None yet"
+        text=("📈 Participation Monitor\n\nThis page confirms whether participation tracking is seeing and correctly processing messages in the approved VAD participation area.\n\n"
+            f"Main group: {cfg.participation_chat_id or 'Not configured'}\nTopics: {', '.join(map(str,cfg.participation_topic_ids)) or 'General-only rule'}\n"
+            f"Connected: {'Yes' if cfg.participation_chat_id else 'No'}\nLast message detected: {last(monitor['last_detected'])}\n"
+            f"Last meaningful participation: {last(monitor['last_counted'])}\nApproved sellers tracked: {monitor['tracked']}\n"
+            f"Ignored today: {monitor['ignored_today']}\nIgnored categories: {cats}\nProcessing failures: {monitor['failures']}")
+        return await _show(query,text,menu_markup(ctx,[("🧾 Participation Event Log","participation_events")],"owner"))
+    if action == "participation_events":
+        if role is not Role.OWNER:return await _show(query,"Participation Event Log is owner-only.",home_markup(ctx,user_id))
+        rows=db.participation_events();lines=[f"{'✅ Counted' if r['decision']=='accepted' else '⚪ Ignored'} · {r['display_name'] or 'Unregistered user'} · {r['reason']}\n{friendly_timestamp(r['created_at'],timezone_name=cfg.timezone_name)}" for r in rows]
+        return await _show(query,"🧾 Participation Event Log\n\nReview concise processing outcomes without storing full message text.\n\n"+("\n\n".join(lines) or "No participation events yet."),menu_markup(ctx,[],"participation_monitor"))
     if action == "setup":
         if role is not Role.OWNER:
             return await _show(query,"Setup is available only to owners.",home_markup(ctx,user_id))
@@ -844,6 +971,13 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "pop_chat":getattr(chat,"id",None),"admin_chat":getattr(chat,"id",None),
             "buyer_group":getattr(chat,"id",None),"participation_topic":getattr(query.message,"message_thread_id",None),
             "pop_topic":getattr(query.message,"message_thread_id",None),
+            "pop_review_topic":getattr(query.message,"message_thread_id",None),
+            "reports_topic":getattr(query.message,"message_thread_id",None),
+            "away_topic":getattr(query.message,"message_thread_id",None),
+            "registration_topic":getattr(query.message,"message_thread_id",None),
+            "moderation_topic":getattr(query.message,"message_thread_id",None),
+            "support_topic":getattr(query.message,"message_thread_id",None),
+            "health_topic":getattr(query.message,"message_thread_id",None),
         }
         value = values.get(key)
         if value is None:
@@ -859,7 +993,10 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not pending:
             return await _show(query,"That setup change expired. No settings were changed.",menu_markup(ctx,[],"setup"))
         mapping={"participation_chat":"participation_chat_id","creator_group":"creator_group_id","pop_chat":"pop_chat_id",
-            "admin_chat":"admin_chat_id","buyer_group":"buyer_group_id","pop_topic":"pop_thread_id"}
+            "admin_chat":"admin_chat_id","buyer_group":"buyer_group_id","pop_topic":"pop_thread_id",
+            "pop_review_topic":"pop_review_thread_id",
+            "reports_topic":"reports_thread_id","away_topic":"away_thread_id","registration_topic":"registration_thread_id",
+            "moderation_topic":"moderation_thread_id","support_topic":"support_thread_id","health_topic":"health_thread_id"}
         if pending["key"] == "participation_topic":
             new_topics=set(getattr(cfg,"participation_topic_ids",frozenset()));new_topics.add(int(pending["value"]))
             persist_setting(cfg,"participation_topic_ids",frozenset(new_topics),user_id)

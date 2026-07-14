@@ -10,6 +10,7 @@ import database as db
 from engagement import classify
 from permissions import can_manage_sensitive, can_mutate, can_read, can_view_audit, has_permission, role_for
 from pop_policy import label as pop_label
+from routing import send_routed
 
 
 def config(ctx):
@@ -226,8 +227,13 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg, user, cfg = update.effective_message, update.effective_user, config(ctx)
     if not msg or not user:
         return
+    in_participation_chat = msg.chat_id == (getattr(cfg,"participation_chat_id",None) or getattr(cfg,"girls_chat_id",None))
+    if in_participation_chat:
+        db.set_system_state("last_participation_message_detected",datetime.now(cfg.timezone).isoformat())
     creator = db.get_creator(user.id)
     if not creator or creator["status"] != "active":
+        if in_participation_chat and participation_enabled(cfg,msg.chat_id,msg.message_thread_id):
+            db.record_audit(None,"engagement_ignored","participation_event",target_telegram_id=user.id,new_value={"reason":"unregistered_user"})
         return
     local_now = datetime.now(cfg.timezone)
     if db.approved_absence_on(user.id, local_now.date()):
@@ -243,16 +249,13 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         proof_type = "photo" if msg.photo else "document" if msg.document else "media"
         if db.submit_pop(user.id, week_key(local_now), msg.message_id, msg.chat_id, thread_id, proof_type):
             await msg.reply_text("Thursday POP received! 📸 It’s now waiting for review.")
-            if cfg.admin_chat_id:
-                try:
-                    await ctx.bot.send_message(cfg.admin_chat_id,
-                        f"📸 POP awaiting review\n{escape(user.full_name)} submitted Thursday POP.",
-                        message_thread_id=cfg.reports_thread_id)
-                    db.record_audit(None,"pop_notification_delivered","notification",target_telegram_id=user.id)
-                except Exception:
-                    db.record_audit(None,"pop_notification_delivery_failed","notification",target_telegram_id=user.id,result="error")
+            await send_routed(ctx.bot,cfg,"pop_review",
+                f"📸 POP awaiting review\n{escape(user.full_name)} submitted Thursday POP.\nPeriod: {week_key(local_now)}\nSubmitted: {local_now.strftime('%b %d · %I:%M %p ET')}",
+                target_telegram_id=user.id,related_submission_id=msg.message_id)
         return
     if not participation_enabled(cfg,msg.chat_id,thread_id):
+        if in_participation_chat:
+            db.record_audit(None,"engagement_ignored","participation_event",target_telegram_id=user.id,new_value={"reason":"wrong_topic"})
         return
     decision = classify(msg.text, media=media,
         is_repeat=lambda digest, since: db.recent_hash_exists(user.id, digest, since),
@@ -284,15 +287,13 @@ async def inactivity_job(ctx: ContextTypes.DEFAULT_TYPE):
                 started = grace_start
         hours = (now - started.astimezone(timezone.utc)).total_seconds() / 3600
         if hours >= cfg.alert_hours and db.claim_notification(creator["telegram_id"], anchor, "alert"):
-            if cfg.admin_chat_id:
-                try:
-                    await ctx.bot.send_message(cfg.admin_chat_id,
-                        f"🔴 Admin follow-up required\n{escape(creator['display_name'])} has reached the three-day community participation limit.",
-                        message_thread_id=cfg.reports_thread_id)
-                    db.record_audit(None,"alert_delivered","notification",target_telegram_id=creator["telegram_id"])
-                    db.set_system_state("last_admin_notification",datetime.now(cfg.timezone).isoformat())
-                except Exception:
-                    db.record_audit(None,"alert_delivery_failed","notification",target_telegram_id=creator["telegram_id"],result="error")
+            full_creator=db.get_creator(creator["telegram_id"])
+            username=f"@{full_creator['username']}" if full_creator and full_creator["username"] else "No username"
+            await send_routed(ctx.bot,cfg,"participation_alert",
+                f"🔴 Admin follow-up required\n{escape(creator['display_name'])} · {username}\nTelegram ID: {creator['telegram_id']}\n"
+                f"Last meaningful participation: {anchor}\nElapsed: {hours:.1f} hours\nAway Notice: None active\nOpen Admin Home → Participation Alerts.",
+                target_telegram_id=creator["telegram_id"])
+            db.set_system_state("last_admin_notification",datetime.now(cfg.timezone).isoformat())
         elif hours >= cfg.warning_hours and db.claim_notification(creator["telegram_id"], anchor, "warning"):
             try:
                 await ctx.bot.send_message(creator["telegram_id"],
@@ -301,6 +302,10 @@ async def inactivity_job(ctx: ContextTypes.DEFAULT_TYPE):
                 db.record_audit(None,"warning_delivered","notification",target_telegram_id=creator["telegram_id"])
             except Exception:
                 db.record_audit(None,"warning_delivery_failed","notification",target_telegram_id=creator["telegram_id"],result="error")
+            await send_routed(ctx.bot,cfg,"participation_flag",
+                f"🟠 Two-day participation flag\n{escape(creator['display_name'])}\nTelegram ID: {creator['telegram_id']}\n"
+                f"Last meaningful participation: {anchor}\nElapsed: {hours:.1f} hours\nAway Notice: None active.",
+                target_telegram_id=creator["telegram_id"])
 
 
 async def daily_owner_summary_job(ctx: ContextTypes.DEFAULT_TYPE):

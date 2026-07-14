@@ -100,12 +100,12 @@ class MenuAndPermissionTests(unittest.TestCase):
 
     def test_both_configured_owners_have_equal_owner_menu(self):
         self.assertEqual(self.labels(1), self.labels(2))
-        self.assertIn("🔐 Owner Dashboard", self.labels(1))
+        self.assertIn("👑 Owner Home", self.labels(1))
 
     def test_creator_cannot_see_admin_or_owner_menu(self):
         labels = self.labels(99)
         self.assertNotIn("👑 Admin Dashboard", labels)
-        self.assertNotIn("🔐 Owner Dashboard", labels)
+        self.assertNotIn("👑 Owner Home", labels)
 
     def test_individual_admin_permissions_are_enforced(self):
         cfg = self.config()

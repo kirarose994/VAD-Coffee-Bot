@@ -45,12 +45,13 @@ LEAD_ADMIN_DEFAULT_PERMISSIONS = frozenset({
     "review_registrations", "review_vacations", "review_sick_days", "review_pop",
     "view_creator_reports", "manage_creators", "add_admin_notes", "send_announcements",
     "adjust_warnings",
+    "manage_support",
 })
 
 # Regular admins receive moderation and communication tools only. Owners may grant an
 # individual additional operational permission; hidden buttons never replace server checks.
 ADMIN_DEFAULT_PERMISSIONS = frozenset({
-    "view_creator_reports", "add_admin_notes", "send_announcements", "adjust_warnings",
+    "view_creator_reports", "add_admin_notes", "send_announcements", "adjust_warnings", "manage_support",
 })
 
 
