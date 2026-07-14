@@ -32,7 +32,7 @@ from setup_mode import register_setup_handlers
 async def groupid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Reply with the current chat's ID — useful for setting ADMIN_CHAT_ID."""
     if not can_mutate(update.effective_user.id if update.effective_user else None, ctx.bot_data["config"]):
-        await update.effective_message.reply_text("Sorry, this command is for lead admins only.")
+        await update.effective_message.reply_text("Sorry, this command is for operational admins only.")
         return
     chat = update.effective_chat
     if chat.type in ("group", "supergroup", "channel"):
@@ -49,7 +49,7 @@ async def groupid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 async def topicid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Reply with the topic's message_thread_id — useful for setting COFFEE_ORDERS_THREAD_ID."""
     if not can_mutate(update.effective_user.id if update.effective_user else None, ctx.bot_data["config"]):
-        await update.effective_message.reply_text("Sorry, this command is for lead admins only.")
+        await update.effective_message.reply_text("Sorry, this command is for operational admins only.")
         return
     msg = update.message
     if msg and msg.is_topic_message:
