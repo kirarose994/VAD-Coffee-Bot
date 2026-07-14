@@ -26,6 +26,7 @@ from handlers.error import error_handler
 from database import initialize_database
 from tracker import register_handlers
 from permissions import can_mutate
+from setup_mode import register_setup_handlers
 
 
 async def groupid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -103,6 +104,7 @@ def main() -> None:
     app.add_handler(CommandHandler("groupid", groupid_command))
     app.add_handler(CommandHandler("topicid", topicid_command))
     register_handlers(app)
+    register_setup_handlers(app)
     app.add_error_handler(error_handler)
 
     logger.info("Bot is running. Press Ctrl-C to stop.")

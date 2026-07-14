@@ -34,6 +34,11 @@ Role-based access uses immutable Telegram IDs from Replit Secrets:
 Creator self-service registration and vacation commands remain available to the creator.
 Every mutation is written to the audit history with actor, target, action, details, and time.
 
+Temporary setup commands are enabled only while `SETUP_MODE=true`: `/myid` returns the
+requester's numeric user ID; `/chatid` and `/threadid` return the current group/topic IDs
+only after Telegram confirms the requester is an administrator of that group. Disable setup
+mode after collecting the IDs. These commands never display secrets or environment values.
+
 ## Project structure
 
 ```
@@ -79,6 +84,7 @@ Add `TELEGRAM_BOT_TOKEN` as a Replit Secret.
 | `TIMEZONE` | `America/New_York` | Display and scheduling timezone |
 | `INACTIVITY_WARNING_HOURS` | `48` | Warning threshold |
 | `INACTIVITY_ALERT_HOURS` | `72` | Admin-alert threshold |
+| `SETUP_MODE` | `false` | Temporarily enables numeric Telegram ID discovery commands |
 
 Credentials and chat configuration belong in Replit Secrets/environment variables.
 The SQLite tracker stores UTC instants and uses Eastern Time for Thursday and vacation rules.

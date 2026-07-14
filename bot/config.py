@@ -22,6 +22,7 @@ class Config:
     timezone_name: str
     warning_hours: int
     alert_hours: int
+    setup_mode: bool
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -56,6 +57,7 @@ class Config:
 
         timezone_name = os.environ.get("TIMEZONE", "America/New_York")
         ZoneInfo(timezone_name)  # fail early on a misspelled timezone
+        setup_mode = os.environ.get("SETUP_MODE", "false").strip().casefold() == "true"
 
         return cls(
             token=token,
@@ -71,6 +73,7 @@ class Config:
             timezone_name=timezone_name,
             warning_hours=int(os.environ.get("INACTIVITY_WARNING_HOURS", "48")),
             alert_hours=int(os.environ.get("INACTIVITY_ALERT_HOURS", "72")),
+            setup_mode=setup_mode,
         )
 
     @property
