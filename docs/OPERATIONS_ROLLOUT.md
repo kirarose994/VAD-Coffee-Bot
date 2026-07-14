@@ -111,7 +111,7 @@ Every submenu has Home, Back, and Cancel. Expired/reused menu buttons return saf
 - Owner: Admin Tools plus **Owner Dashboard** and every protected capability.
   - Owner Dashboard: Needs Attention, Reports, Access, Audit, Archive, Restore, Setup, Health, Export.
   - Setup: Participation Chat, Participation Topics, POP Group, POP Topic, Admin Group,
-    Creator Group, Buyer Group, Time Zone, Reminder Times, Verify Current Chat, Verify Current Topic.
+    Seller Group, Buyer Group, Time Zone, Reminder Times, Verify Current Chat, Verify Current Topic.
 
 Passive screens show Home and Back. Cancel appears only in an active form or confirmation.
 Expired buttons return safely to the correct role-aware Home screen. Every callback still

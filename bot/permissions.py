@@ -41,11 +41,16 @@ def can_manage_sensitive(user_id: int | None, config) -> bool:
     return role_for(user_id, config) is Role.OWNER
 
 
-OPERATIONAL_PERMISSIONS = frozenset({
+LEAD_ADMIN_DEFAULT_PERMISSIONS = frozenset({
     "review_registrations", "review_vacations", "review_sick_days", "review_pop",
     "view_creator_reports", "manage_creators", "add_admin_notes", "send_announcements",
     "adjust_warnings",
-    "change_settings",
+})
+
+# Regular admins receive moderation and communication tools only. Owners may grant an
+# individual additional operational permission; hidden buttons never replace server checks.
+ADMIN_DEFAULT_PERMISSIONS = frozenset({
+    "view_creator_reports", "add_admin_notes", "send_announcements", "adjust_warnings",
 })
 
 
@@ -56,4 +61,5 @@ def has_permission(user_id: int | None, config, permission: str) -> bool:
     if role < Role.ADMIN:
         return False
     assigned = getattr(config, "admin_permissions", {}).get(user_id)
-    return permission in (assigned if assigned is not None else OPERATIONAL_PERMISSIONS)
+    defaults = LEAD_ADMIN_DEFAULT_PERMISSIONS if role is Role.LEAD_ADMIN else ADMIN_DEFAULT_PERMISSIONS
+    return permission in (assigned if assigned is not None else defaults)

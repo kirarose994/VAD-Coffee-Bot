@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "bot"))
 import database as db
 from config import Config
 from navigation import callback, home_markup
+from runtime_config import apply_persisted_settings, persist_setting
 from tracker import participation_enabled
 
 
@@ -47,6 +48,9 @@ class RoleSeparationTests(unittest.TestCase):
         self.assertNotIn("🔐 Owner Dashboard",admin)
         self.assertIn("🔐 Owner Dashboard",owner)
 
+    def test_owner_without_creator_profile_can_register_as_creator(self):
+        self.assertIn("✨ I'm a Creator / Seller",self.menu(1,None,None))
+
 
 class SetupMenuTests(unittest.IsolatedAsyncioTestCase):
     def cfg(self, owner=True):
@@ -69,7 +73,7 @@ class SetupMenuTests(unittest.IsolatedAsyncioTestCase):
         text, markup = result.args[0],result.kwargs["reply_markup"]
         self.assertIn("Review where the bot works",text)
         self.assertTrue({"💬 Participation Chat","🧵 Participation Topics","📸 POP Group","🧵 POP Topic",
-            "🛡️ Admin Group","👤 Creator Group","🛍️ Buyer Group","🌎 Time Zone","⏰ Reminder Times"}.issubset(labels(markup)))
+            "🛡️ Admin Group","👤 Seller Group","🛍️ Buyer Group","🌎 Time Zone","⏰ Reminder Times"}.issubset(labels(markup)))
 
     async def test_verify_topic_shows_context_and_configuration(self):
         result = await self.screen("verify_topic")
@@ -78,6 +82,8 @@ class SetupMenuTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Topic ID: 10",text)
         self.assertIn("Forum: Yes",text)
         self.assertIn("Participation enabled here: Yes",text)
+        self.assertIn("Bot permissions:",text)
+        self.assertIn("Configuration problems:",text)
 
     async def test_admin_cannot_tamper_into_owner_setup(self):
         result = await self.screen("setup",user_id=2)
@@ -91,6 +97,11 @@ class ParticipationRoutingTests(unittest.TestCase):
         self.assertTrue(participation_enabled(cfg,-100,11))
         self.assertFalse(participation_enabled(cfg,-100,12))
         self.assertFalse(participation_enabled(cfg,-200,10))
+
+    def test_pop_location_never_becomes_participation_location(self):
+        cfg=SimpleNamespace(participation_chat_id=-100,participation_topic_ids=frozenset({10}),
+            girls_chat_id=-200,girls_thread_id=None,pop_chat_id=-200,pop_thread_id=11)
+        self.assertFalse(participation_enabled(cfg,-200,11))
 
     def test_empty_topic_list_means_general_only(self):
         cfg=SimpleNamespace(participation_chat_id=-100,participation_topic_ids=frozenset(),girls_chat_id=None,girls_thread_id=None)
@@ -121,3 +132,21 @@ class BuyerIdentityTests(unittest.TestCase):
             db.register_member(50,"buyer","Buyer Person","buyer",path)
             self.assertEqual(db.get_member(50,path)["member_type"],"buyer")
             self.assertIsNone(db.get_creator(50,path))
+
+
+class PersistedSetupTests(unittest.TestCase):
+    def test_owner_setting_survives_new_config_instance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/"bot.db";db.initialize_database(path)
+            defaults=dict(participation_chat_id=None,participation_topic_ids=frozenset(),pop_chat_id=None,
+                pop_thread_id=None,admin_chat_id=None,creator_group_id=None,buyer_group_id=None,
+                timezone_name="America/New_York",warning_hours=48,alert_hours=72,pop_cutoff_time="23:59",
+                meaningful_min_words=3,meaningful_min_characters=12,repeat_window_days=7)
+            first=SimpleNamespace(**defaults)
+            persist_setting(first,"participation_chat_id",-1003543892255,1,path)
+            persist_setting(first,"participation_topic_ids",frozenset({123}),1,path)
+            second=SimpleNamespace(**defaults)
+            apply_persisted_settings(second,path)
+            self.assertEqual(second.participation_chat_id,-1003543892255)
+            self.assertEqual(second.participation_topic_ids,frozenset({123}))
+            self.assertIn("setting_changed",[row["action"] for row in db.history(20,path)])

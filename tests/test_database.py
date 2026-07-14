@@ -24,6 +24,23 @@ class DatabaseTests(unittest.TestCase):
         with db.get_connection(self.path) as connection:
             self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()["version"], 4)
 
+    def test_repeat_registration_preserves_approval_and_prevents_duplicates(self):
+        self.assertEqual(db.register_creator(6558268505,"kira","Kira",self.path),"created")
+        db.set_status(6558268505,"active",99,self.path)
+        self.assertEqual(db.register_creator(6558268505,"new_name","Kira Rose",self.path),"active")
+        with db.get_connection(self.path) as connection:
+            count=connection.execute("SELECT COUNT(*) FROM creators WHERE telegram_id=?",(6558268505,)).fetchone()[0]
+        self.assertEqual(count,1)
+        self.assertEqual(db.get_creator(6558268505,self.path)["status"],"active")
+
+    def test_archived_creator_is_not_resolved_as_active_identity(self):
+        db.register_creator(6558268505,"kira","Kira",self.path)
+        db.delete_creator(6558268505,99,self.path)
+        self.assertIsNone(db.get_creator(6558268505,self.path))
+        status=db.creator_identity_status(6558268505,self.path)
+        self.assertEqual(status["state"],"archived")
+        self.assertFalse(status["directory_visible"])
+
     def test_engagement_is_idempotent(self):
         db.register_creator(10, "girl", "Creator", self.path)
         db.set_status(10, "active", 99, self.path)
@@ -52,6 +69,7 @@ class DatabaseTests(unittest.TestCase):
         creator = db.get_creator(22, legacy)
         self.assertEqual(creator["status"], "active")
         self.assertEqual(creator["registered_at"], "2026-01-01")
+        self.assertEqual(db.get_member(22,legacy)["member_type"],"creator")
 
     def test_destructive_actions_and_settings_are_audited(self):
         db.register_creator(10, "girl", "Creator", self.path)

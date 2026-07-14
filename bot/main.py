@@ -18,6 +18,7 @@ from handlers.error import error_handler
 from navigation import register_navigation
 from operations import register_operations
 from permissions import can_manage_sensitive
+from runtime_config import apply_persisted_settings
 from tracker import register_handlers
 
 
@@ -62,6 +63,7 @@ def register_application_handlers(app: Application) -> None:
 def main() -> None:
     config = Config.from_env()
     initialize_database()
+    apply_persisted_settings(config)
     set_system_state("last_restart", datetime.now(ZoneInfo("America/New_York")).isoformat())
     setup_logging(config.log_level)
     logger = logging.getLogger(__name__)

@@ -51,5 +51,9 @@ class HandlerRoutingTests(unittest.TestCase):
         self.assertTrue(self.app.handlers.get(10))
         self.assertFalse(any(handler.check_update(update) for handler in self.app.handlers[10]))
 
+    def test_temporary_setup_handlers_are_not_loaded(self):
+        source=(Path(__file__).parents[1]/"bot"/"main.py").read_text(encoding="utf-8")
+        self.assertNotIn("register_setup_handlers",source)
+
 
 if __name__ == "__main__": unittest.main()

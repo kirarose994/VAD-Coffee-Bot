@@ -37,5 +37,9 @@ class EngagementTests(unittest.TestCase):
         )
         self.assertEqual(second.reason, "repeated_text")
 
+    def test_meaningful_thresholds_are_configurable(self):
+        self.assertFalse(classify("helpful answer here",min_words=4).accepted)
+        self.assertTrue(classify("this is a helpful answer",min_words=4,min_characters=10).accepted)
+
 
 if __name__ == "__main__": unittest.main()

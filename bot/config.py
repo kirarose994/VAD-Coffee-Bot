@@ -6,6 +6,10 @@ import os
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
+from constants import (DEFAULT_ALERT_HOURS, DEFAULT_MIN_MEANINGFUL_CHARACTERS,
+    DEFAULT_MIN_MEANINGFUL_WORDS, DEFAULT_POP_CUTOFF, DEFAULT_POP_DUE_WEEKDAY,
+    DEFAULT_REPEAT_WINDOW_DAYS, DEFAULT_TIMEZONE, DEFAULT_WARNING_HOURS)
+
 
 def _parse_int_env(key: str) -> int | None:
     raw = os.environ.get(key, "").strip()
@@ -47,7 +51,6 @@ class Config:
     timezone_name: str
     warning_hours: int
     alert_hours: int
-    setup_mode: bool
     daily_owner_summary_enabled: bool
     daily_owner_summary_time: str
     pop_due_weekday: int
@@ -61,13 +64,16 @@ class Config:
     pop_chat_id: int | None = None
     creator_group_id: int | None = None
     buyer_group_id: int | None = None
+    meaningful_min_words: int = DEFAULT_MIN_MEANINGFUL_WORDS
+    meaningful_min_characters: int = DEFAULT_MIN_MEANINGFUL_CHARACTERS
+    repeat_window_days: int = DEFAULT_REPEAT_WINDOW_DAYS
 
     @classmethod
     def from_env(cls) -> "Config":
         token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         if not token:
             raise ValueError("TELEGRAM_BOT_TOKEN is not set. Add it as a Replit Secret.")
-        timezone_name = os.environ.get("TIMEZONE", "America/New_York")
+        timezone_name = os.environ.get("TIMEZONE", DEFAULT_TIMEZONE)
         ZoneInfo(timezone_name)
         try:
             raw_permissions = json.loads(os.environ.get("ADMIN_PERMISSIONS_JSON", "{}"))
@@ -99,13 +105,12 @@ class Config:
             pop_thread_id=_parse_int_env("POP_THREAD_ID"),
             reports_thread_id=_parse_int_env("REPORTS_THREAD_ID"),
             timezone_name=timezone_name,
-            warning_hours=int(os.environ.get("INACTIVITY_WARNING_HOURS", "48")),
-            alert_hours=int(os.environ.get("INACTIVITY_ALERT_HOURS", "72")),
-            setup_mode=os.environ.get("SETUP_MODE", "false").strip().casefold() == "true",
+            warning_hours=int(os.environ.get("INACTIVITY_WARNING_HOURS", str(DEFAULT_WARNING_HOURS))),
+            alert_hours=int(os.environ.get("INACTIVITY_ALERT_HOURS", str(DEFAULT_ALERT_HOURS))),
             daily_owner_summary_enabled=os.environ.get("DAILY_OWNER_SUMMARY_ENABLED", "false").strip().casefold() == "true",
             daily_owner_summary_time=os.environ.get("DAILY_OWNER_SUMMARY_TIME", "09:00"),
-            pop_due_weekday=int(os.environ.get("POP_DUE_WEEKDAY", "3")),
-            pop_cutoff_time=os.environ.get("POP_CUTOFF_TIME", "23:59"),
+            pop_due_weekday=int(os.environ.get("POP_DUE_WEEKDAY", str(DEFAULT_POP_DUE_WEEKDAY))),
+            pop_cutoff_time=os.environ.get("POP_CUTOFF_TIME", DEFAULT_POP_CUTOFF),
             registration_thread_id=_parse_int_env("REGISTRATION_THREAD_ID"),
             away_thread_id=_parse_int_env("AWAY_THREAD_ID"),
             moderation_thread_id=_parse_int_env("MODERATION_THREAD_ID"),
@@ -115,6 +120,9 @@ class Config:
             pop_chat_id=_parse_int_env("POP_CHAT_ID") or girls_chat_id,
             creator_group_id=_parse_int_env("CREATOR_GROUP_ID") or girls_chat_id,
             buyer_group_id=_parse_int_env("BUYER_GROUP_ID"),
+            meaningful_min_words=int(os.environ.get("MEANINGFUL_MIN_WORDS", str(DEFAULT_MIN_MEANINGFUL_WORDS))),
+            meaningful_min_characters=int(os.environ.get("MEANINGFUL_MIN_CHARACTERS", str(DEFAULT_MIN_MEANINGFUL_CHARACTERS))),
+            repeat_window_days=int(os.environ.get("MEANINGFUL_REPEAT_DAYS", str(DEFAULT_REPEAT_WINDOW_DAYS))),
         )
 
     @property

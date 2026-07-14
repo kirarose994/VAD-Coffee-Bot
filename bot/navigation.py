@@ -13,6 +13,7 @@ from config import RESOURCE_DEFAULTS
 from permissions import Role, has_permission, role_for
 from pop_policy import current_period, label as pop_label
 from presentation import audit_entry, friendly_timestamp, timeline_entry
+from runtime_config import persist_setting
 
 
 def _nonce(ctx):
@@ -46,9 +47,12 @@ def home_markup(ctx, user_id):
     rows = []
     if creator:
         rows.append([_button("👤 My Creator Hub", nonce, "creator")])
-    elif role is Role.NONE and not member:
+    elif member and member["member_type"] == "creator":
+        rows.append([_button("👤 Registration Status",nonce,"registration_status")])
+    elif not member:
         rows.append([_button("✨ I'm a Creator / Seller", nonce, "join_creator")])
-        rows.append([_button("🛍️ I'm a Buyer", nonce, "join_buyer")])
+        if role is Role.NONE:
+            rows.append([_button("🛍️ I'm a Buyer", nonce, "join_buyer")])
     elif role is Role.NONE:
         rows.append([_button("🛍️ Buyer Home", nonce, "buyer")])
     if role >= Role.ADMIN:
@@ -66,6 +70,15 @@ def menu_markup(ctx, actions, back="home"):
     rows = [[_button(label, nonce, action)] for label, action in actions]
     rows.append(_nav(nonce, back))
     return InlineKeyboardMarkup(rows)
+
+
+def confirmation_markup(ctx, confirm_action, back="setup"):
+    """Confirmation controls for a state-changing workflow."""
+    nonce = _nonce(ctx)
+    return InlineKeyboardMarkup([
+        [_button("✅ Confirm",nonce,confirm_action),_button("❌ Cancel",nonce,"cancel")],
+        [_button("◀️ Back",nonce,back)],
+    ])
 
 
 def _week_key(now):
@@ -200,8 +213,10 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text += "\n\nToday\n" + creator_card(update.effective_user.id,ctx.bot_data["config"])
     elif role >= Role.ADMIN:
         text += "\n\nChoose the tools you need below."
-    elif member:
+    elif member and member["member_type"] == "buyer":
         text += "\n\nBuyer Home keeps community help and support easy to find."
+    elif member:
+        text += "\n\nOpen Registration Status to review how your creator profile is recorded."
     else:
         text += "\n\nChoose the community view that fits you."
     markup = home_markup(ctx, update.effective_user.id)
@@ -231,10 +246,17 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data.clear()
         return await _show(query, "Action cancelled.", home_markup(ctx, user_id))
     if action == "join_creator":
-        if role is not Role.NONE or db.get_member(user_id):
+        member = db.get_member(user_id)
+        if member and member["member_type"] == "buyer":
             return await _show(query,"That community view is already set.",home_markup(ctx,user_id))
-        db.register_creator(user_id,update.effective_user.username,update.effective_user.full_name)
-        if getattr(cfg,"admin_chat_id",None):
+        outcome = db.register_creator(user_id,update.effective_user.username,update.effective_user.full_name)
+        if outcome == "archived":
+            return await _show(query,"Your earlier creator record is archived. An owner can review and restore it from the Archive.",home_markup(ctx,user_id))
+        if outcome == "active":
+            return await _show(query,"Your creator profile is already approved and active.",home_markup(ctx,user_id))
+        if outcome in {"inactive","rejected"}:
+            return await _show(query,f"Your creator profile is currently {outcome}. Contact an owner if you need another review.",home_markup(ctx,user_id))
+        if getattr(cfg,"admin_chat_id",None) and outcome == "created":
             try:
                 await ctx.bot.send_message(cfg.admin_chat_id,
                     f"📝 New creator\n{update.effective_user.full_name} is ready for review.",
@@ -242,6 +264,16 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 db.record_audit(None,"registration_notification_delivery_failed","notification",target_telegram_id=user_id,result="error")
         return await _show(query,"Welcome! 💛\n\nYour creator profile is ready for community review.",home_markup(ctx,user_id))
+    if action == "registration_status":
+        status = db.creator_identity_status(user_id)
+        labels = {"not_registered":"Not registered","pending":"Waiting for review","active":"Approved and active",
+            "inactive":"Inactive","rejected":"Not approved","archived":"Archived"}
+        details = [f"Status: {labels.get(status['state'],status['state'].title())}",
+            f"Visible in creator lists: {'Yes' if status['directory_visible'] else 'No'}"]
+        if status.get("identity_consistent") is False:
+            details.append("Identity check: Needs owner review")
+        explanation = "See exactly how your creator registration is recorded."
+        return await _show(query,"👤 Registration Status\n\n"+explanation+"\n\n"+"\n".join(details),menu_markup(ctx,[],"home"))
     if action == "join_buyer":
         if role is not Role.NONE or db.get_creator(user_id):
             return await _show(query,"That community view is already set.",home_markup(ctx,user_id))
@@ -293,8 +325,14 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         member = db.get_member(user_id)
         if member and member["member_type"] == "buyer":
             return await _show(query,"This account is already set up for the buyer community. Contact an owner if that needs to change.",home_markup(ctx,user_id))
-        db.register_creator(user_id, update.effective_user.username, update.effective_user.full_name)
-        if getattr(cfg,"admin_chat_id",None):
+        outcome = db.register_creator(user_id, update.effective_user.username, update.effective_user.full_name)
+        if outcome == "archived":
+            return await _show(query,"Your previous creator record is archived. Please contact an owner.",home_markup(ctx,user_id))
+        if outcome == "active":
+            return await _show(query,"Your creator profile is already approved and active.",home_markup(ctx,user_id))
+        if outcome in {"inactive","rejected"}:
+            return await _show(query,f"Your creator profile is currently {outcome}. Contact an owner if you need another review.",home_markup(ctx,user_id))
+        if getattr(cfg,"admin_chat_id",None) and outcome == "created":
             try:
                 await ctx.bot.send_message(cfg.admin_chat_id,
                     f"📝 New registration\n{update.effective_user.full_name} is waiting for review.",
@@ -711,12 +749,15 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await _show(query,"🧭 Setup\n\nReview where the bot works and adjust owner-protected community settings.",menu_markup(ctx,[
             ("💬 Participation Chat","setup_participation_chat"),("🧵 Participation Topics","setup_participation_topics"),
             ("📸 POP Group","setup_pop_group"),("🧵 POP Topic","setup_pop_topic"),
-            ("🛡️ Admin Group","setup_admin_group"),("👤 Creator Group","setup_creator_group"),
+            ("🛡️ Admin Group","setup_admin_group"),("👤 Seller Group","setup_creator_group"),
             ("🛍️ Buyer Group","setup_buyer_group"),("🌎 Time Zone","setup_timezone"),
             ("⏰ Reminder Times","settings"),
+            ("🤝 Meaningful Participation","setup_meaningful"),
+            ("👤 My Registration Status","registration_status"),
             ("✅ Verify Current Chat","verify_chat"),("✅ Verify Current Topic","verify_topic"),
         ],"owner"))
-    if action.startswith("setup_") and action != "setup":
+    if action in {"setup_participation_chat","setup_participation_topics","setup_pop_group","setup_pop_topic",
+                  "setup_admin_group","setup_creator_group","setup_buyer_group","setup_timezone","setup_meaningful"}:
         if role is not Role.OWNER:
             return await _show(query,"Setup is available only to owners.",home_markup(ctx,user_id))
         topics = sorted(getattr(cfg,"participation_topic_ids",frozenset()) or ())
@@ -726,13 +767,22 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "setup_pop_group": ("📸 POP Group","Thursday proof is accepted only in this group.",getattr(cfg,"pop_chat_id",None) or getattr(cfg,"girls_chat_id",None)),
             "setup_pop_topic": ("🧵 POP Topic","Thursday proof is accepted only in this topic.",getattr(cfg,"pop_thread_id",None)),
             "setup_admin_group": ("🛡️ Admin Group","Private reviews and operational notices are routed here.",getattr(cfg,"admin_chat_id",None)),
-            "setup_creator_group": ("👤 Creator Group","This is the configured creator community group.",getattr(cfg,"creator_group_id",None) or getattr(cfg,"girls_chat_id",None)),
+            "setup_creator_group": ("👤 Seller Group","This is the configured creator/seller community group.",getattr(cfg,"creator_group_id",None) or getattr(cfg,"girls_chat_id",None)),
             "setup_buyer_group": ("🛍️ Buyer Group","This is the configured buyer community group.",getattr(cfg,"buyer_group_id",None)),
             "setup_timezone": ("🌎 Time Zone","POP deadlines and reminders use this daylight-saving-aware time zone.",getattr(cfg,"timezone_name","America/New_York")),
+            "setup_meaningful": ("🤝 Meaningful Participation","These rules reject filler and repeated messages before participation is counted.",
+                f"Minimum {getattr(cfg,'meaningful_min_words',3)} words · {getattr(cfg,'meaningful_min_characters',12)} characters · {getattr(cfg,'repeat_window_days',7)}-day repeat window"),
         }
         title, explanation, value = values.get(action,("Setup","Review this owner-protected setting.",None))
         text = f"{title}\n\n{explanation}\n\nCurrent setting: {value if value is not None else 'Not configured'}"
-        return await _show(query,text,menu_markup(ctx,[("✅ Verify Current Chat","verify_chat"),("✅ Verify Current Topic","verify_topic")],"setup"))
+        actions=[("✅ Verify Current Chat","verify_chat"),("✅ Verify Current Topic","verify_topic")]
+        if action == "setup_meaningful":
+            actions=[("3-word minimum","setting_words_3"),("4-word minimum","setting_words_4"),
+                ("12-character minimum","setting_chars_12"),("20-character minimum","setting_chars_20"),
+                ("7-day repeat window","setting_repeat_7"),("14-day repeat window","setting_repeat_14")]
+        elif action == "setup_timezone":
+            actions=[("America / New York","setting_timezone_eastern")]
+        return await _show(query,text,menu_markup(ctx,actions,"setup"))
     if action in {"verify_chat","verify_topic"}:
         if role is not Role.OWNER:
             return await _show(query,"Chat and topic verification is owner-only.",home_markup(ctx,user_id))
@@ -749,16 +799,73 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if chat_id == participation_chat: configured.append("Participation chat")
         if chat_id == (getattr(cfg,"pop_chat_id",None) or getattr(cfg,"girls_chat_id",None)): configured.append("POP group")
         if chat_id == getattr(cfg,"admin_chat_id",None): configured.append("Admin group")
-        if chat_id == getattr(cfg,"creator_group_id",None): configured.append("Creator group")
+        if chat_id == getattr(cfg,"creator_group_id",None): configured.append("Seller group")
         if chat_id == getattr(cfg,"buyer_group_id",None): configured.append("Buyer group")
-        topic_name = "General" if thread_id is None else "Current forum topic"
+        topic_created = getattr(message,"forum_topic_created",None)
+        topic_name = "General" if thread_id is None else getattr(topic_created,"name",None) or "Current forum topic (title unavailable from this message)"
+        bot_permissions = "Could not be checked from this chat"
+        bot = getattr(ctx,"bot",None)
+        if chat_id and bot and hasattr(bot,"get_chat_member") and getattr(chat,"type",None) in {"group","supergroup","channel"}:
+            try:
+                member = await bot.get_chat_member(chat_id,bot.id)
+                allowed = [name.replace("can_","").replace("_"," ").title() for name in
+                    ("can_send_messages","can_post_messages","can_manage_topics","can_delete_messages") if getattr(member,name,False)]
+                bot_permissions = f"{str(getattr(member,'status','member')).title()}" + (f" · {', '.join(allowed)}" if allowed else "")
+            except Exception:
+                bot_permissions = "Unable to verify; check that the bot is present"
+        problems = []
+        if participation_chat is None: problems.append("Participation Group is not configured")
+        if getattr(cfg,"pop_chat_id",None) is None: problems.append("POP Group is not configured")
+        if getattr(cfg,"pop_thread_id",None) is None: problems.append("POP Topic is not configured")
+        if is_forum and action == "verify_topic" and thread_id is None: problems.append("Run this inside the intended forum topic")
         text = (f"✅ {'Current Topic' if action == 'verify_topic' else 'Current Chat'}\n\n"
             "Confirm that this is the place you intended to configure.\n\n"
             f"Chat name: {title}\nChat ID: {chat_id}\nForum: {'Yes' if is_forum else 'No'}\n"
             f"Topic name: {topic_name}\nTopic ID: {thread_id if thread_id is not None else 'None'}\n"
             f"Current configuration: {', '.join(configured) if configured else 'No matching destination'}\n"
-            f"Participation enabled here: {'Yes' if participation_on else 'No'}")
-        return await _show(query,text,menu_markup(ctx,[],"setup"))
+            f"Participation enabled here: {'Yes' if participation_on else 'No'}\n"
+            f"Bot permissions: {bot_permissions}\n"
+            f"Configuration problems: {'; '.join(problems) if problems else 'None detected'}")
+        actions = []
+        if action == "verify_chat" and chat_id is not None:
+            actions = [("Use as Participation Group","setup_prepare_participation_chat"),
+                ("Use as Seller Group","setup_prepare_creator_group"),("Use as POP Group","setup_prepare_pop_chat"),
+                ("Use as Admin Group","setup_prepare_admin_chat"),("Use as Buyer Group","setup_prepare_buyer_group")]
+        elif thread_id is not None:
+            actions = [("Add Participation Topic","setup_prepare_participation_topic"),("Use as POP Topic","setup_prepare_pop_topic")]
+        return await _show(query,text,menu_markup(ctx,actions,"setup"))
+    if action.startswith("setup_prepare_"):
+        if role is not Role.OWNER:
+            return await _show(query,"Setup is available only to owners.",home_markup(ctx,user_id))
+        key = action.removeprefix("setup_prepare_")
+        chat = getattr(query.message,"chat",None) or update.effective_chat
+        values = {
+            "participation_chat": getattr(chat,"id",None),"creator_group":getattr(chat,"id",None),
+            "pop_chat":getattr(chat,"id",None),"admin_chat":getattr(chat,"id",None),
+            "buyer_group":getattr(chat,"id",None),"participation_topic":getattr(query.message,"message_thread_id",None),
+            "pop_topic":getattr(query.message,"message_thread_id",None),
+        }
+        value = values.get(key)
+        if value is None:
+            return await _show(query,"This chat or topic could not be detected. Open Setup from the intended location and try again.",menu_markup(ctx,[],"setup"))
+        ctx.user_data["setup_pending"]={"key":key,"value":value}
+        label=key.replace("_"," ").title()
+        return await _show(query,f"Confirm Setup Change\n\n{label} will be set to {value}. The change is persistent, reversible, and audited.",
+            confirmation_markup(ctx,"setup_confirm_change","setup"))
+    if action == "setup_confirm_change":
+        if role is not Role.OWNER:
+            return await _show(query,"Setup is available only to owners.",home_markup(ctx,user_id))
+        pending=ctx.user_data.pop("setup_pending",None)
+        if not pending:
+            return await _show(query,"That setup change expired. No settings were changed.",menu_markup(ctx,[],"setup"))
+        mapping={"participation_chat":"participation_chat_id","creator_group":"creator_group_id","pop_chat":"pop_chat_id",
+            "admin_chat":"admin_chat_id","buyer_group":"buyer_group_id","pop_topic":"pop_thread_id"}
+        if pending["key"] == "participation_topic":
+            new_topics=set(getattr(cfg,"participation_topic_ids",frozenset()));new_topics.add(int(pending["value"]))
+            persist_setting(cfg,"participation_topic_ids",frozenset(new_topics),user_id)
+        else:
+            persist_setting(cfg,mapping[pending["key"]],int(pending["value"]),user_id)
+        return await _show(query,"✅ Setup updated and audited. This setting will remain active after restart.",menu_markup(ctx,[],"setup"))
     if action == "settings" and role is Role.OWNER:
         period = current_period(datetime.now(cfg.timezone),*_pop_args(cfg))
         text = ("⚙️ System Settings\n\n"
@@ -783,16 +890,21 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action.startswith("setting_"):
         if role is not Role.OWNER: return await _show(query,"Settings are owner-only.",home_markup(ctx,user_id))
         _,key,value = action.split("_",2)
-        attrs = {"warning":"warning_hours","alert":"alert_hours","pop":"pop_cutoff_time","summary":"daily_owner_summary_enabled"}
+        attrs = {"warning":"warning_hours","alert":"alert_hours","pop":"pop_cutoff_time","summary":"daily_owner_summary_enabled",
+            "words":"meaningful_min_words","chars":"meaningful_min_characters","repeat":"repeat_window_days","timezone":"timezone_name"}
         attr = attrs.get(key)
         if not attr: return await _show(query,"That setting is unavailable.",menu_markup(ctx,[],"settings"))
         old = getattr(cfg,attr)
         if key == "summary": new = value == "on"
-        elif key in {"warning","alert"}: new = int(value)
+        elif key in {"warning","alert","words","chars","repeat"}: new = int(value)
+        elif key == "timezone": new = "America/New_York"
         else: new = value
-        setattr(cfg,attr,new)
-        db.audit_setting_change(user_id,attr,old,new)
-        return await _show(query,"✅ Setting updated and audited. Persistent environment configuration must match before the next restart.",menu_markup(ctx,[],"settings"))
+        if key == "summary":
+            setattr(cfg,attr,new);db.audit_setting_change(user_id,attr,old,new)
+        else:
+            persist_setting(cfg,attr,new,user_id)
+        back="setup_meaningful" if key in {"words","chars","repeat"} else "setup_timezone" if key == "timezone" else "settings"
+        return await _show(query,"✅ Setting updated and audited. This setting will remain active after restart.",menu_markup(ctx,[],back))
     if action == "roles" and role is Role.OWNER:
         return await _show(query,f"👥 Access Management\n\n👑 Owners: {len(cfg.owner_user_ids)}\n🛡️ Lead Admins: {len(cfg.lead_admin_user_ids)}\n👥 Admins: {len(cfg.admin_user_ids)}",
             menu_markup(ctx,[("👑 Owners","access_owners"),("🛡️ Lead Admins","access_leads"),("👥 Admins","access_admins"),

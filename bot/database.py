@@ -272,11 +272,26 @@ def _migrate_legacy_schema(db):
           SELECT created_at,actor_id,'legacy',action,'legacy',target_id,details,'success',id FROM audit_history""")
     db.execute("CREATE UNIQUE INDEX IF NOT EXISTS engagement_message_unique ON engagement_events(chat_id,message_id)")
     db.execute("CREATE UNIQUE INDEX IF NOT EXISTS pop_creator_week_unique ON pop_submissions(telegram_id,week_key) WHERE week_key IS NOT NULL")
+    # Older creator rows predate the general member table. Backfill the shared identity so
+    # role-aware menus never disagree with the creator directory after migration.
+    now = utc_now()
+    db.execute("""INSERT INTO community_members
+      (telegram_id,member_type,display_name,username,created_at,updated_at)
+      SELECT telegram_id,'creator',display_name,username,COALESCE(registered_at,?),?
+      FROM creators WHERE 1
+      ON CONFLICT(telegram_id) DO UPDATE SET member_type='creator',
+      display_name=excluded.display_name,username=excluded.username,updated_at=excluded.updated_at""",(now,now))
 
 
 def register_creator(telegram_id, username, display_name, path=None):
+    """Register a creator without overwriting approval or archival state.
+
+    Telegram ID is the canonical identity and primary key, so duplicates cannot be
+    created. Repeat registration refreshes Telegram profile fields only.
+    """
     now = utc_now()
     with get_connection(path) as db:
+        existing = db.execute("SELECT * FROM creators WHERE telegram_id=?",(telegram_id,)).fetchone()
         db.execute("""INSERT INTO creators(telegram_id,username,display_name,registered_at)
           VALUES(?,?,?,?) ON CONFLICT(telegram_id) DO UPDATE SET
           username=excluded.username, display_name=excluded.display_name""",
@@ -285,19 +300,41 @@ def register_creator(telegram_id, username, display_name, path=None):
           VALUES(?,?,?,?,?,?) ON CONFLICT(telegram_id) DO UPDATE SET member_type='creator',
           display_name=excluded.display_name,username=excluded.username,updated_at=excluded.updated_at""",
           (telegram_id,"creator",display_name,username,now,now))
-        _audit(db, telegram_id, telegram_id, "creator_registered", {"username": username, "display_name": display_name}, now)
+        if existing:
+            audit_event(db,telegram_id,"creator_identity_refreshed","creator",telegram_id,telegram_id,
+                previous_value={"username":existing["username"],"display_name":existing["display_name"]},
+                new_value={"username":username,"display_name":display_name})
+            return "archived" if existing["deleted_at"] else existing["status"]
+        _audit(db,telegram_id,telegram_id,"creator_registered",{"username":username,"display_name":display_name},now)
         audit_event(db,telegram_id,"creator_registered","creator",telegram_id,telegram_id,
                     new_value={"username":username,"display_name":display_name})
+        return "created"
 
 
-def get_creator(telegram_id, path=None):
+def get_creator(telegram_id, path=None, include_deleted=False):
+    """Resolve the visible creator identity; archived rows are owner-history only."""
     with get_connection(path) as db:
         try:
-            return db.execute("SELECT * FROM creators WHERE telegram_id=?", (telegram_id,)).fetchone()
+            sql = "SELECT * FROM creators WHERE telegram_id=?"
+            if not include_deleted:
+                sql += " AND deleted_at IS NULL"
+            return db.execute(sql,(telegram_id,)).fetchone()
         except sqlite3.OperationalError as exc:
             if "no such table" not in str(exc):
                 raise
             return None
+
+
+def creator_identity_status(telegram_id, path=None):
+    """Explain registration, directory, and member-identity state for diagnostics."""
+    creator = get_creator(telegram_id,path,include_deleted=True)
+    member = get_member(telegram_id,path)
+    if not creator:
+        return {"state":"not_registered","creator":None,"member":member,"directory_visible":False}
+    archived = bool(creator["deleted_at"])
+    state = "archived" if archived else creator["status"]
+    return {"state":state,"creator":creator,"member":member,
+        "directory_visible":not archived,"identity_consistent":bool(member and member["member_type"] == "creator")}
 
 
 def register_member(telegram_id, username, display_name, member_type="buyer", path=None):
@@ -771,8 +808,8 @@ def export_snapshot(path=None):
 def set_status(target_id, status, actor_id, path=None):
     now = utc_now()
     with get_connection(path) as db:
-        previous = db.execute("SELECT status FROM creators WHERE telegram_id=?", (target_id,)).fetchone()
-        cur = db.execute("UPDATE creators SET status=?, approved_at=CASE WHEN ?='active' THEN ? ELSE approved_at END, approved_by=CASE WHEN ?='active' THEN ? ELSE approved_by END WHERE telegram_id=?",
+        previous = db.execute("SELECT status FROM creators WHERE telegram_id=? AND deleted_at IS NULL", (target_id,)).fetchone()
+        cur = db.execute("UPDATE creators SET status=?, approved_at=CASE WHEN ?='active' THEN ? ELSE approved_at END, approved_by=CASE WHEN ?='active' THEN ? ELSE approved_by END WHERE telegram_id=? AND deleted_at IS NULL",
                          (status, status, now, status, actor_id, target_id))
         if not cur.rowcount:
             return False

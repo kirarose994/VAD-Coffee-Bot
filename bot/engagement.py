@@ -25,7 +25,9 @@ def normalize(text: str) -> str:
     return " ".join(text.split())
 
 
-def classify(text, *, media=False, is_repeat=lambda digest, since: False, now=None) -> Decision:
+def classify(text, *, media=False, is_repeat=lambda digest, since: False, now=None,
+             min_words=3, min_characters=12, repeat_window_days=7) -> Decision:
+    """Classify one message using deterministic, owner-configurable thresholds."""
     if media or text is None:
         return Decision(False, "non_text")
     normalized = normalize(text)
@@ -36,13 +38,13 @@ def classify(text, *, media=False, is_repeat=lambda digest, since: False, now=No
         return Decision(False, "greeting_only", normalized)
     if PROMO.search(normalized):
         return Decision(False, "promotional_spam", normalized)
-    if len(words) < 3 or len("".join(words)) < 12:
+    if len(words) < int(min_words) or len("".join(words)) < int(min_characters):
         return Decision(False, "too_short", normalized)
     # Ignore punctuation and spacing variations so cosmetic edits cannot earn
     # duplicate credit for the same text.
     canonical = " ".join(words)
     digest = hashlib.sha256(canonical.encode()).hexdigest()
-    since = (now or datetime.now(timezone.utc)) - timedelta(days=7)
+    since = (now or datetime.now(timezone.utc)) - timedelta(days=int(repeat_window_days))
     if is_repeat(digest, since.isoformat()):
         return Decision(False, "repeated_text", normalized, digest)
     return Decision(True, "meaningful", normalized, digest)

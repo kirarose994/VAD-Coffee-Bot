@@ -255,7 +255,10 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not participation_enabled(cfg,msg.chat_id,thread_id):
         return
     decision = classify(msg.text, media=media,
-        is_repeat=lambda digest, since: db.recent_hash_exists(user.id, digest, since))
+        is_repeat=lambda digest, since: db.recent_hash_exists(user.id, digest, since),
+        min_words=getattr(cfg,"meaningful_min_words",3),
+        min_characters=getattr(cfg,"meaningful_min_characters",12),
+        repeat_window_days=getattr(cfg,"repeat_window_days",7))
     db.record_engagement(user.id, msg.message_id, msg.chat_id, thread_id, decision.digest or None,
                          "accepted" if decision.accepted else "rejected", decision.reason)
 
