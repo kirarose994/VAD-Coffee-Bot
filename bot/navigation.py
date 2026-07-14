@@ -2,6 +2,7 @@
 
 import io
 import json
+import logging
 import secrets
 from datetime import datetime, timedelta
 
@@ -18,6 +19,10 @@ from routing import ROUTES, routing_summary, send_routed
 from readiness import readiness_items, status_icon, system_check_summary
 from community_snapshot import PARTICIPATION_POLICY, build_snapshot, section_lines
 from briefing import deliver_daily_brief
+
+
+logger = logging.getLogger(__name__)
+EVE_DIAGNOSTIC_TELEGRAM_ID = 8129455408
 
 
 def _nonce(ctx):
@@ -108,6 +113,41 @@ def confirmation_markup(ctx, confirm_action, back="setup"):
         [_button("✅ Confirm",nonce,confirm_action),_button("❌ Cancel",nonce,"cancel")],
         [_button("◀️ Back",nonce,back)],
     ])
+
+
+def _diagnostic_text(result):
+    def record(label,key):
+        item=result[key];row=item.get("row")
+        return f"{label}: {item['state']}"+("\n"+json.dumps(row,ensure_ascii=False,default=str) if row else "")
+    roles=result["user_roles"]
+    role_text=f"user_roles: {roles['state']}"+("\n"+json.dumps(roles["rows"],ensure_ascii=False,default=str) if roles["rows"] else "")
+    audit=result["audit_events"]
+    audit_text=f"Recent identity/role audit events: {audit['state']}"+("\n"+"\n".join(
+        f"• {row.get('occurred_at','Time unavailable')} · {row.get('action','unknown')} · {row.get('result','unknown')}"
+        +(f" · {row['reason']}" if row.get("reason") else "") for row in audit["rows"]) if audit["rows"] else "")
+    effective=result["effective"]
+    return ("🔎 Eve Identity Diagnostic\n\nREAD-ONLY DIAGNOSTIC — NO DATA CHANGED\n\n"
+        f"Telegram ID: {result['telegram_id']}\nExpected identity: Eve Goddess · @OMyEve\n\n"
+        +record("bot_users","bot_users")+"\n\n"+record("community_members","community_members")+"\n\n"
+        +record("creators","creators")+"\n\n"+role_text+"\n\n"
+        f"Effective Owner: {effective['owner']}\nEffective Admin: {effective['admin']}\n"
+        f"Legacy elevated configuration: {effective['legacy_elevated']}\n"
+        f"Profile state: {result['profile_state']}\nCreator name is placeholder: {result['creator_name_is_placeholder']}\n\n"
+        f"Central resolver selects: {result['selected_name']}\nWhy: {result['selected_name_reason']}\n\n"
+        f"Reconciliation prediction: {result['reconciliation_prediction']}\n\n{audit_text}\n\n"
+        "READ-ONLY DIAGNOSTIC — NO DATA CHANGED")
+
+
+def _telegram_pages(text,limit=3500):
+    pages=[];current=""
+    for block in text.split("\n\n"):
+        candidate=block if not current else current+"\n\n"+block
+        if len(candidate)<=limit:current=candidate;continue
+        if current:pages.append(current)
+        while len(block)>limit:pages.append(block[:limit]);block=block[limit:]
+        current=block
+    if current:pages.append(current)
+    return pages or [""]
 
 
 def _week_key(now):
@@ -975,7 +1015,18 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ("Test Wrong Topic","test_wrong_topic"),("Test Other Group","test_wrong_group"),("Test Registration Routing","test_route_registration"),("Test Away Notice Routing","test_route_away_notice"),
             ("Test POP Routing","test_route_pop_review"),("Test Participation Alert Routing","test_route_participation_alert"),
             ("Test Support Request Routing","test_route_support"),("Test Admin Reply","test_admin_reply"),("Test Failed-Delivery Handling","test_failed_delivery"),
-            ("Test Creator Privacy","test_privacy"),("Test Admin Permissions","test_admin_permissions"),("Test Owner Permissions","test_owner_permissions")],"owner"))
+            ("Test Creator Privacy","test_privacy"),("Test Admin Permissions","test_admin_permissions"),("Test Owner Permissions","test_owner_permissions"),
+            ("🔎 Eve Identity Diagnostic","eve_identity_diagnostic")],"owner"))
+    if action == "eve_identity_diagnostic":
+        if role is not Role.OWNER:return await _show(query,"This diagnostic is owner-only.",home_markup(ctx,user_id))
+        result=db.identity_diagnostic(EVE_DIAGNOSTIC_TELEGRAM_ID,cfg)
+        logger.info("Owner identity diagnostic run target_id=%s actor_id=%s",EVE_DIAGNOSTIC_TELEGRAM_ID,user_id)
+        pages=_telegram_pages(_diagnostic_text(result));markup=menu_markup(ctx,[],"test_center")
+        if len(pages)==1:return await _show(query,pages[0],markup)
+        await query.edit_message_text(pages[0])
+        for page in pages[1:-1]:await query.message.reply_text(page)
+        await query.message.reply_text(pages[-1],reply_markup=markup)
+        return
     if action in {"test_main","test_meaningful","test_ignored","test_wrong_topic","test_wrong_group"}:
         if role is not Role.OWNER:return await _show(query,"Test Center is owner-only.",home_markup(ctx,user_id))
         code=secrets.token_hex(3).upper();mode={"test_main":"meaningful","test_meaningful":"meaningful","test_ignored":"ignored","test_wrong_topic":"wrong_topic","test_wrong_group":"wrong_group"}[action]

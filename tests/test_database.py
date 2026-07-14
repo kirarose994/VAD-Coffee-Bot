@@ -1,4 +1,5 @@
 import sys
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -89,6 +90,24 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(resolved[302],"Telegram Full Name")
         self.assertEqual(resolved[303],"telegram303")
         self.assertEqual(resolved[304],"Telegram user 304")
+
+    def test_identity_diagnostic_is_read_only_and_explains_placeholder(self):
+        user_id=8129455408
+        db.record_bot_user(user_id,"OMyEve","Eve Goddess",self.path)
+        cfg=SimpleNamespace(owner_user_ids=frozenset(),lead_admin_user_ids=frozenset(),admin_user_ids=frozenset({user_id}))
+        db.synchronize_role_memberships(cfg,self.path)
+        placeholder=f"Telegram user {user_id}"
+        with db.get_connection(self.path) as connection:
+            connection.execute("UPDATE creators SET display_name=? WHERE telegram_id=?",(placeholder,user_id))
+            connection.execute("UPDATE community_members SET display_name=? WHERE telegram_id=?",(placeholder,user_id))
+        result=db.identity_diagnostic(user_id,cfg,self.path)
+        self.assertEqual(result["selected_name"],"Eve Goddess")
+        self.assertEqual(result["selected_name_reason"],"latest Telegram full name captured by the bot")
+        self.assertTrue(result["creator_name_is_placeholder"])
+        self.assertEqual(result["reconciliation_prediction"],"leave unchanged — creator profile is already active")
+        connection=sqlite3.connect(self.path)
+        try:self.assertEqual(connection.execute("SELECT display_name FROM creators WHERE telegram_id=?",(user_id,)).fetchone()[0],placeholder)
+        finally:connection.close()
 
     def test_archived_creator_is_not_resolved_as_active_identity(self):
         db.register_creator(6558268505,"kira","Kira",self.path)

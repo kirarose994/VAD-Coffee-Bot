@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "bot"))
 
 import database as db
 from config import Config
-from navigation import callback, home_markup, menu_markup
+from navigation import _telegram_pages, callback, home_markup, menu_markup
 from runtime_config import apply_persisted_settings, persist_setting
 from tracker import participation_enabled
 
@@ -55,6 +55,13 @@ class RoleSeparationTests(unittest.TestCase):
         self.assertIn("👑 Owner Home",self.menu(1,None,None))
 
 
+class DiagnosticPresentationTests(unittest.TestCase):
+    def test_output_is_split_below_telegram_limit(self):
+        pages=_telegram_pages("A"*8000)
+        self.assertTrue(all(len(page)<=3500 for page in pages))
+        self.assertEqual("".join(pages),"A"*8000)
+
+
 class SetupMenuTests(unittest.IsolatedAsyncioTestCase):
     def cfg(self, owner=True):
         return SimpleNamespace(owner_user_ids=frozenset({1}) if owner else frozenset(),lead_admin_user_ids=frozenset(),
@@ -91,6 +98,27 @@ class SetupMenuTests(unittest.IsolatedAsyncioTestCase):
     async def test_admin_cannot_tamper_into_owner_setup(self):
         result = await self.screen("setup",user_id=2)
         self.assertIn("only to owners",result.args[0])
+
+    async def test_eve_diagnostic_is_owner_only_and_visible_in_test_center(self):
+        result=await self.screen("test_center")
+        self.assertIn("🔎 Eve Identity Diagnostic",labels(result.kwargs["reply_markup"]))
+        denied=await self.screen("eve_identity_diagnostic",user_id=2)
+        self.assertIn("owner-only",denied.args[0])
+
+    async def test_eve_diagnostic_renders_read_only_result(self):
+        diagnostic={"telegram_id":8129455408,"bot_users":{"state":"found","row":{"display_name":"Eve Goddess","username":"OMyEve"}},
+            "community_members":{"state":"found","row":{"display_name":"Telegram user 8129455408"}},
+            "creators":{"state":"found","row":{"display_name":"Telegram user 8129455408","status":"active"}},
+            "user_roles":{"state":"found","rows":[{"role":"admin","active":1}]},
+            "effective":{"owner":False,"admin":True,"legacy_elevated":False},"profile_state":"active",
+            "creator_name_is_placeholder":True,"audit_events":{"state":"not_found","rows":[]},
+            "selected_name":"Eve Goddess","selected_name_reason":"latest Telegram full name captured by the bot",
+            "reconciliation_prediction":"leave unchanged — creator profile is already active"}
+        with patch("navigation.db.identity_diagnostic",return_value=diagnostic) as inspect:
+            result=await self.screen("eve_identity_diagnostic")
+        inspect.assert_called_once()
+        self.assertIn("READ-ONLY DIAGNOSTIC — NO DATA CHANGED",result.args[0])
+        self.assertIn("Central resolver selects: Eve Goddess",result.args[0])
 
     async def test_existing_creator_can_be_selected_for_additive_admin_role(self):
         creator={"telegram_id":50,"display_name":"Keely","status":"active"}

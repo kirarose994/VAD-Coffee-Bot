@@ -2,7 +2,7 @@
 
 import json
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -545,6 +545,79 @@ def creator_directory(config,path=None,active_only=True):
     synchronize_role_memberships(config,path)
     rows=list_creators(path)
     return [row for row in rows if row["status"] == "active"] if active_only else rows
+
+
+def identity_diagnostic(telegram_id,config,path=None):
+    """Inspect one identity through SQLite read-only mode without reconciling it."""
+    database_path=Path(path or DATABASE_PATH).resolve()
+    with closing(sqlite3.connect(f"{database_path.as_uri()}?mode=ro",uri=True)) as connection:
+        connection.row_factory=sqlite3.Row
+        connection.execute("PRAGMA query_only = ON")
+
+        def columns(table):
+            exists=connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(table,)).fetchone()
+            return ({row["name"] for row in connection.execute(f'PRAGMA table_info("{table}")')} if exists else set())
+
+        def one(table,fields):
+            available=columns(table)
+            if not available:return {"state":"table_missing","row":None}
+            if "telegram_id" not in available:return {"state":"telegram_id_column_missing","row":None}
+            selected=[field for field in fields if field in available]
+            row=connection.execute(f'SELECT {", ".join(selected)} FROM "{table}" WHERE telegram_id=?',(telegram_id,)).fetchone()
+            return {"state":"found" if row else "not_found","row":dict(row) if row else None}
+
+        bot_user=one("bot_users",("telegram_id","display_name","username","first_started_at","last_started_at"))
+        member=one("community_members",("telegram_id","member_type","display_name","username","created_at","updated_at"))
+        creator=one("creators",("telegram_id","display_name","username","status","availability","registered_at",
+            "approved_at","deleted_at"))
+        role_columns=columns("user_roles")
+        if not role_columns:roles={"state":"table_missing","rows":[]}
+        elif "telegram_id" not in role_columns:roles={"state":"telegram_id_column_missing","rows":[]}
+        else:
+            fields=[field for field in ("telegram_id","role","active","assigned_at","removed_at") if field in role_columns]
+            rows=connection.execute(f'SELECT {", ".join(fields)} FROM user_roles WHERE telegram_id=? ORDER BY role',(telegram_id,)).fetchall()
+            roles={"state":"found" if rows else "not_found","rows":[dict(row) for row in rows]}
+
+        audit_columns=columns("audit_events");audit_rows=[];audit_state="table_missing"
+        if audit_columns:
+            predicates=[];values=[]
+            for column in ("target_telegram_id","actor_id"):
+                if column in audit_columns:predicates.append(f"{column}=?");values.append(telegram_id)
+            if predicates:
+                fields=[field for field in ("id","occurred_at","actor_role","action","target_type","reason","result") if field in audit_columns]
+                order="id DESC" if "id" in audit_columns else "occurred_at DESC" if "occurred_at" in audit_columns else "rowid DESC"
+                rows=connection.execute(f'SELECT {", ".join(fields)} FROM audit_events WHERE ({" OR ".join(predicates)}) '
+                    "AND (action LIKE '%identity%' OR action LIKE '%role%' OR action LIKE '%creator%') "
+                    f'ORDER BY {order} LIMIT 12',values).fetchall()
+                audit_rows=[dict(row) for row in rows];audit_state="found" if rows else "not_found"
+            else:audit_state="identity_columns_missing"
+
+        raw_creator=creator["row"];raw_member=member["row"];raw_bot=bot_user["row"]
+        creator_name=(_usable_person_name(raw_creator.get("display_name"),telegram_id)
+            if raw_creator and raw_creator.get("status")=="active" and not raw_creator.get("deleted_at") else None)
+        member_name=_usable_person_name(raw_member.get("display_name"),telegram_id) if raw_member else None
+        bot_name=_usable_person_name(raw_bot.get("display_name"),telegram_id) if raw_bot else None
+        username=next((row.get("username") for row in (raw_creator,raw_member,raw_bot) if row and row.get("username")),None)
+        if creator_name:selected_name,name_reason=creator_name,"approved active creator display name"
+        elif member_name:selected_name,name_reason=member_name,"stored community-member display name"
+        elif bot_name:selected_name,name_reason=bot_name,"latest Telegram full name captured by the bot"
+        elif username:selected_name,name_reason=username,"Telegram username because no usable display name exists"
+        else:selected_name,name_reason=f"Telegram user {telegram_id}","final placeholder because no usable name exists"
+
+        owners=set(getattr(config,"owner_user_ids",()) or ());admins=set(getattr(config,"admin_user_ids",()) or ())
+        legacy=set(getattr(config,"lead_admin_user_ids",()) or ());effective_owner=telegram_id in owners
+        effective_admin=effective_owner or telegram_id in admins or telegram_id in legacy
+        if not effective_admin:prediction="leave unchanged — ID is not effectively configured as Admin or Owner"
+        elif not raw_creator:prediction="create — staff identity has no creator profile"
+        elif raw_creator.get("deleted_at"):prediction="leave unchanged — creator profile is archived"
+        elif raw_creator.get("status")!="active":prediction=f"activate — current creator status is {raw_creator.get('status') or 'unknown'}"
+        else:prediction="leave unchanged — creator profile is already active"
+        profile_state="missing" if not raw_creator else "archived" if raw_creator.get("deleted_at") else raw_creator.get("status") or "unknown"
+        placeholder=bool(raw_creator and not _usable_person_name(raw_creator.get("display_name"),telegram_id))
+        return {"telegram_id":telegram_id,"bot_users":bot_user,"community_members":member,"creators":creator,
+            "user_roles":roles,"effective":{"owner":effective_owner,"admin":effective_admin,"legacy_elevated":telegram_id in legacy},
+            "profile_state":profile_state,"creator_name_is_placeholder":placeholder,"audit_events":{"state":audit_state,"rows":audit_rows},
+            "selected_name":selected_name,"selected_name_reason":name_reason,"reconciliation_prediction":prediction}
 
 
 def set_availability(target_id, new_status, actor_id, reason=None, expires_at=None, path=None):
