@@ -59,6 +59,10 @@ class SupportAndIdentityTests(unittest.TestCase):
         self.assertEqual([r["id"] for r in db.support_requests_for(10,self.path)],[first])
         self.assertEqual([r["id"] for r in db.support_requests_for(11,self.path)],[second])
         self.assertTrue(db.update_support_request(first,"assign",99,path=self.path))
+        reply_id,target=db.add_support_message(first,99,"admin","We can help",self.path)
+        self.assertEqual(target,10)
+        self.assertEqual(db.support_messages_for(first,10,self.path)[0]["id"],reply_id)
+        self.assertEqual(db.support_messages_for(first,11,self.path),[])
         self.assertTrue(db.update_support_request(first,"resolve",99,"Answered",self.path))
         self.assertFalse(db.update_support_request(first,"resolve",99,path=self.path))
 

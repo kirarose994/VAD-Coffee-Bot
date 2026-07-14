@@ -489,8 +489,9 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not db.get_creator(user_id):
             return await _show(query,"Register as a creator to view support requests.",home_markup(ctx,user_id))
         rows=db.support_requests_for(user_id)
-        text="📨 My Support Requests\n\nTrack your questions and their current status.\n\n"+(
-            "\n\n".join(f"#{r['id']} · {r['category']}\n{r['status'].title()} · {friendly_timestamp(r['created_at'],timezone_name=cfg.timezone_name)}" for r in rows[:10])
+        text="📨 My Support Requests\n\nTrack your questions, Admin replies, and current status.\n\n"+(
+            "\n\n".join(f"#{r['id']} · {r['category']}\n{r['status'].title()} · {friendly_timestamp(r['created_at'],timezone_name=cfg.timezone_name)}"+
+                (f"\n💬 Latest reply: {db.support_messages_for(r['id'],user_id)[-1]['body']}" if db.support_messages_for(r['id'],user_id) else "") for r in rows[:10])
             if rows else "No support requests yet.")
         return await _show(query,text,menu_markup(ctx,[],"creator"))
     if action == "support_queue":
@@ -515,7 +516,12 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action.startswith("support_action_"):
         if not has_permission(user_id,cfg,"manage_support"): return await _show(query,"Support access is required.",home_markup(ctx,user_id))
         raw=action.removeprefix("support_action_");kind,request_raw=raw.rsplit("_",1)
-        changed=db.update_support_request(int(request_raw),kind,user_id)
+        request_id=int(request_raw);request=db.get_support_request(request_id)
+        changed=db.update_support_request(request_id,kind,user_id)
+        if changed and kind=="resolve" and request:
+            try: await ctx.bot.send_message(request["telegram_id"],f"✅ Support request #{request_id} has been resolved. You can still view its history in My Support Requests.")
+            except Exception:
+                db.record_delivery_failure("SUP-"+secrets.token_hex(4).upper(),"support_resolution",request["telegram_id"],None,f"Support request #{request_id}")
         return await _show(query,"✅ Support request updated and audited." if changed else "That request was already resolved.",menu_markup(ctx,[],"support_queue"))
     if action == "resources":
         help_actions = [("⭐ Getting Started","resource_about"),("📜 Community Rules","resource_rules"),

@@ -1007,6 +1007,18 @@ def support_requests_for(telegram_id, path=None):
         return db.execute("SELECT * FROM support_requests WHERE telegram_id=? ORDER BY created_at DESC",(telegram_id,)).fetchall()
 
 
+def support_messages_for(request_id,telegram_id,path=None):
+    """Return replies only when the request belongs to the requesting creator."""
+    with get_connection(path) as db:
+        return db.execute("""SELECT m.* FROM support_messages m JOIN support_requests s ON s.id=m.request_id
+          WHERE m.request_id=? AND s.telegram_id=? ORDER BY m.created_at""",(request_id,telegram_id)).fetchall()
+
+
+def get_support_request(request_id,path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM support_requests WHERE id=?",(request_id,)).fetchone()
+
+
 def support_queue(path=None):
     with get_connection(path) as db:
         return db.execute("""SELECT s.*,c.display_name,c.username FROM support_requests s
