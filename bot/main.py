@@ -23,10 +23,17 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from config import Config
 from order import build_order_conversation
 from handlers.error import error_handler
+from database import initialize_database
+from tracker import register_handlers
+from permissions import can_mutate
+from setup_mode import register_setup_handlers
 
 
 async def groupid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Reply with the current chat's ID — useful for setting ADMIN_CHAT_ID."""
+    if not can_mutate(update.effective_user.id if update.effective_user else None, ctx.bot_data["config"]):
+        await update.effective_message.reply_text("Sorry, this command is for lead admins only.")
+        return
     chat = update.effective_chat
     if chat.type in ("group", "supergroup", "channel"):
         await update.message.reply_html(
@@ -41,6 +48,9 @@ async def groupid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def topicid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Reply with the topic's message_thread_id — useful for setting COFFEE_ORDERS_THREAD_ID."""
+    if not can_mutate(update.effective_user.id if update.effective_user else None, ctx.bot_data["config"]):
+        await update.effective_message.reply_text("Sorry, this command is for lead admins only.")
+        return
     msg = update.message
     if msg and msg.is_topic_message:
         await msg.reply_html(
@@ -70,11 +80,13 @@ def setup_logging(level: str) -> None:
 
 def main() -> None:
     config = Config.from_env()
+    initialize_database()
     setup_logging(config.log_level)
     logger = logging.getLogger(__name__)
     logger.info("Starting VAD Coffee Lounge Bot…")
 
     app = Application.builder().token(config.token).build()
+    app.bot_data["config"] = config
 
     if config.admin_chat_id:
         app.bot_data["admin_chat_id"] = config.admin_chat_id
@@ -91,6 +103,8 @@ def main() -> None:
     app.add_handler(build_order_conversation())
     app.add_handler(CommandHandler("groupid", groupid_command))
     app.add_handler(CommandHandler("topicid", topicid_command))
+    register_handlers(app)
+    register_setup_handlers(app)
     app.add_error_handler(error_handler)
 
     logger.info("Bot is running. Press Ctrl-C to stop.")

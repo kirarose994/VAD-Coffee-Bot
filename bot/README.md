@@ -19,6 +19,25 @@ A Telegram ordering bot for VAD Coffee Lounge. Guides users through a 6-step ord
 | `/start`   | Start or restart an order |
 | `/cancel`  | Cancel the current order at any step |
 | `/groupid` | (Use inside a group) Returns the group's chat ID |
+| `/topicid` | Returns the current Telegram topic ID |
+| `/creator_register` | Submit creator registration for approval |
+| `/vacation YYYY-MM-DD` | Pause tracking through an Eastern Time date |
+
+Role-based access uses immutable Telegram IDs from Replit Secrets:
+
+- `lead_admin`: all commands, including approvals, rejections, creator deletion,
+  deactivation, other-user vacation changes, POP decisions, history reset, topic/chat
+  discovery, and runtime configuration changes.
+- `admin`: read-only `/creator_report`, `/pop_report`, `/admin_history`, and `/settings`.
+  Admins cannot mutate creators, records, history, configuration, or roles.
+
+Creator self-service registration and vacation commands remain available to the creator.
+Every mutation is written to the audit history with actor, target, action, details, and time.
+
+Temporary setup commands are enabled only while `SETUP_MODE=true`: `/myid` returns the
+requester's numeric user ID; `/chatid` and `/threadid` return the current group/topic IDs
+only after Telegram confirms the requester is an administrator of that group. Disable setup
+mode after collecting the IDs. These commands never display secrets or environment values.
 
 ## Project structure
 
@@ -56,6 +75,19 @@ Add `TELEGRAM_BOT_TOKEN` as a Replit Secret.
 |----------------|---------|-------------|
 | `ADMIN_CHAT_ID`| _(none)_| Group chat ID for order forwarding |
 | `LOG_LEVEL`    | `INFO`  | Logging level |
+| `LEAD_ADMIN_USER_IDS` | _(none)_ | Comma-separated Telegram IDs allowed all administrative actions |
+| `ADMIN_USER_IDS` | _(none)_ | Comma-separated Telegram IDs allowed read-only reports |
+| `GIRLS_CHAT_ID` | _(none)_ | Group where registered-creator engagement is tracked |
+| `GIRLS_THREAD_ID` | _(none)_ | Optional topic containing ordinary engagement |
+| `POP_THREAD_ID` | _(none)_ | Thursday POP-proof topic |
+| `REPORTS_THREAD_ID` | _(none)_ | Optional admin report topic |
+| `TIMEZONE` | `America/New_York` | Display and scheduling timezone |
+| `INACTIVITY_WARNING_HOURS` | `48` | Warning threshold |
+| `INACTIVITY_ALERT_HOURS` | `72` | Admin-alert threshold |
+| `SETUP_MODE` | `false` | Temporarily enables numeric Telegram ID discovery commands |
+
+Credentials and chat configuration belong in Replit Secrets/environment variables.
+The SQLite tracker stores UTC instants and uses Eastern Time for Thursday and vacation rules.
 
 ## Pricing logic
 
