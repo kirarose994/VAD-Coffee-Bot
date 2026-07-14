@@ -1,5 +1,12 @@
 # Configuration
 
+## Daily Admin Brief
+
+The in-bot Owner settings control enablement, Eastern delivery time, destination chat/topic,
+weekend delivery, System Health inclusion, and whether zero-count rows appear. Runtime values are
+persisted and audited. The normal default is disabled at `09:00` America/New_York. No Secret change
+is required for routine in-bot adjustments.
+
 ## Required bootstrap values
 
 - `TELEGRAM_BOT_TOKEN`: Telegram token, stored only in Replit Secrets.

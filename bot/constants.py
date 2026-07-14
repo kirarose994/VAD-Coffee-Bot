@@ -39,4 +39,11 @@ PERSISTED_SETTING_ATTRIBUTES = {
     "health_thread_id": "health_thread_id",
     "admin_user_ids": "admin_user_ids",
     "lead_admin_user_ids": "lead_admin_user_ids",
+    "daily_brief_enabled": "daily_brief_enabled",
+    "daily_brief_time": "daily_brief_time",
+    "daily_brief_chat_id": "daily_brief_chat_id",
+    "daily_brief_thread_id": "daily_brief_thread_id",
+    "daily_brief_include_health": "daily_brief_include_health",
+    "daily_brief_include_zero": "daily_brief_include_zero",
+    "daily_brief_weekends": "daily_brief_weekends",
 }

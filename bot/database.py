@@ -197,10 +197,15 @@ def initialize_database(path: Path | None = None):
           telegram_id INTEGER PRIMARY KEY, display_name TEXT NOT NULL, username TEXT,
           first_started_at TEXT NOT NULL, last_started_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS daily_brief_deliveries (
+          cycle_date TEXT PRIMARY KEY, claimed_at TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('pending','sent','failed')),
+          sent_at TEXT, error_reference TEXT
+        );
         """)
         _migrate_legacy_schema(db)
         _seed_message_templates(db)
-        db.execute("UPDATE schema_version SET version=6")
+        db.execute("UPDATE schema_version SET version=7")
 
 
 DEFAULT_MESSAGE_TEMPLATES = {
@@ -974,6 +979,33 @@ def claim_owner_summary(owner_id, cycle_key, path=None):
             return True
         except sqlite3.IntegrityError:
             return False
+
+
+def claim_daily_brief(cycle_date,path=None):
+    """Claim one normal Admin Brief per Eastern calendar day."""
+    with get_connection(path) as db:
+        try:
+            db.execute("INSERT INTO daily_brief_deliveries(cycle_date,claimed_at,status) VALUES(?,?,'pending')",(cycle_date,utc_now()))
+            return True
+        except sqlite3.IntegrityError:return False
+
+
+def finish_daily_brief(cycle_date,status,error_reference=None,path=None):
+    if status not in {"sent","failed"}:return False
+    with get_connection(path) as db:
+        cur=db.execute("UPDATE daily_brief_deliveries SET status=?,sent_at=CASE WHEN ?='sent' THEN ? ELSE sent_at END,error_reference=? WHERE cycle_date=?",
+            (status,status,utc_now(),error_reference,cycle_date))
+        return bool(cur.rowcount)
+
+
+def daily_brief_record(cycle_date,path=None):
+    with get_connection(path) as db:return db.execute("SELECT * FROM daily_brief_deliveries WHERE cycle_date=?",(cycle_date,)).fetchone()
+
+
+def resolve_delivery_failure(error_reference,path=None):
+    with get_connection(path) as db:
+        cur=db.execute("UPDATE delivery_failures SET resolved_at=? WHERE error_reference=? AND resolved_at IS NULL",(utc_now(),error_reference))
+        return bool(cur.rowcount)
 
 
 def get_pop_submission(submission_id, path=None):

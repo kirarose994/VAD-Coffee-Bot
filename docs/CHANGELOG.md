@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added permission-aware Community Snapshots for Owners and Admins.
+- Added an Owner-configurable, 9:00 AM Eastern Daily Admin Brief with durable once-per-day delivery.
+- Added urgent-event routing and owner-visible, deduplicated delivery-failure handling.
+- Kept Community Status separate from protected System Health diagnostics.
+- Added additive SQLite schema version 7 for Daily Admin Brief delivery claims.
+
 - Enforced distinct Owner, Lead Admin, Admin, Creator, and Buyer interfaces.
 - Added persistent audited Owner Setup for chat/topic routing and participation rules.
 - Added bot-permission and configuration-problem reporting to chat/topic verification.

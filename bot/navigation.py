@@ -16,6 +16,8 @@ from presentation import audit_entry, friendly_timestamp, timeline_entry
 from runtime_config import persist_setting
 from routing import ROUTES, routing_summary, send_routed
 from readiness import readiness_items, status_icon, system_check_summary
+from community_snapshot import PARTICIPATION_POLICY, build_snapshot, section_lines
+from briefing import deliver_daily_brief
 
 
 def _nonce(ctx):
@@ -197,6 +199,25 @@ def owner_card(cfg):
         + ("🟢 System healthy" if metrics.get("failed_notifications", 0) == 0 else "🟠 Notification delivery needs review")
     )
 
+def _snapshot_sections(user_id,cfg):
+    if role_for(user_id,cfg) is Role.OWNER:return ["creators","participation","pop","away","support","accountability","system"]
+    allowed=[]
+    if has_permission(user_id,cfg,"view_creator_reports"):allowed += ["creators","participation"]
+    if has_permission(user_id,cfg,"review_pop"):allowed.append("pop")
+    if has_permission(user_id,cfg,"review_vacations") or has_permission(user_id,cfg,"review_sick_days"):allowed.append("away")
+    if has_permission(user_id,cfg,"manage_support"):allowed.append("support")
+    if has_permission(user_id,cfg,"adjust_warnings"):allowed.append("accountability")
+    if has_permission(user_id,cfg,"view_system_health"):allowed.append("system")
+    return allowed
+
+def snapshot_text(user_id,cfg):
+    snap=build_snapshot(cfg);headings={"creators":"CREATORS","participation":"PARTICIPATION","pop":"THURSDAY POP",
+        "away":"AWAY NOTICES","support":"SUPPORT","accountability":"ACCOUNTABILITY","system":"SYSTEM HEALTH"}
+    blocks=[]
+    for section in _snapshot_sections(user_id,cfg):
+        blocks.append(headings[section]+"\n"+"\n".join(f"{label}: {value}" for label,value in section_lines(snap,section)))
+    return "📊 Community Snapshot\n\nSee current creator activity, outstanding tasks, and bot status at a glance.\n\n"+"\n\n".join(blocks)
+
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if getattr(getattr(update,"effective_chat",None),"type","private")=="private":
@@ -302,7 +323,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "admin":
         if role < Role.ADMIN:
             return await _show(query, "Admin access is required.", home_markup(ctx, user_id))
-        rows = [[("🚨 Admin Queue","admin_queue")]]
+        rows = [[("📊 Community Snapshot","community_snapshot")],[ ("🚨 Admin Queue","admin_queue")]]
         if has_permission(user_id,cfg,"review_registrations"): rows.append([("📝 Review New Creators","registration_queue")])
         if has_permission(user_id,cfg,"review_vacations") or has_permission(user_id,cfg,"review_sick_days"):
             rows.append([("💙 Away Notices","away_queue")])
@@ -320,6 +341,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return await _show(query, "Owner access is required.", home_markup(ctx, user_id))
         return await _show(query, "👑 Owner Home\n\nYou are signed in as an Owner. Review anything needing attention, manage community operations, and access protected Owner tools.\n\n" + owner_card(cfg), grid_markup(ctx,[
             [("🚨 Needs Attention","needs_attention")],
+            [("📊 Community Snapshot","community_snapshot")],
             [("📋 My Status","my_account_status"),("📸 My POP","pop_help")],
             [("💙 My Away Notices","my_away_notices"),("📜 My Timeline","timeline_0")],
             [("👥 Creator Directory","creator_report"),("📸 Review POP Submissions","pop_queue")],
@@ -335,6 +357,43 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [("🧭 Setup","setup"),("🩺 Health","health")],
             [("💾 Export","export_help"),("📚 Help Center","resources")],
         ]))
+    if action == "community_snapshot":
+        if role < Role.ADMIN:return await _show(query,"Community Snapshot is available only to authorized Admins and Owners.",home_markup(ctx,user_id))
+        sections=_snapshot_sections(user_id,cfg)
+        if not sections:return await _show(query,"Your Admin role does not include community-wide reports.",home_markup(ctx,user_id))
+        snap=build_snapshot(cfg);buttons=[]
+        if "creators" in sections:
+            buttons += [(f"👥 {len(snap['creators']['active'])} Active Creators","snapshot_list_creators_active"),
+                (f"📝 {len(snap['creators']['pending'])} Pending Registrations","registration_queue")]
+        if "participation" in sections:
+            buttons += [(f"🟡 {len(snap['participation']['approaching'])} Approaching Reminder","snapshot_list_participation_approaching"),
+                (f"🔴 {len(snap['participation']['follow_up'])} Three-Day Follow-Up","snapshot_list_participation_follow_up")]
+        if "pop" in sections:
+            buttons += [(f"📸 {len(snap['pop']['submitted'])+len(snap['pop']['awaiting_review'])} POP Received","snapshot_list_pop_received"),
+                (f"🔴 {len(snap['pop']['missing'])} POP Exceptions","snapshot_list_pop_missing")]
+        if "away" in sections:buttons.append((f"💙 {len(snap['away']['pending'])} Away Notices Waiting","away_queue"))
+        if "support" in sections:buttons.append((f"📨 {len(snap['support']['open'])} Open Support Requests","support_queue"))
+        if "accountability" in sections:buttons.append(("⚠️ Warning & Strike Details","warnings_help"))
+        if "system" in sections:buttons.append(("🩺 System Health","health"))
+        buttons.append(("ℹ️ Participation Policy","snapshot_policy"))
+        return await _show(query,snapshot_text(user_id,cfg),menu_markup(ctx,buttons,"owner" if role is Role.OWNER else "admin"))
+    if action.startswith("snapshot_list_"):
+        if role < Role.ADMIN:return await _show(query,"Admin access is required.",home_markup(ctx,user_id))
+        key=action.removeprefix("snapshot_list_");section=key.split("_",1)[0]
+        if section not in _snapshot_sections(user_id,cfg):return await _show(query,"That snapshot section is not included in your permissions.",home_markup(ctx,user_id))
+        snap=build_snapshot(cfg)
+        mapping={"creators_active":snap["creators"]["active"],"participation_approaching":snap["participation"]["approaching"],
+            "participation_follow_up":snap["participation"]["follow_up"],"pop_received":snap["pop"]["submitted"]+snap["pop"]["awaiting_review"],
+            "pop_missing":snap["pop"]["missing"]}
+        rows=mapping.get(key,[]);lines=[]
+        for row in rows:
+            name=row.get("display_name","Creator");hours=row.get("inactive_hours")
+            lines.append(f"• {name}"+(f" · {hours:.1f} hours" if hours is not None else ""))
+        title=key.replace("_"," ").title()
+        return await _show(query,f"📊 {title}\n\n"+("\n".join(lines) if lines else "✅ No matching items."),menu_markup(ctx,[],"community_snapshot"))
+    if action == "snapshot_policy":
+        if role < Role.ADMIN:return await _show(query,"Admin access is required.",home_markup(ctx,user_id))
+        return await _show(query,"🤝 Meaningful Participation\n\n"+PARTICIPATION_POLICY+"\n\nMeaningful participation means genuine conversation that helps keep the community active and engaging. Simple check-ins, greetings, emoji, stickers, context-free media, links, duplicates, promotions, commands, and filler do not count.",menu_markup(ctx,[],"community_snapshot"))
     if action == "register":
         member = db.get_member(user_id)
         if member and member["member_type"] == "buyer":
@@ -523,6 +582,10 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         raw=action.removeprefix("support_action_");kind,request_raw=raw.rsplit("_",1)
         request_id=int(request_raw);request=db.get_support_request(request_id)
         changed=db.update_support_request(request_id,kind,user_id)
+        if changed and kind=="escalate" and request:
+            await send_routed(ctx.bot,cfg,"owner_review",
+                f"🚨 Support request escalated\nRequest #{request_id} requires Owner attention.",
+                target_telegram_id=request["telegram_id"],related_request_id=request_id)
         if changed and kind=="resolve" and request:
             try: await ctx.bot.send_message(request["telegram_id"],f"✅ Support request #{request_id} has been resolved. You can still view its history in My Support Requests.")
             except Exception:
@@ -801,9 +864,14 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         body=template["body"].replace("{name}",creator["display_name"]).replace("{reason}",draft["reason"])
         try: await ctx.bot.send_message(draft["target"],body); result="delivered"
         except Exception: db.record_audit(user_id,"warning_delivery_failed","creator_warning",warning_id,draft["target"],result="error"); result="recorded; delivery failed"
-        if cfg.admin_chat_id:
-            try: await ctx.bot.send_message(cfg.admin_chat_id,f"⚠️ {draft['type'].title()} recorded\nMember: {creator['display_name']}",message_thread_id=getattr(cfg,"moderation_thread_id",None) or cfg.reports_thread_id)
-            except Exception: db.record_audit(user_id,"moderation_notification_delivery_failed","creator_warning",warning_id,draft["target"],result="error")
+        await send_routed(ctx.bot,cfg,"moderation",f"⚠️ {draft['type'].title()} recorded\nMember: {creator['display_name']}",target_telegram_id=draft["target"])
+        summary=db.warning_summary(draft["target"])
+        if summary["strikes"]>=3:
+            cycle=f"three-strike:{warning_id}"
+            if db.claim_notification(draft["target"],cycle,"owner_review"):
+                await send_routed(ctx.bot,cfg,"owner_review",
+                    f"🔴 Three strikes — Owner Review Required\nMember: {creator['display_name']}\nNo automatic removal has occurred.",
+                    target_telegram_id=draft["target"])
         return await _show(query,f"✅ {draft['type'].title()} #{warning_id} {result}. The full action is audited.",menu_markup(ctx,[],"warnings_help"))
     if action == "readiness":
         if role is not Role.OWNER:return await _show(query,"Setup & Readiness is owner-only.",home_markup(ctx,user_id))
@@ -1142,7 +1210,51 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"📨 Admin routing: {'Configured' if cfg.admin_chat_id else 'Needs setup'}\n"
             "🤖 Bot version: 1.1\n🗄️ Database schema: 4")
         return await _show(query,text,menu_markup(ctx,[("🟡 Reminder Times","settings_warning"),("🔴 Follow-up Time","settings_alert"),
-            ("📸 POP Deadline","settings_pop"),("📊 Daily Summary","settings_summary")],"setup"))
+            ("📸 POP Deadline","settings_pop"),("📊 Daily Admin Brief","daily_brief_settings")],"setup"))
+    if action == "daily_brief_settings":
+        if role is not Role.OWNER:return await _show(query,"Daily Admin Brief settings are owner-only.",home_markup(ctx,user_id))
+        destination="Configured" if cfg.daily_brief_chat_id else "Needs setup"
+        text=("📊 Daily Admin Brief\n\nSend one concise operations brief to the configured Admin destination.\n\n"
+            f"Enabled: {'Yes' if cfg.daily_brief_enabled else 'No'}\nTime: {cfg.daily_brief_time} ET\nDestination: {destination}\n"
+            f"System Health: {'Included' if cfg.daily_brief_include_health else 'Hidden'}\n"
+            f"Zero-count sections: {'Included' if cfg.daily_brief_include_zero else 'Hidden'}\n"
+            f"Weekends: {'Yes' if cfg.daily_brief_weekends else 'No'}")
+        return await _show(query,text,menu_markup(ctx,[("Enable / Disable","brief_toggle"),("8:00 AM ET","brief_time_08:00"),
+            ("9:00 AM ET","brief_time_09:00"),("10:00 AM ET","brief_time_10:00"),("Use This Chat","brief_use_chat"),
+            ("Use This Topic","brief_use_topic"),("Include / Hide System Health","brief_health"),
+            ("Show / Hide Zero Items","brief_zero"),("Weekends On / Off","brief_weekends"),("Verify Destination","brief_verify"),
+            ("🧪 Send Test Brief","brief_test")],"settings"))
+    if action in {"brief_toggle","brief_health","brief_zero","brief_weekends"} or action.startswith("brief_time_"):
+        if role is not Role.OWNER:return await _show(query,"Daily Admin Brief settings are owner-only.",home_markup(ctx,user_id))
+        if action=="brief_toggle":attr="daily_brief_enabled";new=not cfg.daily_brief_enabled
+        elif action=="brief_health":attr="daily_brief_include_health";new=not cfg.daily_brief_include_health
+        elif action=="brief_zero":attr="daily_brief_include_zero";new=not cfg.daily_brief_include_zero
+        elif action=="brief_weekends":attr="daily_brief_weekends";new=not cfg.daily_brief_weekends
+        else:attr="daily_brief_time";new=action.removeprefix("brief_time_")
+        persist_setting(cfg,attr,new,user_id)
+        return await _show(query,"✅ Daily Brief setting updated and audited.",menu_markup(ctx,[],"daily_brief_settings"))
+    if action in {"brief_use_chat","brief_use_topic"}:
+        if role is not Role.OWNER:return await _show(query,"Daily Admin Brief settings are owner-only.",home_markup(ctx,user_id))
+        value=query.message.chat_id if action=="brief_use_chat" else query.message.message_thread_id
+        if value is None:return await _show(query,"This message is not inside a forum topic.",menu_markup(ctx,[],"daily_brief_settings"))
+        attr="daily_brief_chat_id" if action=="brief_use_chat" else "daily_brief_thread_id"
+        ctx.user_data["brief_destination_draft"]={"attr":attr,"value":value}
+        return await _show(query,"Confirm Daily Brief destination\n\nThis changes where protected Admin summaries are delivered. The change is reversible and will be audited.",confirmation_markup(ctx,"brief_confirm_destination","daily_brief_settings"))
+    if action == "brief_confirm_destination":
+        if role is not Role.OWNER:return await _show(query,"Daily Admin Brief settings are owner-only.",home_markup(ctx,user_id))
+        draft=ctx.user_data.pop("brief_destination_draft",None)
+        if not draft:return await _show(query,"That destination change expired. Nothing was changed.",menu_markup(ctx,[],"daily_brief_settings"))
+        persist_setting(cfg,draft["attr"],draft["value"],user_id)
+        return await _show(query,"✅ Daily Brief destination updated and audited.",menu_markup(ctx,[],"daily_brief_settings"))
+    if action == "brief_verify":
+        if role is not Role.OWNER:return await _show(query,"Destination verification is owner-only.",home_markup(ctx,user_id))
+        status="🟢 Configured" if cfg.daily_brief_chat_id else "🟡 Needs setup"
+        return await _show(query,f"📍 Daily Brief Destination\n\n{status}\nChat and topic identifiers stay protected in Owner settings.",menu_markup(ctx,[],"daily_brief_settings"))
+    if action == "brief_test":
+        if role is not Role.OWNER:return await _show(query,"Test Brief is owner-only.",home_markup(ctx,user_id))
+        ok,ref=await deliver_daily_brief(ctx.bot,cfg,test=True)
+        message="✅ Test Brief delivered. No operational records or alerts were changed." if ok else f"⚠️ Test delivery failed. No operational records were changed. Check the destination and try again. Reference: {ref}"
+        return await _show(query,message,menu_markup(ctx,[],"daily_brief_settings"))
     if action in {"settings_warning","settings_alert","settings_pop","settings_summary"}:
         if role is not Role.OWNER: return await _show(query,"Settings are owner-only.",home_markup(ctx,user_id))
         choices = {
@@ -1313,7 +1425,23 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await _show(query, descriptions[action], menu_markup(ctx, [], back))
     return await _show(query, "Unknown or unavailable action.", home_markup(ctx, user_id))
 
+async def brief_callback(update: Update,ctx: ContextTypes.DEFAULT_TYPE):
+    """Safely open brief destinations without editing a shared Admin-topic message."""
+    query=update.callback_query;user_id=update.effective_user.id;cfg=ctx.bot_data["config"]
+    if role_for(user_id,cfg)<Role.ADMIN:
+        return await query.answer("This Admin information is not available to your account.",show_alert=True)
+    await query.answer("Opening privately…")
+    action=(query.data or "").removeprefix("brief:")
+    if action=="snapshot":text=snapshot_text(user_id,cfg)
+    elif action=="attention":text="🚨 Needs Attention\n\nOpen your private Admin or Owner Home and choose Needs Attention / Admin Queue."
+    else:
+        if role_for(user_id,cfg) is not Role.OWNER and not has_permission(user_id,cfg,"view_system_health"):
+            text="System Health is not included in your assigned permissions."
+        else:text="🩺 System Health\n\nOpen your private Owner Home and choose Health to run protected diagnostics."
+    await ctx.bot.send_message(user_id,text)
+
 
 def register_navigation(app):
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback, pattern=r"^op:"))
+    app.add_handler(CallbackQueryHandler(brief_callback, pattern=r"^brief:"))

@@ -1,5 +1,16 @@
 # Owner Guide
 
+## Community Snapshot and Daily Admin Brief
+
+Open **Community Snapshot** near the top of Owner Home for live creator, participation, POP,
+Away Notice, support, accountability, and operational-health totals. Tappable detail buttons open
+the corresponding queue. Community Status describes current operations; **System Health** remains
+the separate protected diagnostic area.
+
+Open **Setup → System Settings → Daily Admin Brief** to enable the brief, choose 8:00, 9:00, or
+10:00 AM Eastern, choose the destination, control weekends, zero-count rows, and System Health,
+verify the destination, or send an isolated test. The default is disabled at 9:00 AM Eastern.
+
 Owners Kira and Alex have equal access when both numeric IDs are securely configured. Use
 Owner Home for Needs Attention, community operations, reports, audit, archives, restoration,
 access, health, exports, Telegram Locations, and Participation Monitor.

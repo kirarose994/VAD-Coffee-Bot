@@ -70,6 +70,13 @@ class Config:
     pop_review_thread_id: int | None = None
     support_thread_id: int | None = None
     owner_review_thread_id: int | None = None
+    daily_brief_enabled: bool = False
+    daily_brief_time: str = "09:00"
+    daily_brief_chat_id: int | None = None
+    daily_brief_thread_id: int | None = None
+    daily_brief_include_health: bool = True
+    daily_brief_include_zero: bool = True
+    daily_brief_weekends: bool = True
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -129,6 +136,13 @@ class Config:
             pop_review_thread_id=_parse_int_env("POP_REVIEW_THREAD_ID"),
             support_thread_id=_parse_int_env("SUPPORT_THREAD_ID"),
             owner_review_thread_id=_parse_int_env("OWNER_REVIEW_THREAD_ID"),
+            daily_brief_enabled=os.environ.get("DAILY_ADMIN_BRIEF_ENABLED",os.environ.get("DAILY_OWNER_SUMMARY_ENABLED","false")).strip().casefold()=="true",
+            daily_brief_time=os.environ.get("DAILY_ADMIN_BRIEF_TIME",os.environ.get("DAILY_OWNER_SUMMARY_TIME","09:00")),
+            daily_brief_chat_id=_parse_int_env("DAILY_BRIEF_CHAT_ID") or _parse_int_env("ADMIN_CHAT_ID"),
+            daily_brief_thread_id=_parse_int_env("DAILY_BRIEF_THREAD_ID") or _parse_int_env("REPORTS_THREAD_ID"),
+            daily_brief_include_health=os.environ.get("DAILY_BRIEF_INCLUDE_HEALTH","true").strip().casefold()=="true",
+            daily_brief_include_zero=os.environ.get("DAILY_BRIEF_INCLUDE_ZERO","true").strip().casefold()=="true",
+            daily_brief_weekends=os.environ.get("DAILY_BRIEF_WEEKENDS","true").strip().casefold()=="true",
         )
 
     @property

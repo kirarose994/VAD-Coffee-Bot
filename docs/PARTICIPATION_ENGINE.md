@@ -1,5 +1,11 @@
 # Participation Engine
 
+Approved creators should not go more than two full days without meaningful participation in the
+configured Main VAD discussion area. A friendly reminder is triggered at two days. At three full
+days without meaningful participation, and without an active Away Notice, the Admin team receives
+a follow-up alert. The purpose is to help keep the community lively so members have a reason to
+come back—not to reward simple check-ins.
+
 Meaningful participation means contributing to genuine conversation that helps keep the
 community active and engaging. Approved creators can respond thoughtfully, ask questions,
 join discussions, offer help, or otherwise add value. The purpose is not to make someone

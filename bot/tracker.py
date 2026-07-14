@@ -11,6 +11,7 @@ from engagement import classify
 from permissions import can_manage_sensitive, can_mutate, can_read, can_view_audit, has_permission, role_for
 from pop_policy import label as pop_label
 from routing import send_routed
+from briefing import daily_admin_brief_job
 
 
 def config(ctx):
@@ -270,9 +271,7 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         proof_type = "photo" if msg.photo else "document" if msg.document else "media"
         if db.submit_pop(user.id, week_key(local_now), msg.message_id, msg.chat_id, thread_id, proof_type):
             await msg.reply_text("Thursday POP received! 📸 It’s now waiting for review.")
-            await send_routed(ctx.bot,cfg,"pop_review",
-                f"📸 POP awaiting review\n{escape(user.full_name)} submitted Thursday POP.\nPeriod: {week_key(local_now)}\nSubmitted: {local_now.strftime('%b %d · %I:%M %p ET')}",
-                target_telegram_id=user.id,related_submission_id=msg.message_id)
+            # A normal receipt is visible in the review queue and Daily Brief; it is not urgent.
         return
     if not participation_enabled(cfg,msg.chat_id,thread_id):
         if in_participation_chat:
@@ -328,6 +327,14 @@ async def inactivity_job(ctx: ContextTypes.DEFAULT_TYPE):
                 f"🟠 Two-day participation flag\n{escape(creator['display_name'])}\nTelegram ID: {creator['telegram_id']}\n"
                 f"Last meaningful participation: {anchor}\nElapsed: {hours:.1f} hours\nAway Notice: None active.",
                 target_telegram_id=creator["telegram_id"])
+    # Missing POP becomes time-sensitive only after the centralized ET deadline.
+    pop_rows = (db.pop_status_report(datetime.now(cfg.timezone),cfg.pop_due_weekday,cfg.pop_cutoff_time,cfg.timezone_name)
+                if hasattr(cfg,"pop_due_weekday") else ())
+    for row in pop_rows:
+        if row["effective_status"] == "missing" and db.claim_notification(row["telegram_id"],row["week_key"],"pop_exception"):
+            await send_routed(ctx.bot,cfg,"pop_review",
+                f"🔴 Thursday POP needs attention\n{escape(row['display_name'])}\nThe deadline passed without POP or an applicable excusal.",
+                target_telegram_id=row["telegram_id"])
 
 
 async def daily_owner_summary_job(ctx: ContextTypes.DEFAULT_TYPE):
@@ -384,6 +391,8 @@ def register_handlers(app):
     )
     app.add_handler(MessageHandler(pop_media, observe), group=10)
     app.job_queue.run_repeating(inactivity_job, interval=1800, first=60, name="inactivity-monitor")
+    # A repeating check allows Owner settings to take effect without rescheduling jobs.
+    app.job_queue.run_repeating(daily_admin_brief_job, interval=900, first=90, name="daily-admin-brief")
     cfg = app.bot_data.get("config")
     if cfg and getattr(cfg, "daily_owner_summary_enabled", False):
         try:

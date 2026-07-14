@@ -1,5 +1,12 @@
 # Setup Guide
 
+## Daily Admin Brief
+
+After the Admin Operations or Reports topic is verified, open Owner Home → Setup → System Settings
+→ Daily Admin Brief. Choose the destination from the intended Admin location, send the clearly
+labeled test brief, then enable the schedule. The test does not alter participation, POP, warnings,
+support, or daily-delivery history.
+
 For the shortest Owner workflow, begin with [QUICK_START_FOR_KIRA_AND_ALEX.md](QUICK_START_FOR_KIRA_AND_ALEX.md).
 
 ## Guided setup

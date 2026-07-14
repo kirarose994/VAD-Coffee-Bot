@@ -16,7 +16,15 @@ ROUTES = {
     "owner_review": ("admin_chat_id","owner_review_thread_id","reports_thread_id"),
     "health": ("admin_chat_id","health_thread_id","reports_thread_id"),
     "announcement": ("admin_chat_id","reports_thread_id",None),
+    "daily_brief": ("daily_brief_chat_id","daily_brief_thread_id",None),
 }
+
+async def _notify_owners_once(bot,config,error_ref,event_type):
+    for owner_id in getattr(config,"owner_user_ids",()):
+        if not db.claim_notification(owner_id,error_ref,"delivery_failure_owner"):continue
+        try:
+            await bot.send_message(owner_id,f"⚠️ Delivery needs attention\n\nThe {event_type.replace('_',' ')} destination could not be reached. The original event was saved.\nReference: {error_ref}\n\nOpen Owner Home → Needs Attention.")
+        except Exception:pass
 
 
 def destination(config,event_type):
@@ -38,6 +46,7 @@ async def send_routed(bot,config,event_type,text,*,reply_markup=None,payload_sum
         db.record_audit(None,"routed_delivery_failed","notification",target_telegram_id=target_telegram_id,
             related_request_id=related_request_id,related_submission_id=related_submission_id,result="error",error_reference=error_ref)
         db.set_system_state(f"last_route_failure:{event_type}",error_ref)
+        await _notify_owners_once(bot,config,error_ref,event_type)
         return False,error_ref
     try:
         await bot.send_message(chat_id,text,message_thread_id=thread_id,reply_markup=reply_markup)
@@ -50,6 +59,7 @@ async def send_routed(bot,config,event_type,text,*,reply_markup=None,payload_sum
         error_ref="DEL-"+secrets.token_hex(4).upper()
         db.record_delivery_failure(error_ref,event_type,chat_id,thread_id,payload_summary or text[:120])
         db.set_system_state(f"last_route_failure:{event_type}",error_ref)
+        await _notify_owners_once(bot,config,error_ref,event_type)
         return False,error_ref
 
 

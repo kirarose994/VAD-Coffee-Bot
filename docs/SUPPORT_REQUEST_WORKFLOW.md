@@ -1,5 +1,9 @@
 # Support Request Workflow
 
+Open and unassigned requests appear in authorized snapshots and the Daily Admin Brief without
+including full private message contents. New requests and Owner escalations remain immediate;
+ordinary resolution activity does not create noisy community-wide alerts.
+
 Creators open **Contact an Admin**, choose a category, write a message, preview it, and
 confirm delivery. The request is stored before Telegram delivery, so a routing problem
 cannot erase it. Creators see only their own requests under **My Support Requests**.
