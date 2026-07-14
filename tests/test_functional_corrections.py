@@ -13,7 +13,7 @@ import database as db
 from handlers.error import error_handler, safe_error_details
 from navigation import callback
 from pop_policy import calculate_status, current_period
-from presentation import actor_name, audit_entry, friendly_timestamp, system_error_detail
+from presentation import actor_name, audit_entry, friendly_timestamp, system_error_detail, timeline_entry
 from telegram.error import BadRequest
 
 ET=ZoneInfo("America/New_York")
@@ -87,6 +87,36 @@ class PresentationTests(unittest.TestCase):
         self.assertIn("[REDACTED TELEGRAM TOKEN]",details["message"])
         self.assertNotIn(fake_token,details["traceback"])
 
+    def test_timeline_entry_renders_normal_change_row(self):
+        row={"action":"availability_changed","previous_value":"unavailable","new_value":"available",
+            "occurred_at":datetime.now(ET).isoformat()}
+        text=timeline_entry(row)
+        self.assertIn("Unavailable",text);self.assertIn("Available",text)
+
+    def test_timeline_entry_renders_legacy_row_without_change_columns(self):
+        row={"action":"creator_registered","occurred_at":datetime.now(ET).isoformat()}
+        self.assertIn("Creator registered",timeline_entry(row))
+
+    def test_timeline_entry_renders_operational_event_families(self):
+        actions=("role_changed","creator_registered","engagement_counted","pop_submitted","absence_requested")
+        for action in actions:
+            with self.subTest(action=action):
+                row={"action":action,"previous_value":None,"new_value":{"status":"recorded"},
+                    "occurred_at":datetime.now(ET).isoformat()}
+                rendered=timeline_entry(row)
+                self.assertTrue(rendered.splitlines()[0]);self.assertIn("ET",rendered)
+
+    def test_creator_timeline_query_projects_change_columns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/"timeline.db";db.initialize_database(path)
+            db.register_creator(44,"ashley","Ashley",path)
+            with db.get_connection(path) as connection:
+                db.audit_event(connection,44,"role_changed","creator",44,44,
+                    previous_value="creator",new_value="admin")
+            row=db.creator_timeline(44,path=path)[0]
+            self.assertIn("previous_value",row.keys());self.assertIn("new_value",row.keys())
+            self.assertIn("Creator",timeline_entry(row))
+
 
 class GuidedScreenTests(unittest.IsolatedAsyncioTestCase):
     def cfg(self): return SimpleNamespace(owner_user_ids=frozenset(),lead_admin_user_ids=frozenset(),
@@ -107,6 +137,15 @@ class GuidedScreenTests(unittest.IsolatedAsyncioTestCase):
         with patch("handlers.error.db.record_audit") as audit:
             await error_handler(None,ctx)
         audit.assert_not_called()
+
+    async def test_my_timeline_callback_renders_legacy_row_without_exception(self):
+        cfg=self.cfg();row={"action":"creator_registered","occurred_at":datetime.now(ET).isoformat()}
+        query=SimpleNamespace(data="op:menu:timeline_0",answer=AsyncMock(),edit_message_text=AsyncMock())
+        update=SimpleNamespace(callback_query=query,effective_user=SimpleNamespace(id=2))
+        ctx=SimpleNamespace(user_data={"menu_nonce":"menu"},bot_data={"config":cfg})
+        with patch("navigation.db.creator_timeline",return_value=[row]):
+            await callback(update,ctx)
+        self.assertIn("Creator registered",query.edit_message_text.await_args.args[0])
 
     async def test_system_errors_filter_offers_owner_detail_button(self):
         cfg=SimpleNamespace(owner_user_ids=frozenset({1}),lead_admin_user_ids=frozenset(),admin_user_ids=frozenset(),
