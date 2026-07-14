@@ -57,6 +57,14 @@ class HandlerRoutingTests(unittest.TestCase):
             "from":{"id":20,"is_bot":False,"first_name":"Creator"},"text":"A thoughtful community contribution today."}},self.app.bot)
         self.assertTrue(any(handler.check_update(update) for handler in self.app.handlers[10]))
 
+    def test_tracker_observer_matches_voice_and_audio_messages(self):
+        for field in ("voice","audio"):
+            update=Update.de_json({"update_id":3,"message":{"message_id":12,"date":0,
+                "chat":{"id":-100,"type":"supergroup","title":"VAD"},
+                "from":{"id":20,"is_bot":False,"first_name":"Creator"},
+                field:{"file_id":f"{field}-file","file_unique_id":f"{field}-unique","duration":15}}},self.app.bot)
+            self.assertTrue(any(handler.check_update(update) for handler in self.app.handlers[10]),field)
+
     def test_temporary_setup_handlers_are_not_loaded(self):
         source=(Path(__file__).parents[1]/"bot"/"main.py").read_text(encoding="utf-8")
         self.assertNotIn("register_setup_handlers",source)

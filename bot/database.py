@@ -931,7 +931,7 @@ def set_vacation(target_id, until, actor_id, path=None):
         return bool(cur.rowcount)
 
 
-def record_engagement(telegram_id, message_id, chat_id, thread_id, normalized_hash, decision, reason, path=None):
+def record_engagement(telegram_id, message_id, chat_id, thread_id, normalized_hash, decision, reason, path=None, event_type="text_message"):
     now = utc_now()
     with get_connection(path) as db:
         try:
@@ -941,7 +941,9 @@ def record_engagement(telegram_id, message_id, chat_id, thread_id, normalized_ha
             return False
         if decision == "accepted":
             db.execute("UPDATE creators SET last_meaningful_at=? WHERE telegram_id=?", (now,telegram_id))
-        audit_event(db, telegram_id, "engagement_counted" if decision == "accepted" else "engagement_ignored",
+        audit_action = f"engagement_counted_{event_type}" if decision == "accepted" and event_type != "text_message" else (
+            "engagement_counted" if decision == "accepted" else "engagement_ignored")
+        audit_event(db, telegram_id, audit_action,
                     "engagement", target_telegram_id=telegram_id, new_value=decision,
                     reason=reason, source_chat_id=chat_id, source_thread_id=thread_id)
         return True

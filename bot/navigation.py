@@ -1087,6 +1087,9 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         observed_topic_value=None if observed_topic=="general:none" else observed_topic
         topic_match="Not yet observed" if observed_topic=="None yet" else ("Yes" if ((not configured_topics and observed_topic_value is None) or str(observed_topic_value) in {str(v) for v in configured_topics}) else "No")
         reason_labels={"accepted":"Counted as meaningful participation","wrong_chat":"Rejected: wrong chat","wrong_topic":"Rejected: wrong topic",
+            "accepted_voice_message":"Counted: qualifying voice message","accepted_audio_message":"Counted: qualifying audio message",
+            "creator_not_approved":"Rejected: creator not approved","audio_too_short":"Ignored: audio too short",
+            "duplicate_audio":"Ignored: duplicate audio","audio_missing_file_identity":"Ignored: audio identity unavailable",
             "active_away_notice":"Not counted: active Away Notice","legacy_vacation_active":"Not counted: active legacy vacation",
             "pop_workflow_message":"Not counted: POP workflow message","duplicate_telegram_update":"Ignored: duplicate Telegram update",
             "greeting_only":"Ignored: greeting only","emoji_only":"Ignored: emoji only","too_short":"Ignored: too short",

@@ -1,6 +1,7 @@
 """Telegram handlers for creators, engagement, inactivity, POP, and reports."""
 
 from datetime import date, datetime, time, timedelta, timezone
+import hashlib
 import json
 from html import escape
 
@@ -8,7 +9,7 @@ from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
 
 import database as db
-from engagement import classify
+from engagement import classify, contains_promotional_spam
 from permissions import can_manage_sensitive, can_mutate, can_read, can_view_audit, has_permission, role_for
 from pop_policy import label as pop_label
 from routing import send_routed
@@ -252,6 +253,17 @@ def _record_creator_participation_diagnostic(config, creator, message, reason):
     db.set_system_state(f"participation:last_creator:{creator['telegram_id']}", json.dumps(payload, separators=(",", ":")))
 
 
+def _audio_details(message):
+    """Return Telegram's stable audio identity, duration, and participation type."""
+    media = message.voice or getattr(message, "audio", None)
+    if not media:
+        return None
+    kind = "voice_message" if message.voice else "audio_message"
+    stable_id = getattr(media, "file_unique_id", None) or getattr(media, "file_id", None)
+    digest = hashlib.sha256(f"{kind}:{stable_id}".encode()).hexdigest() if stable_id else None
+    return kind, int(getattr(media, "duration", 0) or 0), digest
+
+
 async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg, user, cfg = update.effective_message, update.effective_user, config(ctx)
     if not msg or not user:
@@ -288,7 +300,10 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         db.set_system_state("last_participation_chat_id",msg.chat_id)
         db.set_system_state("last_participation_thread_id",msg.message_thread_id if msg.message_thread_id is not None else "general:none")
     creator = db.get_creator(user.id)
+    audio_details = _audio_details(msg)
     if not creator or creator["status"] != "active":
+        if audio_details:
+            _record_creator_participation_diagnostic(cfg,creator or {"telegram_id":user.id},msg,"creator_not_approved")
         if in_participation_chat and participation_enabled(cfg,msg.chat_id,msg.message_thread_id):
             db.record_audit(None,"engagement_ignored","participation_event",target_telegram_id=user.id,new_value={"reason":"unregistered_user"})
         return
@@ -300,7 +315,7 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         _record_creator_participation_diagnostic(cfg,creator,msg,"legacy_vacation_active")
         return
     thread_id = msg.message_thread_id
-    media = bool(msg.photo or msg.sticker or msg.animation or msg.video or msg.voice or msg.document)
+    media = bool(msg.photo or msg.sticker or msg.animation or msg.video or msg.voice or getattr(msg,"audio",None) or msg.document)
     pop_caption = (msg.caption or "").casefold() if media else ""
     pop_chat_id = getattr(cfg,"pop_chat_id",None) or getattr(cfg,"girls_chat_id",None)
     if (media and "pop" in pop_caption and pop_chat_id == msg.chat_id and cfg.pop_thread_id
@@ -317,6 +332,32 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         _record_creator_participation_diagnostic(cfg,creator,msg,reason)
         if in_participation_chat:
             db.record_audit(None,"engagement_ignored","participation_event",target_telegram_id=user.id,new_value={"reason":"wrong_topic"})
+        return
+    if audio_details:
+        event_type,duration,digest=audio_details
+        if duration < 15:
+            decision_reason="audio_too_short"
+        elif contains_promotional_spam(msg.caption or ""):
+            decision_reason="promotional_spam"
+        elif not digest:
+            decision_reason="audio_missing_file_identity"
+        else:
+            since=(datetime.now(timezone.utc)-timedelta(days=int(getattr(cfg,"repeat_window_days",7)))).isoformat()
+            decision_reason="duplicate_audio" if db.recent_hash_exists(user.id,digest,since) else event_type
+        accepted=decision_reason in {"voice_message","audio_message"}
+        stored=db.record_engagement(user.id,msg.message_id,msg.chat_id,thread_id,digest,
+            "accepted" if accepted else "rejected",decision_reason,event_type=event_type)
+        if stored and accepted:
+            diagnostic_reason=f"accepted_{event_type}"
+            _record_creator_participation_diagnostic(cfg,creator,msg,diagnostic_reason)
+            counted_at=datetime.now(cfg.timezone).isoformat()
+            db.set_system_state("last_meaningful_participation_counted",counted_at)
+            db.set_system_state("readiness:meaningful_test",counted_at)
+        elif stored:
+            _record_creator_participation_diagnostic(cfg,creator,msg,decision_reason)
+            db.set_system_state("readiness:ignored_test",datetime.now(cfg.timezone).isoformat())
+        else:
+            _record_creator_participation_diagnostic(cfg,creator,msg,"duplicate_telegram_update")
         return
     decision = classify(msg.text, media=media,
         is_repeat=lambda digest, since: db.recent_hash_exists(user.id, digest, since),
@@ -449,7 +490,7 @@ def register_handlers(app):
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, observe), group=10)
     pop_media = (
         filters.PHOTO | filters.Sticker.ALL | filters.ANIMATION |
-        filters.VIDEO | filters.VOICE | filters.Document.ALL
+        filters.VIDEO | filters.VOICE | filters.AUDIO | filters.Document.ALL
     )
     app.add_handler(MessageHandler(pop_media, observe), group=10)
     app.job_queue.run_repeating(inactivity_job, interval=1800, first=60, name="inactivity-monitor")
