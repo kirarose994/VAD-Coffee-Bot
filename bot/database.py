@@ -1041,6 +1041,11 @@ def history(limit=50, path=None):
         return db.execute("SELECT * FROM audit_events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
 
 
+def get_audit_event(audit_id,path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM audit_events WHERE id=?",(audit_id,)).fetchone()
+
+
 def create_support_request(telegram_id, category, message, path=None):
     """Create a durable request before attempting Telegram delivery."""
     now=utc_now()
