@@ -568,7 +568,7 @@ def creator_history(telegram_id, path=None):
 
 def creator_timeline(telegram_id, limit=10, offset=0, path=None):
     with get_connection(path) as db:
-        return db.execute("""SELECT id,occurred_at,action,target_type,new_value,reason
+        return db.execute("""SELECT id,occurred_at,action,target_type,previous_value,new_value,reason
           FROM audit_events WHERE target_telegram_id=? ORDER BY occurred_at DESC,id DESC
           LIMIT ? OFFSET ?""", (telegram_id,limit,offset)).fetchall()
 

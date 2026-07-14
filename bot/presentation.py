@@ -61,6 +61,11 @@ def change_summary(previous,new):
     return ""
 
 
+def _optional_field(row, key):
+    """Read an optional projected column without masking malformed row objects."""
+    return row[key] if key in row.keys() else None
+
+
 def actor_name(row, resolver=None):
     actor_id = row["actor_id"]
     if row["actor_name"]: return row["actor_name"]
@@ -73,7 +78,9 @@ def actor_name(row, resolver=None):
 
 def timeline_entry(row, timezone_name="America/New_York"):
     label = ACTION_LABELS.get(row["action"],row["action"].replace("_"," ").title())
-    change = change_summary(row["previous_value"],row["new_value"])
+    # Legacy/imported timeline projections may predate change-value columns. Missing
+    # values mean there is no transition to display; required fields still fail loudly.
+    change = change_summary(_optional_field(row,"previous_value"),_optional_field(row,"new_value"))
     parts = [label]
     if change: parts.append(change)
     parts.append(friendly_timestamp(row["occurred_at"],timezone_name=timezone_name))
