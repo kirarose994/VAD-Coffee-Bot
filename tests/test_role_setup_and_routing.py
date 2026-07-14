@@ -99,6 +99,13 @@ class SetupMenuTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Keely",labels(result.kwargs["reply_markup"]))
         self.assertIn("never creates a duplicate creator record",result.args[0])
 
+    async def test_active_creator_directory_uses_role_reconciled_profiles(self):
+        eve={"telegram_id":50,"display_name":"Eve","status":"active","availability":"available"}
+        with patch("navigation.db.creator_directory",return_value=[eve]) as directory:
+            result=await self.screen("creator_list_all")
+        directory.assert_called_once()
+        self.assertEqual(labels(result.kwargs["reply_markup"]).count("Eve"),1)
+
     async def test_add_admin_picker_deduplicates_creator_and_bot_user_by_id(self):
         creator={"telegram_id":50,"display_name":"Bambolawife","status":"active"}
         bot_user={"telegram_id":50,"display_name":"Telegram user 50"}

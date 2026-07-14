@@ -61,6 +61,24 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual([row["telegram_id"] for row in people],[101,202])
         self.assertEqual({row["telegram_id"] for row in creators},{101,202})
 
+    def test_directory_reconciles_inherited_creator_profile_by_telegram_id(self):
+        user_id=404
+        db.record_bot_user(user_id,"eve","Eve",self.path)
+        cfg=SimpleNamespace(owner_user_ids=frozenset(),lead_admin_user_ids=frozenset(),admin_user_ids=frozenset({user_id}))
+        rows=db.creator_directory(cfg,self.path)
+        self.assertEqual([(row["telegram_id"],row["display_name"],row["status"]) for row in rows],
+            [(user_id,"Eve","active")])
+        self.assertEqual(db.roles_for_user(user_id,self.path),frozenset({"creator","admin"}))
+        with db.get_connection(self.path) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM creators WHERE telegram_id=?",(user_id,)).fetchone()[0],1)
+
+    def test_directory_respects_intentionally_inactive_or_archived_profiles(self):
+        cfg=SimpleNamespace(owner_user_ids=frozenset(),lead_admin_user_ids=frozenset(),admin_user_ids=frozenset())
+        db.register_creator(405,"inactive","Inactive",self.path)
+        db.register_creator(406,"archived","Archived",self.path)
+        db.set_status(406,"active",99,self.path);db.delete_creator(406,99,self.path)
+        self.assertEqual(db.creator_directory(cfg,self.path),[])
+
     def test_person_name_fallback_priority(self):
         db.record_bot_user(301,"telegram301","Telegram Full Name",self.path)
         db.register_member(301,"member301","Preferred Name","buyer",self.path)

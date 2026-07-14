@@ -534,6 +534,19 @@ def list_creators(path=None):
             key=lambda row:(row["display_name"].casefold(),row["telegram_id"]))
 
 
+def creator_directory(config,path=None,active_only=True):
+    """Return the canonical creator directory after reconciling inherited roles.
+
+    Admin and Owner authorization is configured independently from creator profile data.
+    Reconcile those sources before rendering a directory so inherited Creator access can
+    never exist without the same Telegram identity being represented once in creators.
+    Archived profiles remain archived; inactive profiles remain excluded from active views.
+    """
+    synchronize_role_memberships(config,path)
+    rows=list_creators(path)
+    return [row for row in rows if row["status"] == "active"] if active_only else rows
+
+
 def set_availability(target_id, new_status, actor_id, reason=None, expires_at=None, path=None):
     if new_status not in {"available", "unavailable", "vacation", "sick"}:
         return False

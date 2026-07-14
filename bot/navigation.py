@@ -751,7 +751,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not has_permission(user_id,cfg,"view_creator_reports"):
             return await _show(query,"Active Creators isn’t included in your access.",home_markup(ctx,user_id))
         selected = action.removeprefix("creator_list_")
-        rows = list(db.list_creators())
+        rows = list(db.creator_directory(cfg))
         if selected == "available": rows = [r for r in rows if r["availability"] == "available"]
         if selected == "unavailable": rows = [r for r in rows if r["availability"] == "unavailable"]
         if selected == "away": rows = [r for r in rows if r["availability"] in {"vacation","sick"}]
