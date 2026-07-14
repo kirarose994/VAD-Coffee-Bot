@@ -8,7 +8,7 @@ from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
 
 import database as db
 from engagement import classify
-from permissions import can_mutate, can_read, role_for
+from permissions import can_manage_sensitive, can_mutate, can_read, can_view_audit, role_for
 
 
 def config(ctx):
@@ -23,11 +23,19 @@ async def require_admin(update, ctx):
     return False
 
 
-async def require_lead_admin(update, ctx):
+async def require_operational_admin(update, ctx):
     user_id = update.effective_user.id if update.effective_user else None
     if can_mutate(user_id, config(ctx)):
         return True
-    await update.effective_message.reply_text("Sorry, this command is for lead admins only.")
+    await update.effective_message.reply_text("Sorry, this command is for operational admins only.")
+    return False
+
+
+async def require_owner(update, ctx):
+    user_id = update.effective_user.id if update.effective_user else None
+    if can_manage_sensitive(user_id, config(ctx)):
+        return True
+    await update.effective_message.reply_text("Sorry, this command is for owners only.")
     return False
 
 
@@ -45,7 +53,7 @@ async def register(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await require_lead_admin(update, ctx): return
+    if not await require_operational_admin(update, ctx): return
     target = parse_target(ctx)
     if not target or not db.set_status(target, "active", update.effective_user.id):
         return await update.message.reply_text("Usage: /creator_approve TELEGRAM_ID (registered creator required)")
@@ -53,7 +61,7 @@ async def approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def deactivate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await require_lead_admin(update, ctx): return
+    if not await require_operational_admin(update, ctx): return
     target = parse_target(ctx)
     if not target or not db.set_status(target, "inactive", update.effective_user.id):
         return await update.message.reply_text("Usage: /creator_deactivate TELEGRAM_ID")
@@ -61,7 +69,7 @@ async def deactivate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def reject_creator(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await require_lead_admin(update, ctx): return
+    if not await require_operational_admin(update, ctx): return
     target = parse_target(ctx)
     if not target or not db.set_status(target, "rejected", update.effective_user.id):
         return await update.message.reply_text("Usage: /creator_reject TELEGRAM_ID")
@@ -69,7 +77,7 @@ async def reject_creator(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def delete_creator(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await require_lead_admin(update, ctx): return
+    if not await require_operational_admin(update, ctx): return
     target = parse_target(ctx)
     if not target or not db.delete_creator(target, update.effective_user.id):
         return await update.message.reply_text("Usage: /creator_delete TELEGRAM_ID")
@@ -81,7 +89,7 @@ async def vacation(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     target = user.id
     raw = ctx.args[0] if ctx.args else ""
     if len(ctx.args) >= 2:
-        if not await require_lead_admin(update, ctx): return
+        if not await require_operational_admin(update, ctx): return
         target, raw = parse_target(ctx), ctx.args[1]
     try:
         until = date.fromisoformat(raw).isoformat()
@@ -94,7 +102,7 @@ async def vacation(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def vacation_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if ctx.args:
-        if not await require_lead_admin(update, ctx): return
+        if not await require_operational_admin(update, ctx): return
         target = parse_target(ctx)
     else:
         target = update.effective_user.id
@@ -126,7 +134,7 @@ async def pop_report_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def pop_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE, status):
-    if not await require_lead_admin(update, ctx): return
+    if not await require_operational_admin(update, ctx): return
     try: submission_id = int(ctx.args[0])
     except (IndexError, ValueError): return await update.message.reply_text(f"Usage: /pop_{status} SUBMISSION_ID [note]")
     note = " ".join(ctx.args[1:])
@@ -140,14 +148,17 @@ async def pop_reject(update, ctx): return await pop_review(update, ctx, "rejecte
 
 
 async def history_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await require_admin(update, ctx): return
+    user_id = update.effective_user.id if update.effective_user else None
+    if not can_view_audit(user_id, config(ctx)):
+        await update.effective_message.reply_text("Sorry, the private audit log is for owners only.")
+        return
     rows = db.history()
     lines = ["Admin history"] + [f"{r['created_at']} actor={r['actor_id']} target={r['target_id']} {r['action']} {r['details'] or ''}" for r in rows]
     await update.message.reply_text("\n".join(lines)[:4000])
 
 
 async def reset_history_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await require_lead_admin(update, ctx): return
+    if not await require_owner(update, ctx): return
     deleted = db.reset_history(update.effective_user.id)
     await update.message.reply_text(f"Audit history reset. {deleted} earlier entries removed; this reset was audited.")
 
@@ -168,7 +179,7 @@ async def settings_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def setting_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await require_lead_admin(update, ctx): return
+    if not await require_operational_admin(update, ctx): return
     if len(ctx.args) != 2 or ctx.args[0] not in SETTING_FIELDS:
         return await update.message.reply_text("Usage: /setting_set KEY INTEGER_OR_NONE")
     key, raw = ctx.args

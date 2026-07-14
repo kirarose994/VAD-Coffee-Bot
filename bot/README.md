@@ -25,11 +25,12 @@ A Telegram ordering bot for VAD Coffee Lounge. Guides users through a 6-step ord
 
 Role-based access uses immutable Telegram IDs from Replit Secrets:
 
-- `lead_admin`: all commands, including approvals, rejections, creator deletion,
-  deactivation, other-user vacation changes, POP decisions, history reset, topic/chat
-  discovery, and runtime configuration changes.
-- `admin`: read-only `/creator_report`, `/pop_report`, `/admin_history`, and `/settings`.
-  Admins cannot mutate creators, records, history, configuration, or roles.
+- `owner`: all operational permissions plus exclusive access to audit records,
+  history changes, deletion/configuration history, and administrator identities.
+- `lead_admin` and `admin`: operational management including creator approvals,
+  rejections, deactivation and deletion, vacations, POP decisions, reports, and
+  day-to-day configuration. Neither role can view `/admin_history`, reset audit
+  history, or see which administrator performed an action.
 
 Creator self-service registration and vacation commands remain available to the creator.
 Every mutation is written to the audit history with actor, target, action, details, and time.
@@ -75,8 +76,9 @@ Add `TELEGRAM_BOT_TOKEN` as a Replit Secret.
 |----------------|---------|-------------|
 | `ADMIN_CHAT_ID`| _(none)_| Group chat ID for order forwarding |
 | `LOG_LEVEL`    | `INFO`  | Logging level |
-| `LEAD_ADMIN_USER_IDS` | _(none)_ | Comma-separated Telegram IDs allowed all administrative actions |
-| `ADMIN_USER_IDS` | _(none)_ | Comma-separated Telegram IDs allowed read-only reports |
+| `LEAD_ADMIN_USER_IDS` | _(none)_ | Comma-separated Telegram IDs allowed operational administrative actions |
+| `ADMIN_USER_IDS` | _(none)_ | Comma-separated Telegram IDs allowed operational administration |
+| `OWNER_USER_IDS` | _(none)_ | Comma-separated Telegram IDs with owner-only audit and history access |
 | `GIRLS_CHAT_ID` | _(none)_ | Group where registered-creator engagement is tracked |
 | `GIRLS_THREAD_ID` | _(none)_ | Optional topic containing ordinary engagement |
 | `POP_THREAD_ID` | _(none)_ | Thursday POP-proof topic |
