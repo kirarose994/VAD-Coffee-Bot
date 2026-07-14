@@ -41,12 +41,15 @@ class RoleSeparationTests(unittest.TestCase):
         self.assertNotIn("💛 My VAD Home",visible)
         self.assertNotIn("🛡️ Admin Home",visible)
 
-    def test_admin_and_owner_menus_are_distinct(self):
+    def test_admin_and_owner_menus_are_additive(self):
         admin = self.menu(3,None,None)
         owner = self.menu(1,None,None)
         self.assertIn("🛡️ Admin Home",admin)
+        self.assertIn("💛 My VAD Home",admin)
         self.assertNotIn("👑 Owner Home",admin)
         self.assertIn("👑 Owner Home",owner)
+        self.assertIn("🛡️ Admin Home",owner)
+        self.assertIn("💛 My VAD Home",owner)
 
     def test_owner_without_creator_profile_can_register_as_creator(self):
         self.assertIn("👑 Owner Home",self.menu(1,None,None))
@@ -88,6 +91,13 @@ class SetupMenuTests(unittest.IsolatedAsyncioTestCase):
     async def test_admin_cannot_tamper_into_owner_setup(self):
         result = await self.screen("setup",user_id=2)
         self.assertIn("only to owners",result.args[0])
+
+    async def test_existing_creator_can_be_selected_for_additive_admin_role(self):
+        creator={"telegram_id":50,"display_name":"Keely","status":"active"}
+        with patch("navigation.db.list_creators",return_value=[creator]),patch("navigation.db.pending_bot_users",return_value=[]):
+            result=await self.screen("access_add")
+        self.assertIn("Keely",labels(result.kwargs["reply_markup"]))
+        self.assertIn("never creates a duplicate creator record",result.args[0])
 
     async def test_owner_can_explicitly_replace_numbered_topics_with_general(self):
         cfg=self.cfg();chat=SimpleNamespace(id=-100,title="VAD Main Group",is_forum=True)
@@ -163,3 +173,17 @@ class PersistedSetupTests(unittest.TestCase):
             self.assertEqual(second.participation_chat_id,-1003543892255)
             self.assertEqual(second.participation_topic_ids,frozenset({123}))
             self.assertIn("setting_changed",[row["action"] for row in db.history(20,path)])
+
+    def test_owner_admin_assignment_is_additive_and_persistent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/"bot.db";db.initialize_database(path);db.record_bot_user(50,"keely","Keely",path)
+            cfg=SimpleNamespace(owner_user_ids=frozenset({1}),admin_user_ids=frozenset(),lead_admin_user_ids=frozenset())
+            persist_setting(cfg,"admin_user_ids",frozenset({50}),1,path)
+            self.assertEqual(db.roles_for_user(50,path),frozenset({"creator","admin"}))
+            self.assertEqual(db.get_creator(50,path)["status"],"active")
+            persist_setting(cfg,"owner_user_ids",frozenset({1,50}),1,path)
+            self.assertEqual(db.roles_for_user(50,path),frozenset({"creator","admin","owner"}))
+            restored=SimpleNamespace(owner_user_ids=frozenset({1}),admin_user_ids=frozenset(),lead_admin_user_ids=frozenset())
+            apply_persisted_settings(restored,path)
+            self.assertEqual(restored.owner_user_ids,frozenset({1,50}))
+            self.assertEqual(restored.admin_user_ids,frozenset({50}))

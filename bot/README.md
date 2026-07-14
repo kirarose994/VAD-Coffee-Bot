@@ -6,7 +6,7 @@ This directory contains the active Telegram application. Start it with:
 cd bot && python main.py
 ```
 
-The application provides role-separated Owner, Lead Admin, Admin, Creator, and Buyer
+The application provides additive Owner, Admin, and Creator roles plus a separate Buyer
 interfaces. Participation is meaningful text from approved creators in configured Main Group
 topics. Thursday POP is a separate Sellers Group/topic workflow and never counts as
 participation.

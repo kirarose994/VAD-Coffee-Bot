@@ -2,6 +2,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "bot"))
 import database as db
@@ -22,7 +23,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(db.set_vacation(10, "2026-07-31", 99, self.path))
         self.assertEqual(len(db.history(path=self.path)), 3)
         with db.get_connection(self.path) as connection:
-            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()["version"], 8)
+            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()["version"], 9)
 
     def test_repeat_registration_preserves_approval_and_prevents_duplicates(self):
         self.assertEqual(db.register_creator(6558268505,"kira","Kira",self.path),"created")
@@ -54,6 +55,29 @@ class DatabaseTests(unittest.TestCase):
         self.assertIsNotNone(db.get_creator(10,self.path)["last_meaningful_at"])
         actions=[row["action"] for row in db.creator_timeline(10,20,0,self.path)]
         self.assertIn("engagement_counted_voice_message",actions)
+
+    def test_role_migration_preserves_creator_history_and_adds_staff_capabilities(self):
+        db.register_creator(10,"kira","Kira",self.path);db.set_status(10,"active",99,self.path)
+        db.record_engagement(10,70,-100,None,"existing","accepted","meaningful",self.path)
+        previous=db.get_creator(10,self.path)["last_meaningful_at"]
+        db.record_bot_user(20,"keely","Keely",self.path)
+        db.register_creator(30,"eve","Eve",self.path)
+        cfg=SimpleNamespace(owner_user_ids=frozenset({10}),lead_admin_user_ids=frozenset(),admin_user_ids=frozenset({20,30}))
+        result=db.synchronize_role_memberships(cfg,self.path)
+        self.assertEqual(result["created_creator_profiles"],[20])
+        self.assertEqual(result["activated_creator_profiles"],[30])
+        self.assertEqual(db.roles_for_user(10,self.path),frozenset({"creator","admin","owner"}))
+        self.assertEqual(db.roles_for_user(20,self.path),frozenset({"creator","admin"}))
+        self.assertEqual(db.get_creator(10,self.path)["last_meaningful_at"],previous)
+        self.assertEqual(db.get_creator(20,self.path)["status"],"active")
+        self.assertEqual(db.get_creator(30,self.path)["status"],"active")
+        db.synchronize_role_memberships(cfg,self.path)
+        with db.get_connection(self.path) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM creators WHERE telegram_id=10").fetchone()[0],1)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM creators WHERE telegram_id=20").fetchone()[0],1)
+        cfg.admin_user_ids=frozenset({30});db.synchronize_role_memberships(cfg,self.path)
+        self.assertEqual(db.roles_for_user(20,self.path),frozenset({"creator"}))
+        self.assertIsNotNone(db.get_creator(20,self.path))
 
     def test_pop_and_notifications_are_idempotent(self):
         db.register_creator(10, "girl", "Creator", self.path)

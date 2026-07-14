@@ -197,6 +197,14 @@ def initialize_database(path: Path | None = None):
           telegram_id INTEGER PRIMARY KEY, display_name TEXT NOT NULL, username TEXT,
           first_started_at TEXT NOT NULL, last_started_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS user_roles (
+          telegram_id INTEGER NOT NULL, role TEXT NOT NULL
+            CHECK(role IN ('creator','admin','owner')),
+          active INTEGER NOT NULL DEFAULT 1, assigned_at TEXT NOT NULL,
+          assigned_by INTEGER, removed_at TEXT, removed_by INTEGER,
+          PRIMARY KEY(telegram_id,role)
+        );
+        CREATE INDEX IF NOT EXISTS user_roles_active ON user_roles(role,active,telegram_id);
         CREATE TABLE IF NOT EXISTS daily_brief_deliveries (
           cycle_date TEXT PRIMARY KEY, claimed_at TEXT NOT NULL,
           status TEXT NOT NULL CHECK(status IN ('pending','sent','failed')),
@@ -216,7 +224,7 @@ def initialize_database(path: Path | None = None):
         """)
         _migrate_legacy_schema(db)
         _seed_message_templates(db)
-        db.execute("UPDATE schema_version SET version=8")
+        db.execute("UPDATE schema_version SET version=9")
 
 
 DEFAULT_MESSAGE_TEMPLATES = {
@@ -416,6 +424,66 @@ def record_bot_user(telegram_id,username,display_name,path=None):
           VALUES(?,?,?,?,?) ON CONFLICT(telegram_id) DO UPDATE SET display_name=excluded.display_name,
           username=excluded.username,last_started_at=excluded.last_started_at""",
           (telegram_id,display_name,username,now,now))
+
+
+def synchronize_role_memberships(config,path=None):
+    """Attach additive roles and ensure configured staff have one creator profile.
+
+    Existing creator rows are never replaced or re-approved. Missing staff profiles are
+    created active from the best Telegram identity already stored by the bot.
+    """
+    now=utc_now();owners=set(getattr(config,"owner_user_ids",()) or ())
+    admins=set(getattr(config,"admin_user_ids",()) or ())|set(getattr(config,"lead_admin_user_ids",()) or ())|owners
+    created=[];activated=[]
+    with get_connection(path) as db:
+        for user_id in sorted(admins):
+            creator=db.execute("SELECT * FROM creators WHERE telegram_id=?",(user_id,)).fetchone()
+            if not creator:
+                identity=db.execute("SELECT display_name,username FROM bot_users WHERE telegram_id=?",(user_id,)).fetchone()
+                display_name=identity["display_name"] if identity else f"Telegram user {user_id}"
+                username=identity["username"] if identity else None
+                db.execute("""INSERT INTO creators
+                  (telegram_id,username,display_name,status,registered_at,approved_at,approved_by)
+                  VALUES(?,?,?,'active',?,?,0)""",(user_id,username,display_name,now,now))
+                db.execute("""INSERT INTO community_members
+                  (telegram_id,member_type,display_name,username,created_at,updated_at)
+                  VALUES(?,'creator',?,?,?,?) ON CONFLICT(telegram_id) DO UPDATE SET
+                  member_type='creator',display_name=excluded.display_name,
+                  username=excluded.username,updated_at=excluded.updated_at""",
+                  (user_id,display_name,username,now,now))
+                audit_event(db,0,"creator_profile_created_for_staff_role","creator",user_id,user_id,
+                    new_value={"status":"active"},reason="Admin and Owner roles include Creator capabilities",actor_role="system")
+                created.append(user_id)
+            elif not creator["deleted_at"] and creator["status"] != "active":
+                db.execute("""UPDATE creators SET status='active',approved_at=COALESCE(approved_at,?),
+                  approved_by=COALESCE(approved_by,0) WHERE telegram_id=?""",(now,user_id))
+                audit_event(db,0,"creator_activated_for_staff_role","creator",user_id,user_id,
+                    previous_value={"status":creator["status"]},new_value={"status":"active"},
+                    reason="Admin and Owner roles include Creator capabilities",actor_role="system")
+                activated.append(user_id)
+        creator_rows=db.execute("SELECT telegram_id,deleted_at FROM creators").fetchall()
+        desired={(row["telegram_id"],"creator") for row in creator_rows if not row["deleted_at"]}
+        desired|={(user_id,"admin") for user_id in admins}
+        desired|={(user_id,"owner") for user_id in owners}
+        for user_id,role in desired:
+            db.execute("""INSERT INTO user_roles(telegram_id,role,active,assigned_at,assigned_by)
+              VALUES(?,?,1,?,0) ON CONFLICT(telegram_id,role) DO UPDATE SET
+              active=1,removed_at=NULL,removed_by=NULL""",(user_id,role,now))
+        for role,ids in (("admin",admins),("owner",owners)):
+            if ids:
+                placeholders=",".join("?" for _ in ids)
+                db.execute(f"""UPDATE user_roles SET active=0,removed_at=?,removed_by=0
+                  WHERE role=? AND active=1 AND telegram_id NOT IN ({placeholders})""",(now,role,*sorted(ids)))
+            else:
+                db.execute("UPDATE user_roles SET active=0,removed_at=?,removed_by=0 WHERE role=? AND active=1",(now,role))
+    return {"created_creator_profiles":created,"activated_creator_profiles":activated,
+        "owners":len(owners),"admins":len(admins)}
+
+
+def roles_for_user(telegram_id,path=None):
+    with get_connection(path) as db:
+        return frozenset(row["role"] for row in db.execute(
+            "SELECT role FROM user_roles WHERE telegram_id=? AND active=1",(telegram_id,)).fetchall())
 
 
 def pending_bot_users(owner_ids=(),admin_ids=(),lead_ids=(),path=None):

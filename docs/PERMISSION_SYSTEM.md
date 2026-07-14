@@ -1,8 +1,9 @@
 # Permission System
 
-Authorization uses immutable Telegram numeric IDs. Role order is Owner, Lead Admin, Admin,
-then unprivileged community member. Creator and Buyer are product identities, not privileged
-administrative roles.
+Authorization uses immutable Telegram numeric IDs. Public roles are additive: every Owner is
+also an Admin and Creator, every Admin is also a Creator, and Creator-only members have no
+administrative access. The legacy Lead Admin tier remains an Admin permission bundle for
+backward compatibility; it is not a separate identity.
 
 Owners receive every permission. Lead Admin defaults cover operational reviews and creator
 management. Admin defaults cover reports, moderation, notes, and messaging. Individual
@@ -11,3 +12,6 @@ full audit, protected archive/restore, exports, security health, and access mana
 
 Buttons are filtered for usability; `has_permission()` and owner checks remain the security
 boundary for every callback and command.
+
+The `user_roles` table stores attached memberships and their active/removal history. Secure
+bootstrap IDs and audited Owner changes are synchronized without replacing creator records.

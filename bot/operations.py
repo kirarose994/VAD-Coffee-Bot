@@ -11,6 +11,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, Mes
 
 import database as db
 from permissions import Role, has_permission, role_for
+from runtime_config import persist_setting
 from routing import send_routed
 
 
@@ -333,13 +334,12 @@ async def guided_contact_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return await update.effective_message.reply_text("Access management is owner-only.")
         try: target = int(update.effective_message.text.strip())
         except ValueError: return await update.effective_message.reply_text("Please enter the numeric Telegram ID only.")
-        if target in cfg.owner_user_ids:
-            return await update.effective_message.reply_text("That account is already an owner. Owner access is protected by secure configuration.")
         ctx.user_data.pop("guided_input",None)
         nonce=secrets.token_urlsafe(6); ctx.user_data["menu_nonce"]=nonce
         return await update.effective_message.reply_text("Choose the role to confirm.",reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("👥 Admin",callback_data=f"op:{nonce}:access_confirm_admin_{target}")],
             [InlineKeyboardButton("🛡️ Lead Admin",callback_data=f"op:{nonce}:access_confirm_lead_{target}")],
+            [InlineKeyboardButton("👑 Owner",callback_data=f"op:{nonce}:access_confirm_owner_{target}")],
             [InlineKeyboardButton("❌ Cancel",callback_data=f"op:{nonce}:roles")],
         ]))
     if guided in {"creator_search_name","creator_search_id"}:
@@ -463,20 +463,26 @@ async def role_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cfg, actor = ctx.bot_data["config"], update.effective_user.id
     if role_for(actor, cfg) is not Role.OWNER:
         return await update.effective_message.reply_text("Role management is owner-only.")
-    if len(ctx.args) != 2 or ctx.args[1] not in {"admin", "lead", "none"}:
-        return await update.effective_message.reply_text("Usage: /role_set TELEGRAM_ID admin|lead|none")
+    if len(ctx.args) != 2 or ctx.args[1] not in {"admin", "lead", "owner", "none"}:
+        return await update.effective_message.reply_text("Usage: /role_set TELEGRAM_ID admin|lead|owner|none")
     try: target = int(ctx.args[0])
     except ValueError: return await update.effective_message.reply_text("Telegram ID must be numeric.")
-    if target in cfg.owner_user_ids:
-        return await update.effective_message.reply_text("Owner membership is protected by secure environment configuration.")
     previous = role_for(target, cfg).name.lower()
-    admins, leads = set(cfg.admin_user_ids), set(cfg.lead_admin_user_ids)
+    admins, leads, owners = set(cfg.admin_user_ids), set(cfg.lead_admin_user_ids), set(cfg.owner_user_ids)
     admins.discard(target); leads.discard(target)
+    if ctx.args[1] == "none" and target in owners:
+        if target == actor:return await update.effective_message.reply_text("You cannot remove your own Owner access.")
+        if len(owners)<=1:return await update.effective_message.reply_text("At least one Owner must remain configured.")
+        owners.discard(target);admins.add(target)
     if ctx.args[1] == "admin": admins.add(target)
     if ctx.args[1] == "lead": leads.add(target)
-    cfg.admin_user_ids, cfg.lead_admin_user_ids = frozenset(admins), frozenset(leads)
+    if ctx.args[1] == "owner":owners.add(target)
+    cfg.admin_user_ids, cfg.lead_admin_user_ids, cfg.owner_user_ids = frozenset(admins), frozenset(leads), frozenset(owners)
+    persist_setting(cfg,"admin_user_ids",cfg.admin_user_ids,actor)
+    persist_setting(cfg,"lead_admin_user_ids",cfg.lead_admin_user_ids,actor)
+    persist_setting(cfg,"owner_user_ids",cfg.owner_user_ids,actor)
     db.record_audit(actor,"role_changed","admin_role",target,target,previous,ctx.args[1])
-    await update.effective_message.reply_text("Role updated for this running process and audited. Update Replit Secrets to persist it after restart.")
+    await update.effective_message.reply_text("Additive roles updated, persisted, and audited.")
 
 
 async def permission_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

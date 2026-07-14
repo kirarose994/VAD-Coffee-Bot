@@ -13,7 +13,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from config import Config
-from database import initialize_database, set_system_state
+from database import initialize_database, set_system_state, synchronize_role_memberships
 from handlers.error import error_handler
 from navigation import register_navigation
 from operations import register_operations
@@ -93,6 +93,7 @@ def main() -> None:
     config = Config.from_env()
     initialize_database()
     apply_persisted_settings(config)
+    synchronize_role_memberships(config)
     set_system_state("last_restart", datetime.now(ZoneInfo("America/New_York")).isoformat())
     setup_logging(config.log_level)
     logger = logging.getLogger(__name__)
