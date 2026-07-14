@@ -20,6 +20,10 @@ come back.
 Simple check-ins, greetings, emojis, stickers, photos without meaningful context, repeated
 messages, promotional posts, and similar filler do not satisfy the participation requirement.
 
+Telegram voice messages and uploaded audio of at least five seconds may count without
+speech-to-text when the creator, location, Away Notice, duplicate-file, and promotional-caption
+checks pass. Shorter audio is recorded as `audio_too_short` and does not count.
+
 Approved creators should not go more than two full days without meaningful participation in
 the Main VAD discussion. After two full days, the bot sends a friendly reminder. After three
 full days, if no meaningful participation or approved Away Notice exists, the bot notifies
