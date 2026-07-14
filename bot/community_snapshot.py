@@ -16,7 +16,7 @@ PARTICIPATION_POLICY = (
 
 def build_snapshot(config,now=None,path=None):
     """Build all counts and rows once, using shared POP and absence policies."""
-    now=now or datetime.now(config.timezone);today=now.date();creators=[dict(r) for r in db.list_creators(path) if r["status"]=="active"]
+    now=now or datetime.now(config.timezone);today=now.date();creators=[dict(r) for r in db.creator_directory(config,path)]
     participation={key:[] for key in ("up_to_date","approaching","reminder_due","follow_up","excused")}
     away_now=[]
     for creator in creators:

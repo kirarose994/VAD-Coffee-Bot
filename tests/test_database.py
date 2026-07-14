@@ -34,6 +34,62 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(count,1)
         self.assertEqual(db.get_creator(6558268505,self.path)["status"],"active")
 
+    def test_person_identity_deduplicates_id_and_prefers_approved_creator_name(self):
+        user_id=8129455408
+        db.record_bot_user(user_id,"bambola","Telegram user 8129455408",self.path)
+        db.register_creator(user_id,"bambolawife","Bambolawife",self.path)
+        db.set_status(user_id,"active",99,self.path)
+        db.record_engagement(user_id,77,-100,None,"identity-history","accepted","meaningful",self.path)
+        last_meaningful=db.get_creator(user_id,self.path)["last_meaningful_at"]
+        cfg=SimpleNamespace(owner_user_ids=frozenset(),lead_admin_user_ids=frozenset(),admin_user_ids=frozenset({user_id}))
+        db.synchronize_role_memberships(cfg,self.path)
+        people=db.people_for_ids([user_id,user_id,user_id],self.path)
+        self.assertEqual(len(people),1)
+        self.assertEqual(people[0]["telegram_id"],user_id)
+        self.assertEqual(people[0]["display_name"],"Bambolawife")
+        self.assertEqual(db.roles_for_user(user_id,self.path),frozenset({"creator","admin"}))
+        self.assertEqual(db.get_creator(user_id,self.path)["last_meaningful_at"],last_meaningful)
+        with db.get_connection(self.path) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM creators WHERE telegram_id=?",(user_id,)).fetchone()[0],1)
+
+    def test_same_visible_name_on_different_ids_remains_two_people(self):
+        for user_id in (101,202):
+            db.register_creator(user_id,f"same{user_id}","Same Name",self.path)
+            db.set_status(user_id,"active",99,self.path)
+        people=db.people_for_ids([101,202],self.path)
+        creators=db.list_creators(self.path)
+        self.assertEqual([row["telegram_id"] for row in people],[101,202])
+        self.assertEqual({row["telegram_id"] for row in creators},{101,202})
+
+    def test_directory_reconciles_inherited_creator_profile_by_telegram_id(self):
+        user_id=404
+        db.record_bot_user(user_id,"eve","Eve",self.path)
+        cfg=SimpleNamespace(owner_user_ids=frozenset(),lead_admin_user_ids=frozenset(),admin_user_ids=frozenset({user_id}))
+        rows=db.creator_directory(cfg,self.path)
+        self.assertEqual([(row["telegram_id"],row["display_name"],row["status"]) for row in rows],
+            [(user_id,"Eve","active")])
+        self.assertEqual(db.roles_for_user(user_id,self.path),frozenset({"creator","admin"}))
+        with db.get_connection(self.path) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM creators WHERE telegram_id=?",(user_id,)).fetchone()[0],1)
+
+    def test_directory_respects_intentionally_inactive_or_archived_profiles(self):
+        cfg=SimpleNamespace(owner_user_ids=frozenset(),lead_admin_user_ids=frozenset(),admin_user_ids=frozenset())
+        db.register_creator(405,"inactive","Inactive",self.path)
+        db.register_creator(406,"archived","Archived",self.path)
+        db.set_status(406,"active",99,self.path);db.delete_creator(406,99,self.path)
+        self.assertEqual(db.creator_directory(cfg,self.path),[])
+
+    def test_person_name_fallback_priority(self):
+        db.record_bot_user(301,"telegram301","Telegram Full Name",self.path)
+        db.register_member(301,"member301","Preferred Name","buyer",self.path)
+        db.record_bot_user(302,"telegram302","Telegram Full Name",self.path)
+        db.record_bot_user(303,"telegram303","Telegram user 303",self.path)
+        resolved={row["telegram_id"]:row["display_name"] for row in db.people_for_ids([301,302,303,304],self.path)}
+        self.assertEqual(resolved[301],"Preferred Name")
+        self.assertEqual(resolved[302],"Telegram Full Name")
+        self.assertEqual(resolved[303],"telegram303")
+        self.assertEqual(resolved[304],"Telegram user 304")
+
     def test_archived_creator_is_not_resolved_as_active_identity(self):
         db.register_creator(6558268505,"kira","Kira",self.path)
         db.delete_creator(6558268505,99,self.path)

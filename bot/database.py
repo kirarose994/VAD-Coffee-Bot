@@ -491,12 +491,60 @@ def pending_bot_users(owner_ids=(),admin_ids=(),lead_ids=(),path=None):
     with get_connection(path) as db:
         rows=db.execute("""SELECT b.* FROM bot_users b LEFT JOIN community_members m ON m.telegram_id=b.telegram_id
           WHERE m.telegram_id IS NULL ORDER BY b.last_started_at DESC""").fetchall()
-        return [row for row in rows if row["telegram_id"] not in excluded]
+        return [_resolved_person_row(db,row) for row in rows if row["telegram_id"] not in excluded]
+
+
+def _usable_person_name(value, telegram_id):
+    value=(value or "").strip()
+    return value if value and value.casefold() != f"telegram user {telegram_id}".casefold() else None
+
+
+def _person_identity(db, telegram_id):
+    """Resolve one display identity without ever combining different Telegram IDs."""
+    creator=db.execute("SELECT * FROM creators WHERE telegram_id=?",(telegram_id,)).fetchone()
+    member=db.execute("SELECT * FROM community_members WHERE telegram_id=?",(telegram_id,)).fetchone()
+    bot_user=db.execute("SELECT * FROM bot_users WHERE telegram_id=?",(telegram_id,)).fetchone()
+    approved_name = (_usable_person_name(creator["display_name"],telegram_id)
+        if creator and creator["status"] == "active" and not creator["deleted_at"] else None)
+    stored_name = _usable_person_name(member["display_name"],telegram_id) if member else None
+    telegram_name = _usable_person_name(bot_user["display_name"],telegram_id) if bot_user else None
+    username = next((row["username"] for row in (creator,member,bot_user)
+        if row and row["username"]),None)
+    return {"telegram_id":telegram_id,
+        "display_name":approved_name or stored_name or telegram_name or username or f"Telegram user {telegram_id}",
+        "username":username}
+
+
+def _resolved_person_row(db, row):
+    resolved=dict(row);resolved.update(_person_identity(db,row["telegram_id"]))
+    return resolved
+
+
+def people_for_ids(telegram_ids, path=None):
+    """Return exactly one resolved person per immutable Telegram ID."""
+    with get_connection(path) as db:
+        people=[_person_identity(db,user_id) for user_id in set(telegram_ids)]
+    return sorted(people,key=lambda row:(row["display_name"].casefold(),row["telegram_id"]))
 
 
 def list_creators(path=None):
     with get_connection(path) as db:
-        return db.execute("SELECT * FROM creators WHERE deleted_at IS NULL ORDER BY display_name COLLATE NOCASE").fetchall()
+        rows=db.execute("SELECT * FROM creators WHERE deleted_at IS NULL").fetchall()
+        return sorted((_resolved_person_row(db,row) for row in rows),
+            key=lambda row:(row["display_name"].casefold(),row["telegram_id"]))
+
+
+def creator_directory(config,path=None,active_only=True):
+    """Return the canonical creator directory after reconciling inherited roles.
+
+    Admin and Owner authorization is configured independently from creator profile data.
+    Reconcile those sources before rendering a directory so inherited Creator access can
+    never exist without the same Telegram identity being represented once in creators.
+    Archived profiles remain archived; inactive profiles remain excluded from active views.
+    """
+    synchronize_role_memberships(config,path)
+    rows=list_creators(path)
+    return [row for row in rows if row["status"] == "active"] if active_only else rows
 
 
 def set_availability(target_id, new_status, actor_id, reason=None, expires_at=None, path=None):

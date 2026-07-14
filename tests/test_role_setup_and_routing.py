@@ -99,6 +99,31 @@ class SetupMenuTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Keely",labels(result.kwargs["reply_markup"]))
         self.assertIn("never creates a duplicate creator record",result.args[0])
 
+    async def test_active_creator_directory_uses_role_reconciled_profiles(self):
+        eve={"telegram_id":50,"display_name":"Eve","status":"active","availability":"available"}
+        with patch("navigation.db.creator_directory",return_value=[eve]) as directory:
+            result=await self.screen("creator_list_all")
+        directory.assert_called_once()
+        self.assertEqual(labels(result.kwargs["reply_markup"]).count("Eve"),1)
+
+    async def test_add_admin_picker_deduplicates_creator_and_bot_user_by_id(self):
+        creator={"telegram_id":50,"display_name":"Bambolawife","status":"active"}
+        bot_user={"telegram_id":50,"display_name":"Telegram user 50"}
+        with patch("navigation.db.list_creators",return_value=[creator]),patch("navigation.db.pending_bot_users",return_value=[bot_user]):
+            result=await self.screen("access_add")
+        actions=[button.callback_data.rsplit(":",1)[-1] for row in result.kwargs["reply_markup"].inline_keyboard for button in row]
+        self.assertEqual(actions.count("access_candidate_50"),1)
+
+    async def test_role_lists_and_multi_role_members_render_one_resolved_person_per_id(self):
+        person={"telegram_id":2,"display_name":"Bambolawife","username":"bambolawife"}
+        cfg=self.cfg();cfg.owner_user_ids=frozenset({1,2});cfg.admin_user_ids=frozenset({2})
+        for action in ("access_admins","access_owners","dual_roles","access_edit"):
+            with patch("navigation.db.people_for_ids",return_value=[person]):
+                result=await self.screen(action)
+            text=result.args[0]
+            if action != "access_edit":self.assertEqual(text.count("Bambolawife"),1)
+            else:self.assertEqual(labels(result.kwargs["reply_markup"]).count("Bambolawife"),1)
+
     async def test_people_and_roles_shows_only_owner_and_admin_counts(self):
         result=await self.screen("roles")
         text=result.args[0];visible=labels(result.kwargs["reply_markup"])
