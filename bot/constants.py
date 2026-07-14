@@ -37,4 +37,6 @@ PERSISTED_SETTING_ATTRIBUTES = {
     "registration_thread_id": "registration_thread_id",
     "moderation_thread_id": "moderation_thread_id",
     "health_thread_id": "health_thread_id",
+    "admin_user_ids": "admin_user_ids",
+    "lead_admin_user_ids": "lead_admin_user_ids",
 }

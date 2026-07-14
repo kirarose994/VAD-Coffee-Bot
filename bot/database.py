@@ -193,10 +193,14 @@ def initialize_database(path: Path | None = None):
           retry_count INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS delivery_failures_open ON delivery_failures(resolved_at,created_at);
+        CREATE TABLE IF NOT EXISTS bot_users (
+          telegram_id INTEGER PRIMARY KEY, display_name TEXT NOT NULL, username TEXT,
+          first_started_at TEXT NOT NULL, last_started_at TEXT NOT NULL
+        );
         """)
         _migrate_legacy_schema(db)
         _seed_message_templates(db)
-        db.execute("UPDATE schema_version SET version=5")
+        db.execute("UPDATE schema_version SET version=6")
 
 
 DEFAULT_MESSAGE_TEMPLATES = {
@@ -383,6 +387,27 @@ def get_member(telegram_id, path=None):
             if "no such table" not in str(exc):
                 raise
             return None
+
+
+def record_bot_user(telegram_id,username,display_name,path=None):
+    """Remember a private /start without assigning any role."""
+    now=utc_now()
+    with get_connection(path) as db:
+        db.execute("""CREATE TABLE IF NOT EXISTS bot_users (
+          telegram_id INTEGER PRIMARY KEY, display_name TEXT NOT NULL, username TEXT,
+          first_started_at TEXT NOT NULL, last_started_at TEXT NOT NULL)""")
+        db.execute("""INSERT INTO bot_users(telegram_id,display_name,username,first_started_at,last_started_at)
+          VALUES(?,?,?,?,?) ON CONFLICT(telegram_id) DO UPDATE SET display_name=excluded.display_name,
+          username=excluded.username,last_started_at=excluded.last_started_at""",
+          (telegram_id,display_name,username,now,now))
+
+
+def pending_bot_users(owner_ids=(),admin_ids=(),lead_ids=(),path=None):
+    excluded=set(owner_ids)|set(admin_ids)|set(lead_ids)
+    with get_connection(path) as db:
+        rows=db.execute("""SELECT b.* FROM bot_users b LEFT JOIN community_members m ON m.telegram_id=b.telegram_id
+          WHERE m.telegram_id IS NULL ORDER BY b.last_started_at DESC""").fetchall()
+        return [row for row in rows if row["telegram_id"] not in excluded]
 
 
 def list_creators(path=None):
@@ -828,6 +853,10 @@ def export_snapshot(path=None):
             "pop": [dict(r) for r in db.execute("SELECT * FROM pop_submissions").fetchall()],
             "warnings": [dict(r) for r in db.execute("SELECT * FROM creator_warnings").fetchall()],
             "notifications": [dict(r) for r in db.execute("SELECT * FROM notifications").fetchall()],
+            "support_requests": [dict(r) for r in db.execute("SELECT * FROM support_requests").fetchall()],
+            "support_messages": [dict(r) for r in db.execute("SELECT * FROM support_messages").fetchall()],
+            "delivery_failures": [dict(r) for r in db.execute("SELECT * FROM delivery_failures").fetchall()],
+            "bot_users": [dict(r) for r in db.execute("SELECT * FROM bot_users").fetchall()],
             "audit": [dict(r) for r in db.execute("SELECT * FROM audit_events").fetchall()],
         }
 

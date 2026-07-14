@@ -15,6 +15,7 @@ from pop_policy import current_period, label as pop_label
 from presentation import audit_entry, friendly_timestamp, timeline_entry
 from runtime_config import persist_setting
 from routing import ROUTES, routing_summary, send_routed
+from readiness import readiness_items, status_icon, system_check_summary
 
 
 def _nonce(ctx):
@@ -198,6 +199,9 @@ def owner_card(cfg):
 
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if getattr(getattr(update,"effective_chat",None),"type","private")=="private":
+        db.record_bot_user(update.effective_user.id,getattr(update.effective_user,"username",None),
+            getattr(update.effective_user,"full_name",None) or getattr(update.effective_user,"first_name","Telegram User"))
     returning = bool(ctx.user_data.get("welcome_seen"))
     ctx.user_data.clear()
     ctx.user_data["welcome_seen"] = True
@@ -324,9 +328,10 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [("📨 Support Requests","support_queue"),("📅 Calendar","calendar")],
             [("📊 Reports","reports")],
             [("📍 Telegram Locations","telegram_locations"),("📈 Participation Monitor","participation_monitor")],
+            [("✅ Setup & Readiness","readiness"),("🧪 Test Center","test_center")],
+            [("🧭 Complete Initial Setup","setup_wizard"),("👥 People & Roles","roles")],
             [("🧾 Participation Event Log","participation_events"),("🔐 Audit Log","audit")],
-            [("👥 Manage Admin Access","roles"),("🗃️ Archive","deleted")],
-            [("♻️ Restore","restore_help")],
+            [("🗃️ Archive","deleted"),("♻️ Restore","restore_help")],
             [("🧭 Setup","setup"),("🩺 Health","health")],
             [("💾 Export","export_help"),("📚 Help Center","resources")],
         ]))
@@ -800,6 +805,117 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             try: await ctx.bot.send_message(cfg.admin_chat_id,f"⚠️ {draft['type'].title()} recorded\nMember: {creator['display_name']}",message_thread_id=getattr(cfg,"moderation_thread_id",None) or cfg.reports_thread_id)
             except Exception: db.record_audit(user_id,"moderation_notification_delivery_failed","creator_warning",warning_id,draft["target"],result="error")
         return await _show(query,f"✅ {draft['type'].title()} #{warning_id} {result}. The full action is audited.",menu_markup(ctx,[],"warnings_help"))
+    if action == "readiness":
+        if role is not Role.OWNER:return await _show(query,"Setup & Readiness is owner-only.",home_markup(ctx,user_id))
+        items=readiness_items(cfg);lines=[f"{status_icon(i['state'])} · {i['label']}" for i in items]
+        buttons=[(i["label"][:55],f"readiness_item_{i['key']}") for i in items if i["state"]!="ready"]
+        buttons=[("🩺 Run Full System Check","full_system_check"),("🧭 Complete Initial Setup","setup_wizard"),("🧪 Test Center","test_center")]+buttons
+        return await _show(query,"✅ Setup & Readiness\n\nCheck whether every part of the VAD Operations Bot is configured and working before relying on it.\n\n"+"\n".join(lines),menu_markup(ctx,buttons,"owner"))
+    if action.startswith("readiness_item_"):
+        if role is not Role.OWNER:return await _show(query,"Readiness details are owner-only.",home_markup(ctx,user_id))
+        key=action.removeprefix("readiness_item_");item=next((i for i in readiness_items(cfg) if i["key"]==key),None)
+        if not item:return await _show(query,"That readiness check is unavailable.",menu_markup(ctx,[],"readiness"))
+        return await _show(query,f"{status_icon(item['state'])} · {item['label']}\n\n{item['detail']}\n\nNo secret values are displayed.",
+            menu_markup(ctx,[("Open the Correct Setup Screen",item["action"]),("How to Fix This","readiness_help")],"readiness"))
+    if action == "readiness_help":
+        if role is not Role.OWNER:return await _show(query,"Owner access is required.",home_markup(ctx,user_id))
+        return await _show(query,"How to Fix an Incomplete Item\n\nOpen the suggested screen, verify the Telegram location or setting, review the detected values, and confirm only when they match. Then return to Setup & Readiness and run the Full System Check again.",menu_markup(ctx,[],"readiness"))
+    if action == "readiness_token_help":
+        if role is not Role.OWNER:return await _show(query,"Owner access is required.",home_markup(ctx,user_id))
+        return await _show(query,"Bot Token Setup\n\nIn Replit, open Tools → Secrets, add or update TELEGRAM_BOT_TOKEN, then restart the bot. Never paste the token into Telegram or GitHub. Return here and run the Full System Check.",menu_markup(ctx,[],"readiness"))
+    if action == "backup_help":
+        if role is not Role.OWNER:return await _show(query,"Backup information is owner-only.",home_markup(ctx,user_id))
+        state=db.system_state();last=state.get("last_database_backup")
+        text="💾 Backup Basics\n\nBot code is stored in GitHub, but creator history and operational records are stored in the database. Both are needed for a full recovery.\n\nStop the bot before copying vad_tracker.db and its WAL/SHM companions to private storage. The bot reports a backup only after an Owner records that it was completed; it never assumes Replit created one.\n\nLast known backup: "+(friendly_timestamp(last["value"],timezone_name=cfg.timezone_name) if last else "None recorded")
+        return await _show(query,text,menu_markup(ctx,[("Record Manual Backup Completed","backup_confirm")],"readiness"))
+    if action == "backup_confirm":
+        if role is not Role.OWNER:return await _show(query,"Backup tracking is owner-only.",home_markup(ctx,user_id))
+        return await _show(query,"Confirm Manual Backup\n\nOnly confirm after the bot was stopped and the database plus WAL/SHM files were copied to private storage. This records the time; it does not create a backup.",confirmation_markup(ctx,"backup_recorded","backup_help"))
+    if action == "backup_recorded":
+        if role is not Role.OWNER:return await _show(query,"Backup tracking is owner-only.",home_markup(ctx,user_id))
+        now=datetime.now(cfg.timezone).isoformat();db.set_system_state("last_database_backup",now);db.record_audit(user_id,"manual_backup_recorded","system",new_value={"recorded_at":now})
+        return await _show(query,"🟢 Manual backup time recorded and audited. The bot did not create or inspect the backup file.",menu_markup(ctx,[],"readiness"))
+    if action == "full_system_check":
+        if role is not Role.OWNER:return await _show(query,"The Full System Check is owner-only.",home_markup(ctx,user_id))
+        checks,counts=system_check_summary(cfg)
+        telegram_ok=False;chat_problems=[]
+        try:
+            await ctx.bot.get_me();telegram_ok=True
+            for label,chat_id in (("Main group",getattr(cfg,"participation_chat_id",None)),("Sellers group",getattr(cfg,"creator_group_id",None)),("Admin group",getattr(cfg,"admin_chat_id",None))):
+                if chat_id:
+                    try:
+                        await ctx.bot.get_chat(chat_id);member=await ctx.bot.get_chat_member(chat_id,ctx.bot.id)
+                        if str(getattr(member,"status","member")) in {"left","kicked"}:chat_problems.append(label)
+                    except Exception:chat_problems.append(label)
+        except Exception:pass
+        if telegram_ok:counts["ready"]+=1
+        else:counts["problem"]+=1
+        counts["problem"]+=len(chat_problems)
+        db.set_system_state("last_full_system_check",datetime.now(cfg.timezone).isoformat())
+        incomplete=[i for i in checks if i["state"]!="ready"]
+        text=(f"System Check Complete\n\n🟢 {counts['ready']} checks passed\n🟡 {counts['setup']+counts['unverified']} items still need setup or verification\n"
+            f"🔴 {counts['problem']} critical problems\n\nTelegram connection: {'Ready' if telegram_ok else 'Problem detected'}")
+        if chat_problems:text+="\nChat access needs review: "+", ".join(chat_problems)
+        if incomplete:text+="\n\nNeeds Setup or Verification:\n"+"\n".join(f"• {i['label']}" for i in incomplete)
+        buttons=[(i["label"][:55],i["action"]) for i in incomplete]
+        return await _show(query,text,menu_markup(ctx,buttons,"readiness"))
+    if action == "test_center":
+        if role is not Role.OWNER:return await _show(query,"Test Center is owner-only.",home_markup(ctx,user_id))
+        return await _show(query,"🧪 Test Center\n\nRun safe tests before using the bot with the full community. Test records are labeled and never change real participation, POP, warnings, strikes, or reports.",menu_markup(ctx,[
+            ("Test Main Participation Location","test_main"),("Test Meaningful Participation","test_meaningful"),("Test Ignored Message","test_ignored"),
+            ("Test Wrong Topic","test_wrong_topic"),("Test Other Group","test_wrong_group"),("Test Registration Routing","test_route_registration"),("Test Away Notice Routing","test_route_away_notice"),
+            ("Test POP Routing","test_route_pop_review"),("Test Participation Alert Routing","test_route_participation_alert"),
+            ("Test Support Request Routing","test_route_support"),("Test Admin Reply","test_admin_reply"),("Test Failed-Delivery Handling","test_failed_delivery"),
+            ("Test Creator Privacy","test_privacy"),("Test Admin Permissions","test_admin_permissions"),("Test Owner Permissions","test_owner_permissions")],"owner"))
+    if action in {"test_main","test_meaningful","test_ignored","test_wrong_topic","test_wrong_group"}:
+        if role is not Role.OWNER:return await _show(query,"Test Center is owner-only.",home_markup(ctx,user_id))
+        code=secrets.token_hex(3).upper();mode={"test_main":"meaningful","test_meaningful":"meaningful","test_ignored":"ignored","test_wrong_topic":"wrong_topic","test_wrong_group":"wrong_group"}[action]
+        db.set_system_state("readiness:test_code",code);db.set_system_state("readiness:test_mode",mode)
+        sentence=f"VAD-SAFE-{code}:{mode}: I am checking that thoughtful community participation is detected correctly."
+        where="configured Main Group participation topic" if mode not in {"wrong_topic","wrong_group"} else "a different Main Group topic that must not count" if mode=="wrong_topic" else "a different group that must not count"
+        expected="detected and counted as a test only" if mode=="meaningful" else "detected and ignored without changing participation"
+        return await _show(query,f"Safe {mode.replace('_',' ').title()} Test\n\n1. From an approved test creator, open the {where}.\n2. Send the exact test message below.\n3. Return here and tap Check Result.\n\n{sentence}\n\nExpected: {expected}. No real participation or report totals change. Test state is replaced automatically by the next test.",menu_markup(ctx,[
+            ("📋 Show Test Message","test_copy"),("Check Result",f"test_check_{mode}"),("Cancel Test","test_cancel")],"test_center"))
+    if action == "test_copy":
+        state=db.system_state();code=state.get("readiness:test_code",{}).get("value");mode=state.get("readiness:test_mode",{}).get("value")
+        return await _show(query,f"Press and hold to copy this test message:\n\nVAD-SAFE-{code}:{mode}: I am checking that thoughtful community participation is detected correctly.",menu_markup(ctx,[],"test_center"))
+    if action.startswith("test_check_"):
+        mode=action.removeprefix("test_check_");row=db.system_state().get(f"readiness:{mode}_test")
+        text="🟢 Test passed. The result was isolated from real operational totals." if row else "⚪ No passing result yet. Confirm the location, sender approval, and exact test message, then try again."
+        return await _show(query,text,menu_markup(ctx,[],"test_center"))
+    if action == "test_cancel":
+        db.set_system_state("readiness:test_code","");db.set_system_state("readiness:test_mode","")
+        return await _show(query,"Test cancelled. No operational records were changed.",menu_markup(ctx,[],"test_center"))
+    if action.startswith("test_route_"):
+        if role is not Role.OWNER:return await _show(query,"Test Center is owner-only.",home_markup(ctx,user_id))
+        event=action.removeprefix("test_route_");ok,ref=await send_routed(ctx.bot,cfg,event,f"🧪 SAFE ROUTING TEST\n\nEvent: {event.replace('_',' ').title()}\nNo creator record or operational status was changed.",payload_summary="Owner safe routing test")
+        key={"away_notice":"away_route","support":"support_route"}.get(event,event+"_route")
+        if ok:db.set_system_state(f"readiness:{key}_test",datetime.now(cfg.timezone).isoformat())
+        return await _show(query,"🟢 Test card delivered to the configured destination. No real creator data changed." if ok else f"🔴 Delivery was not completed. No data was lost. Review the destination and try again. Reference: {ref}",menu_markup(ctx,[],"test_center"))
+    if action in {"test_failed_delivery","test_privacy","test_admin_permissions","test_owner_permissions","test_admin_reply"}:
+        if role is not Role.OWNER:return await _show(query,"Test Center is owner-only.",home_markup(ctx,user_id))
+        explanations={
+            "test_failed_delivery":"Automated tests confirm failures are stored with safe references and surfaced to Owners; this check does not intentionally break a live route.",
+            "test_privacy":"Automated checks confirm an unregistered or different Telegram ID cannot receive another creator’s record.",
+            "test_admin_permissions":"Automated checks confirm Admin callbacks recheck permissions and cannot open Owner tools.",
+            "test_owner_permissions":"Your current session passed the server-side Owner check. Owner access still comes only from configured numeric IDs.",}
+        explanations["test_admin_reply"]="Support reply storage, creator-only visibility, delivery failure preservation, and resolution are covered by safe automated tests. No creator message was sent."
+        return await _show(query,"🟢 Safe Verification\n\n"+explanations[action]+"\n\nNo operational data changed.",menu_markup(ctx,[],"test_center"))
+    if action == "setup_wizard" or action.startswith("wizard_"):
+        if role is not Role.OWNER:return await _show(query,"Initial Setup is owner-only.",home_markup(ctx,user_id))
+        if action.startswith("wizard_step_"):step=max(1,min(8,int(action.removeprefix("wizard_step_"))));db.set_system_state(f"setup_wizard:{user_id}",step)
+        else:
+            saved=db.system_state().get(f"setup_wizard:{user_id}",{}).get("value","1")
+            try:step=int(saved)
+            except ValueError:step=1
+        steps=[("Owners","Confirm Kira now and add Alex’s immutable numeric ID when available.","roles"),
+            ("Main Participation Group","Verify the Main VAD group.","location_main"),("Participation Topic","Verify General safely; never guess its topic ID.","location_participation"),
+            ("Sellers Group and POP Topic","Verify the Sellers group and POP topic.","telegram_locations"),("Admin Group and Topics","Verify each private operational destination.","telegram_locations"),
+            ("Reminder and POP Times","Review Eastern Time reminders and Thursday cutoff.","settings"),("Test Registration","Send a labeled safe registration routing card.","test_route_registration"),
+            ("Final Readiness Check","Run the complete non-destructive system check.","full_system_check")]
+        title,detail,target=steps[step-1];actions=[("Open This Step",target)]
+        if step<8:actions.append(("Save & Continue",f"wizard_step_{step+1}"))
+        return await _show(query,f"🧭 Complete Initial Setup\n\nStep {step} of 8 — {title}\n\n{detail}\n\nYour progress is saved automatically and resumes here after restart.",menu_markup(ctx,actions,"owner"))
     if action == "health" and role is Role.OWNER:
         state=db.system_state(); zone=getattr(cfg,"timezone_name","America/New_York")
         def when(key):
@@ -860,8 +976,14 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await _show(query,text,menu_markup(ctx,actions,"telegram_locations"))
     if action == "routing_summary":
         if role is not Role.OWNER:return await _show(query,"Routing Summary is owner-only.",home_markup(ctx,user_id))
-        lines=[f"{event.replace('_',' ').title()}: {chat or 'Not configured'} · topic {thread if thread is not None else 'none'}" for event,chat,thread in routing_summary(cfg)]
-        return await _show(query,"📍 Routing Summary\n\nReview every operational delivery destination.\n\n"+"\n".join(lines),menu_markup(ctx,[],"telegram_locations"))
+        state=db.system_state();failures=db.open_delivery_failures();lines=[];actions=[]
+        for event,chat,thread in routing_summary(cfg):
+            success=state.get(f"last_route_success:{event}");failure=next((r for r in failures if r["event_type"]==event),None)
+            lines.append(f"{event.replace('_',' ').title()}\nSource: operational workflow\nDestination: {'Configured' if chat and thread is not None else 'Needs setup'}\n"
+                f"Verification: {'Verified by delivery' if success else 'Not yet verified'}\nLast success: {friendly_timestamp(success['value'],timezone_name=cfg.timezone_name) if success else 'None recorded'}\n"
+                f"Last failure: {failure['error_reference'] if failure else 'None open'}")
+            actions.append((f"Test {event.replace('_',' ').title()}",f"test_route_{event}"))
+        return await _show(query,"📍 Routing Summary\n\nReview each private operational route, its most recent result, and a safe test.\n\n"+"\n\n".join(lines),menu_markup(ctx,actions,"telegram_locations"))
     if action == "participation_monitor":
         if role is not Role.OWNER:return await _show(query,"Participation Monitor is owner-only.",home_markup(ctx,user_id))
         monitor=db.participation_monitor();cats=", ".join(f"{r['reason']}: {r['count']}" for r in monitor["ignored_categories"]) or "None"
@@ -1049,9 +1171,12 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         back="setup_meaningful" if key in {"words","chars","repeat"} else "setup_timezone" if key == "timezone" else "settings"
         return await _show(query,"✅ Setting updated and audited. This setting will remain active after restart.",menu_markup(ctx,[],back))
     if action == "roles" and role is Role.OWNER:
-        return await _show(query,f"👥 Access Management\n\n👑 Owners: {len(cfg.owner_user_ids)}\n🛡️ Lead Admins: {len(cfg.lead_admin_user_ids)}\n👥 Admins: {len(cfg.admin_user_ids)}",
+        return await _show(query,f"👥 People & Roles\n\nAssign only the access each known bot user needs. Creator and Admin access always remain separate.\n\n👑 Owners: {len(cfg.owner_user_ids)}\n🛡️ Lead Admins: {len(cfg.lead_admin_user_ids)}\n👥 Admins: {len(cfg.admin_user_ids)}",
             menu_markup(ctx,[("👑 Owners","access_owners"),("🛡️ Lead Admins","access_leads"),("👥 Admins","access_admins"),
-                ("➕ Add Admin","access_add"),("✏️ Edit Permissions","access_edit"),("➖ Remove Admin","access_remove"),("📜 Role History","audit_filter_roles")],"owner"))
+                ("➕ Add Admin","access_add"),("✏️ Edit Admin Permissions","access_edit"),("➖ Remove Admin","access_remove"),
+                ("⏳ Pending Bot Users","pending_bot_users"),("📝 Creator Registrations","registration_queue"),("🔄 Dual-Role Members","dual_roles"),
+                ("📜 Role History","audit_filter_roles"),("📋 Copy Admin Instructions","copy_admin_instructions"),
+                ("📋 Copy Creator Invite Instructions","copy_creator_instructions"),("📋 Copy Alex Owner Instructions","copy_alex_instructions")],"owner"))
     if action in {"access_owners","access_leads","access_admins"}:
         if role is not Role.OWNER: return await _show(query,"Access management is owner-only.",home_markup(ctx,user_id))
         ids = cfg.owner_user_ids if action.endswith("owners") else cfg.lead_admin_user_ids if action.endswith("leads") else cfg.admin_user_ids
@@ -1062,8 +1187,43 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await _show(query,"\n".join(names) or "No accounts are configured in this role.",menu_markup(ctx,[],"roles"))
     if action == "access_add":
         if role is not Role.OWNER: return await _show(query,"Access management is owner-only.",home_markup(ctx,user_id))
-        ctx.user_data["guided_input"] = "access_add"
-        return await _show(query,"➕ Add Admin\n\nEnter the person’s numeric Telegram ID. You will choose a role and confirm before access changes.",menu_markup(ctx,[],"roles"))
+        rows=db.pending_bot_users(cfg.owner_user_ids,cfg.admin_user_ids,cfg.lead_admin_user_ids)
+        buttons=[(r["display_name"][:45],f"pending_user_{r['telegram_id']}") for r in rows[:20]]
+        return await _show(query,"➕ Add Admin\n\nSelect someone who has privately opened the bot. Adding Admin access does not register them as a creator and can never grant Owner access.\n\n"+("No unassigned bot users are waiting." if not rows else "Choose a known user:"),menu_markup(ctx,buttons,"roles"))
+    if action == "pending_bot_users":
+        if role is not Role.OWNER:return await _show(query,"People & Roles is owner-only.",home_markup(ctx,user_id))
+        rows=db.pending_bot_users(cfg.owner_user_ids,cfg.admin_user_ids,cfg.lead_admin_user_ids)
+        buttons=[(r["display_name"][:45],f"pending_user_{r['telegram_id']}") for r in rows[:20]]
+        return await _show(query,"⏳ Pending Bot Users\n\nThese people privately started the bot but have not been assigned a role or registered as a community member. No role is inferred automatically.",menu_markup(ctx,buttons,"roles"))
+    if action.startswith("pending_user_"):
+        if role is not Role.OWNER:return await _show(query,"People & Roles is owner-only.",home_markup(ctx,user_id))
+        target=int(action.removeprefix("pending_user_"));rows=db.pending_bot_users(cfg.owner_user_ids,cfg.admin_user_ids,cfg.lead_admin_user_ids)
+        row=next((r for r in rows if r["telegram_id"]==target),None)
+        if not row:return await _show(query,"That user is no longer unassigned.",menu_markup(ctx,[],"roles"))
+        return await _show(query,f"{row['display_name']}\n\nChoose an explicit next step. Nothing changes until you confirm.",menu_markup(ctx,[
+            ("Make Admin",f"access_confirm_admin_{target}"),("Make Lead Admin",f"access_confirm_lead_{target}"),
+            ("Invite to Register as Creator",f"invite_creator_{target}"),("Leave Unassigned","roles")],"pending_bot_users"))
+    if action.startswith("invite_creator_"):
+        if role is not Role.OWNER:return await _show(query,"People & Roles is owner-only.",home_markup(ctx,user_id))
+        target=int(action.removeprefix("invite_creator_"))
+        try:
+            await ctx.bot.send_message(target,"You’re invited to register as a VAD creator. Open this private chat, tap Start, then tap Register as Creator. Admin access is not included.")
+            db.record_audit(user_id,"creator_registration_invite_sent","bot_user",target,target)
+            text="✅ Creator registration instructions were delivered privately. No role was assigned."
+        except Exception:
+            text="The invitation was not delivered. No role was assigned. Ask the person to open the bot privately and tap Start, then try again."
+        return await _show(query,text,menu_markup(ctx,[],"roles"))
+    if action == "dual_roles":
+        if role is not Role.OWNER:return await _show(query,"People & Roles is owner-only.",home_markup(ctx,user_id))
+        ids=set(cfg.admin_user_ids)|set(cfg.lead_admin_user_ids);rows=[db.get_creator(i) for i in ids];rows=[r for r in rows if r]
+        return await _show(query,"🔄 Dual-Role Members\n\nThese Admins also have a separate creator profile. One role never grants the other.\n\n"+("\n".join(r["display_name"] for r in rows) or "No dual-role members."),menu_markup(ctx,[],"roles"))
+    if action in {"copy_creator_instructions","copy_admin_instructions","copy_alex_instructions"}:
+        if role is not Role.OWNER:return await _show(query,"Owner access is required.",home_markup(ctx,user_id))
+        texts={
+            "copy_creator_instructions":"📋 Creator Registration Instructions\n\n1. Open the VAD Operations Bot privately.\n2. Tap Start.\n3. Tap Register as Creator.\n4. Complete the registration.\n5. Wait for approval.\n6. After approval, the bot recognizes participation through your Telegram account automatically.\n\nYou do not need to find or send your numeric Telegram ID.",
+            "copy_admin_instructions":"📋 Admin Setup Instructions\n\n1. Open the VAD Operations Bot privately.\n2. Tap Start once.\n3. Tell Kira or Alex this is complete.\n4. Kira or Alex will assign your Admin role and permissions through People & Roles.\n5. Do not register as a creator unless you are also a seller.",
+            "copy_alex_instructions":"📋 Alex Owner Setup Instructions\n\n1. Alex opens the bot privately and taps Start.\n2. The bot captures her Telegram identity without assigning a role.\n3. Kira obtains and verifies Alex’s immutable numeric Telegram ID.\n4. In Replit, open Tools → Secrets and append that ID to OWNER_USER_IDS as a comma-separated numeric value.\n5. Restart the bot.\n6. Alex opens the bot again and confirms Owner Home appears.\n\nThe bot never displays the bot token or existing Secret values."}
+        return await _show(query,texts[action]+"\n\nPress and hold this message to copy it.",menu_markup(ctx,[],"roles"))
     if action in {"access_edit","access_remove"}:
         if role is not Role.OWNER: return await _show(query,"Access management is owner-only.",home_markup(ctx,user_id))
         ids = sorted(set(cfg.admin_user_ids)|set(cfg.lead_admin_user_ids))
@@ -1083,8 +1243,10 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if new_role == "admin": admins.add(target)
         if new_role == "lead": leads.add(target)
         cfg.admin_user_ids,cfg.lead_admin_user_ids=frozenset(admins),frozenset(leads)
+        persist_setting(cfg,"admin_user_ids",cfg.admin_user_ids,user_id)
+        persist_setting(cfg,"lead_admin_user_ids",cfg.lead_admin_user_ids,user_id)
         db.record_audit(user_id,"role_changed","admin_role",target,target,previous,new_role)
-        return await _show(query,"✅ Access changed and audited. Update secure persistent configuration before restart.",menu_markup(ctx,[],"roles"))
+        return await _show(query,"✅ Access changed, persisted, and audited. Creator registration was not changed.",menu_markup(ctx,[],"roles"))
     if action == "export_help" and role is Role.OWNER:
         return await _show(query,"💾 Export Records\n\nChoose an export. You will confirm before a private file is created.",menu_markup(ctx,[
             ("📄 Creator List","export_confirm_creators"),("📄 Audit Log","export_confirm_audit"),("📄 Warning & Strike History","export_confirm_warnings"),

@@ -227,6 +227,27 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg, user, cfg = update.effective_message, update.effective_user, config(ctx)
     if not msg or not user:
         return
+    # Owner-guided test messages are evaluated without touching real engagement totals.
+    state=db.system_state();code=state.get("readiness:test_code",{}).get("value","");mode=state.get("readiness:test_mode",{}).get("value","")
+    prefix=f"VAD-SAFE-{code}:{mode}:" if code and mode else ""
+    if prefix and (msg.text or "").startswith(prefix):
+        creator=db.get_creator(user.id);in_location=participation_enabled(cfg,msg.chat_id,msg.message_thread_id)
+        body=(msg.text or "")[len(prefix):].strip()
+        decision=classify("hi" if mode=="ignored" else body,media=False,
+            is_repeat=lambda digest,since:False,min_words=getattr(cfg,"meaningful_min_words",3),
+            min_characters=getattr(cfg,"meaningful_min_characters",12),repeat_window_days=getattr(cfg,"repeat_window_days",7))
+        passed=bool(creator and creator["status"]=="active" and (
+            (mode=="meaningful" and in_location and decision.accepted) or
+            (mode=="ignored" and in_location and not decision.accepted) or
+            (mode=="wrong_topic" and msg.chat_id==getattr(cfg,"participation_chat_id",None) and not in_location) or
+            (mode=="wrong_group" and msg.chat_id!=getattr(cfg,"participation_chat_id",None) and not in_location)))
+        if passed:
+            db.set_system_state(f"readiness:{mode}_test",datetime.now(cfg.timezone).isoformat())
+            db.record_audit(user.id,"safe_readiness_test_passed","readiness_test",new_value={"mode":mode,"chat":msg.chat_id,"thread":msg.message_thread_id})
+            await msg.reply_text("🟢 Safe test passed. Real participation totals were not changed.")
+        else:
+            await msg.reply_text("⚪ Safe test detected, but the location or test creator was not eligible. No operational data changed.")
+        return
     in_participation_chat = msg.chat_id == (getattr(cfg,"participation_chat_id",None) or getattr(cfg,"girls_chat_id",None))
     if in_participation_chat:
         db.set_system_state("last_participation_message_detected",datetime.now(cfg.timezone).isoformat())

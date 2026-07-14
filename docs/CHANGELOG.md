@@ -14,6 +14,10 @@
 - Added private creator support requests and Admin handling.
 - Reinforced immutable Telegram-ID self-service isolation.
 - Added additive SQLite schema version 5.
+- Added Owner Setup & Readiness, Full System Check, safe Test Center, and resumable setup wizard.
+- Added unassigned known bot users, People & Roles onboarding, and copyable role instructions.
+- Added private deduplicated startup warnings and honest backup visibility.
+- Added additive SQLite schema version 6 for role-neutral bot-user discovery.
 
 ## 1.1
 

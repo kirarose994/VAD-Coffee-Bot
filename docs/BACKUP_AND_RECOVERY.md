@@ -1,5 +1,13 @@
 # Backup and Recovery
 
+The bot does not assume Replit or another provider created a database backup. Owner Readiness
+shows **Needs Setup** until a recent backup is explicitly tracked. Stop every bot process
+before copying `bot/vad_tracker.db` and any `-wal` and `-shm` companions to private storage.
+Never commit a database backup to GitHub.
+
+Bot code is stored in GitHub, but creator history and operational records are stored in the
+database. Both are needed for a full recovery.
+
 Stop the bot before copying `bot/vad_tracker.db` and any `-wal` or `-shm` companions. Store a
 dated copy outside the repository with the deployed commit ID and configuration-key inventory.
 

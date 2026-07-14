@@ -15,3 +15,4 @@ routing, deployment, or recovery procedures change.
 
 Operational references include [PARTICIPATION_ENGINE.md](PARTICIPATION_ENGINE.md),
 [POP_ENGINE.md](POP_ENGINE.md), and [SUPPORT_REQUEST_WORKFLOW.md](SUPPORT_REQUEST_WORKFLOW.md).
+Non-technical Owners should start with [QUICK_START_FOR_KIRA_AND_ALEX.md](QUICK_START_FOR_KIRA_AND_ALEX.md).

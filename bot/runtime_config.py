@@ -14,7 +14,7 @@ from constants import PERSISTED_SETTING_ATTRIBUTES, SETTING_PREFIX
 
 def _decode(key, raw):
     value = json.loads(raw)
-    if key == "participation_topic_ids":
+    if key in {"participation_topic_ids","admin_user_ids","lead_admin_user_ids"}:
         return frozenset(int(item) for item in value)
     if key == "timezone_name":
         ZoneInfo(str(value))
@@ -43,7 +43,7 @@ def persist_setting(config, key, value, actor_id, path=None):
         raise ValueError("Unsupported operational setting")
     if key == "timezone_name":
         ZoneInfo(str(value))
-    if key == "participation_topic_ids":
+    if key in {"participation_topic_ids","admin_user_ids","lead_admin_user_ids"}:
         value = frozenset(int(item) for item in value)
         encoded = json.dumps(sorted(value))
     else:

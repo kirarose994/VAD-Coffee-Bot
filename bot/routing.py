@@ -37,16 +37,19 @@ async def send_routed(bot,config,event_type,text,*,reply_markup=None,payload_sum
         db.record_delivery_failure(error_ref,event_type,None,thread_id,payload_summary or "Destination not configured")
         db.record_audit(None,"routed_delivery_failed","notification",target_telegram_id=target_telegram_id,
             related_request_id=related_request_id,related_submission_id=related_submission_id,result="error",error_reference=error_ref)
+        db.set_system_state(f"last_route_failure:{event_type}",error_ref)
         return False,error_ref
     try:
         await bot.send_message(chat_id,text,message_thread_id=thread_id,reply_markup=reply_markup)
         db.set_system_state("last_admin_notification",event_type)
+        db.set_system_state(f"last_route_success:{event_type}",db.utc_now())
         db.record_audit(None,"routed_delivery_succeeded","notification",target_telegram_id=target_telegram_id,
             related_request_id=related_request_id,related_submission_id=related_submission_id,new_value={"event":event_type})
         return True,None
     except Exception:
         error_ref="DEL-"+secrets.token_hex(4).upper()
         db.record_delivery_failure(error_ref,event_type,chat_id,thread_id,payload_summary or text[:120])
+        db.set_system_state(f"last_route_failure:{event_type}",error_ref)
         return False,error_ref
 
 

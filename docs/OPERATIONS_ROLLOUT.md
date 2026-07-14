@@ -2,7 +2,7 @@
 
 ## Version 1.1 usability upgrade
 
-- Schema version 5 is additive. It includes Away Notice category metadata, template revisions,
+- Schema version 6 is additive. It includes Away Notice category metadata, template revisions,
   owner-summary delivery claims, general community-member identities, and future-safe
   buyer/community warning storage. Existing creator, POP, Away Notice, warning, audit,
   deletion, template, and timeline records are retained.
@@ -66,7 +66,7 @@ Before first production start:
 
 New tables: `absence_requests`, `availability_history`, `admin_notes`, `audit_events`,
 `announcements`, `resources`, `pop_excuses`, `creator_warnings`, and `message_templates`.
-The current schema version is 5. Existing important records gain
+The current schema version is 6. Existing important records gain
 soft-deletion and restoration metadata where applicable.
 
 ## Rollback

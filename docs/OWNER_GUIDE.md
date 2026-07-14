@@ -13,3 +13,30 @@ Participation Event Log shows concise counted and ignored outcomes without retai
 message text. Support Requests stay in Needs Attention until handled or resolved.
 
 Review three-strike cases and destructive actions manually. Never share exports publicly.
+
+## Setup and readiness
+
+Open **Setup & Readiness** to see one plain-language status for every required group, topic,
+timer, route, database check, scheduler marker, backup marker, and delivery failure. Tap any
+incomplete item to open the exact setup screen. **Run Full System Check** reads Telegram and
+database state but sends no real creator notifications.
+
+Use **Complete Initial Setup** for the resumable eight-step wizard. Use **Test Center** only
+with the displayed safe test messages; they are intercepted before real participation is
+written. The test page explains where to act, what should happen, and whether data changes.
+
+## Adding people
+
+Ask the person to open the bot privately and tap Start. They then appear under **People &
+Roles → Pending Bot Users** without a role. Select them and explicitly choose Admin, Lead
+Admin, creator invitation, or leave unassigned. Admin access never creates a creator profile,
+creator approval never creates Admin access, and only secure numeric Owner IDs grant Owner.
+
+For Alex, use **Copy Alex Owner Instructions**. Add her verified numeric ID to secure Owner
+configuration, restart, and confirm Owner Home appears. Do not authorize Alex by name.
+
+## Backups
+
+The bot does not claim an external Replit backup exists. A missing or old backup remains
+yellow. Stop the bot before privately copying the SQLite database and WAL/SHM files. Code in
+GitHub plus the database are both required for recovery.
