@@ -148,7 +148,7 @@ def creator_card(user_id, cfg):
             warning_hours, alert_hours = getattr(cfg,"warning_hours",48), getattr(cfg,"alert_hours",72)
             if elapsed >= alert_hours:
                 participation = "🔴 Admin follow-up required"
-                next_step = "\n➡️ The three-day limit was reached; the admin team has been notified."
+                next_step = "\n➡️ Three full days passed without meaningful participation; the Admin team has been notified for follow-up."
             elif elapsed >= warning_hours:
                 participation = "🟠 Participation reminder"
                 timing = f"\n⏱ Admin follow-up in about {max(0, int(alert_hours-elapsed))}h"

@@ -319,7 +319,8 @@ async def inactivity_job(ctx: ContextTypes.DEFAULT_TYPE):
             try:
                 await ctx.bot.send_message(creator["telegram_id"],
                     "🟠 Participation reminder\n\nIt has been two days since your last meaningful participation. "
-                    "Another day without participation will notify the admin team. Taking time away? You can record an Away Notice.")
+                    "Meaningful participation means adding value to a genuine conversation—not simply checking in. "
+                    "Another full day without participation will notify the Admin team. Taking time away? You can record an Away Notice.")
                 db.record_audit(None,"warning_delivered","notification",target_telegram_id=creator["telegram_id"])
             except Exception:
                 db.record_audit(None,"warning_delivery_failed","notification",target_telegram_id=creator["telegram_id"],result="error")

@@ -121,7 +121,7 @@ class V11NavigationTests(unittest.IsolatedAsyncioTestCase):
              patch("tracker.db.claim_notification",side_effect=[True,False]),patch("tracker.db.record_audit"):
             await inactivity_job(ctx); await inactivity_job(ctx)
         self.assertEqual(bot.send_message.await_count,2)  # creator reminder plus one admin flag
-        self.assertTrue(any("Another day" in call.args[1] for call in bot.send_message.await_args_list))
+        self.assertTrue(any("Another full day" in call.args[1] for call in bot.send_message.await_args_list))
 
     async def test_three_day_alert_goes_to_admin_topic(self):
         anchor = (datetime.now(timezone.utc)-timedelta(hours=73)).isoformat()

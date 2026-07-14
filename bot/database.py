@@ -205,9 +205,9 @@ def initialize_database(path: Path | None = None):
 
 DEFAULT_MESSAGE_TEMPLATES = {
     "friendly_reminder": ("Friendly Reminder", "Hi {name}! Just a friendly check-in from the VAD team. 💛", "community"),
-    "participation_reminder": ("Participation Reminder", "Hi {name}! We have not seen meaningful participation recently. Please check in when you can, or submit an Away Notice so tracking stays fair.", "participation"),
-    "two_day_reminder": ("Two-Day Participation Reminder", "Hi {name}. It has been two days since your last meaningful participation. Another day without participation will notify the admin team. Taking time away? You can record an Away Notice.", "participation"),
-    "three_day_followup": ("Three-Day Admin Follow-Up", "Hi {name}. The three-day community participation limit has been reached and the admin team has been notified.", "participation"),
+    "participation_reminder": ("Participation Reminder", "Hi {name}! Meaningful participation helps keep the community lively and gives members a reason to come back. Join a discussion, respond thoughtfully, or ask a genuine question when you can. Taking time away? Record an Away Notice so tracking stays fair.", "participation"),
+    "two_day_reminder": ("Two-Day Participation Reminder", "Hi {name}. Two full days have passed since your last meaningful participation. Meaningful participation means adding value to a genuine conversation—not simply checking in. Another full day without participation will notify the Admin team. Taking time away? You can record an Away Notice.", "participation"),
+    "three_day_followup": ("Three-Day Admin Follow-Up", "Hi {name}. Three full days have passed without meaningful participation and no approved Away Notice is active. The Admin team has been notified for supportive follow-up.", "participation"),
     "pop_reminder": ("POP Reminder", "Hi {name}! This is your friendly Thursday POP reminder. Please submit in the designated topic, or make sure an Away Notice is on file.", "pop"),
     "welcome": ("Welcome", "Welcome, {name}! The VAD Operations Bot is here to help you stay informed and keep participation tracking fair.", "welcome"),
     "community_checkin": ("Community Check-In", "Hi {name}! The team is checking in. Let us know if you need support or time away.", "community"),

@@ -102,5 +102,12 @@ class OwnerFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Creator Registration Instructions",source);self.assertIn("Admin Setup Instructions",source)
         self.assertIn("Alex Owner Setup Instructions",source);self.assertIn("You do not need to find or send your numeric Telegram ID",source)
 
+    def test_participation_help_explains_purpose_not_just_timing(self):
+        from config import RESOURCE_DEFAULTS
+        body=RESOURCE_DEFAULTS["engagement"][1]
+        self.assertIn("genuine conversation",body)
+        self.assertIn("reason to come back",body)
+        self.assertIn("do not satisfy",body)
+
 
 if __name__=="__main__":unittest.main()

@@ -140,7 +140,7 @@ RESOURCE_DEFAULTS = {
     "about": ("About This Bot", "Your VAD Community Hub keeps participation, Thursday POP, Away Notices, and personal updates together. Away Notices keep tracking fair; private details are never required."),
     "rules": ("Community Rules", "Community rules are maintained by the owner team."),
     "creator_guide": ("Creator Guide", "Use the Creator dashboard to manage your operations profile."),
-    "engagement": ("How Engagement Is Counted", "Meaningful conversation counts; spam, greetings, repeats, and filler do not."),
+    "engagement": ("Meaningful Participation", "Meaningful participation means contributing to genuine conversation that helps keep the community active and engaging. Respond thoughtfully, ask questions, join discussions, or otherwise add value. Greetings, check-ins, emojis, stickers, context-free photos, repeated messages, and promotional posts do not satisfy the participation requirement. The purpose is to help keep the community lively so members have a reason to come back."),
     "vacation": ("Away Notice Policy", "Let the community know when you will be away. Admins record eligible dates as excused so participation and POP tracking remain fair."),
     "sick": ("Personal-Day Privacy", "Share only dates and an optional note. Medical or other private details are never required."),
     "pop": ("Thursday POP Instructions", "Submit proof in the configured Thursday POP topic."),
