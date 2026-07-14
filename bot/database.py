@@ -113,6 +113,7 @@ def register_creator(telegram_id, username, display_name, path=None):
           VALUES(?,?,?,?) ON CONFLICT(telegram_id) DO UPDATE SET
           username=excluded.username, display_name=excluded.display_name""",
           (telegram_id, username, display_name, now))
+        _audit(db, telegram_id, telegram_id, "creator_registered", {"username": username, "display_name": display_name}, now)
 
 
 def get_creator(telegram_id, path=None):
@@ -132,7 +133,20 @@ def set_status(target_id, status, actor_id, path=None):
                          (status, status, now, status, actor_id, target_id))
         if not cur.rowcount:
             return False
-        _audit(db, actor_id, target_id, "status", {"status": status}, now)
+        _audit(db, actor_id, target_id, "creator_status_changed", {"status": status}, now)
+        return True
+
+
+def delete_creator(target_id, actor_id, path=None):
+    with get_connection(path) as db:
+        creator = db.execute("SELECT username,display_name,status FROM creators WHERE telegram_id=?", (target_id,)).fetchone()
+        if not creator:
+            return False
+        db.execute("DELETE FROM engagement_events WHERE telegram_id=?", (target_id,))
+        db.execute("DELETE FROM notifications WHERE telegram_id=?", (target_id,))
+        db.execute("DELETE FROM pop_submissions WHERE telegram_id=?", (target_id,))
+        db.execute("DELETE FROM creators WHERE telegram_id=?", (target_id,))
+        _audit(db, actor_id, target_id, "creator_deleted", dict(creator))
         return True
 
 
@@ -192,7 +206,7 @@ def review_pop(submission_id, status, actor_id, note="", path=None):
         cur=db.execute("UPDATE pop_submissions SET status=?,reviewed_at=?,reviewed_by=?,review_note=? WHERE id=? AND status='pending'",
                        (status,utc_now(),actor_id,note,submission_id))
         if cur.rowcount:
-            _audit(db,actor_id,None,"pop_review",{"submission_id":submission_id,"status":status})
+            _audit(db,actor_id,None,"pop_reviewed",{"submission_id":submission_id,"status":status,"note":note})
         return bool(cur.rowcount)
 
 
@@ -206,6 +220,19 @@ def pop_report(week_key, path=None):
 def history(limit=50, path=None):
     with get_connection(path) as db:
         return db.execute("SELECT * FROM audit_history ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+
+
+def reset_history(actor_id, path=None):
+    with get_connection(path) as db:
+        deleted = db.execute("SELECT COUNT(*) AS count FROM audit_history").fetchone()["count"]
+        db.execute("DELETE FROM audit_history")
+        _audit(db, actor_id, None, "history_reset", {"deleted_records": deleted})
+        return deleted
+
+
+def audit_setting_change(actor_id, key, old_value, new_value, path=None):
+    with get_connection(path) as db:
+        _audit(db, actor_id, None, "setting_changed", {"key": key, "old": old_value, "new": new_value})
 
 
 def _audit(db, actor_id, target_id, action, details, now=None):

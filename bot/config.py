@@ -13,6 +13,7 @@ class Config:
     admin_chat_id: int | None
     coffee_orders_thread_id: int | None
     log_level: str
+    lead_admin_user_ids: frozenset[int]
     admin_user_ids: frozenset[int]
     girls_chat_id: int | None
     girls_thread_id: int | None
@@ -61,6 +62,7 @@ class Config:
             admin_chat_id=_parse_int_env("ADMIN_CHAT_ID"),
             coffee_orders_thread_id=_parse_int_env("COFFEE_ORDERS_THREAD_ID"),
             log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+            lead_admin_user_ids=_parse_ids("LEAD_ADMIN_USER_IDS"),
             admin_user_ids=_parse_ids("ADMIN_USER_IDS"),
             girls_chat_id=_parse_int_env("GIRLS_CHAT_ID"),
             girls_thread_id=_parse_int_env("GIRLS_THREAD_ID"),

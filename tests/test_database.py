@@ -20,7 +20,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(db.get_creator(10, self.path)["status"], "pending")
         self.assertTrue(db.set_status(10, "active", 99, self.path))
         self.assertTrue(db.set_vacation(10, "2026-07-31", 99, self.path))
-        self.assertEqual(len(db.history(path=self.path)), 2)
+        self.assertEqual(len(db.history(path=self.path)), 3)
 
     def test_engagement_is_idempotent(self):
         db.register_creator(10, "girl", "Creator", self.path)
@@ -50,6 +50,17 @@ class DatabaseTests(unittest.TestCase):
         creator = db.get_creator(22, legacy)
         self.assertEqual(creator["status"], "active")
         self.assertEqual(creator["registered_at"], "2026-01-01")
+
+    def test_destructive_actions_and_settings_are_audited(self):
+        db.register_creator(10, "girl", "Creator", self.path)
+        self.assertTrue(db.delete_creator(10, 99, self.path))
+        db.audit_setting_change(99, "warning_hours", 48, 24, self.path)
+        actions = [row["action"] for row in db.history(path=self.path)]
+        self.assertIn("creator_deleted", actions)
+        self.assertIn("setting_changed", actions)
+        deleted = db.reset_history(99, self.path)
+        self.assertGreaterEqual(deleted, 3)
+        self.assertEqual(db.history(path=self.path)[0]["action"], "history_reset")
 
 
 if __name__ == "__main__": unittest.main()

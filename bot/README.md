@@ -23,8 +23,16 @@ A Telegram ordering bot for VAD Coffee Lounge. Guides users through a 6-step ord
 | `/creator_register` | Submit creator registration for approval |
 | `/vacation YYYY-MM-DD` | Pause tracking through an Eastern Time date |
 
-Admin-only commands are `/creator_approve`, `/creator_deactivate`, `/creator_report`,
-`/pop_report`, `/pop_approve`, `/pop_reject`, and `/admin_history`.
+Role-based access uses immutable Telegram IDs from Replit Secrets:
+
+- `lead_admin`: all commands, including approvals, rejections, creator deletion,
+  deactivation, other-user vacation changes, POP decisions, history reset, topic/chat
+  discovery, and runtime configuration changes.
+- `admin`: read-only `/creator_report`, `/pop_report`, `/admin_history`, and `/settings`.
+  Admins cannot mutate creators, records, history, configuration, or roles.
+
+Creator self-service registration and vacation commands remain available to the creator.
+Every mutation is written to the audit history with actor, target, action, details, and time.
 
 ## Project structure
 
@@ -62,7 +70,8 @@ Add `TELEGRAM_BOT_TOKEN` as a Replit Secret.
 |----------------|---------|-------------|
 | `ADMIN_CHAT_ID`| _(none)_| Group chat ID for order forwarding |
 | `LOG_LEVEL`    | `INFO`  | Logging level |
-| `ADMIN_USER_IDS` | _(none)_ | Comma-separated Telegram IDs allowed to administer tracking |
+| `LEAD_ADMIN_USER_IDS` | _(none)_ | Comma-separated Telegram IDs allowed all administrative actions |
+| `ADMIN_USER_IDS` | _(none)_ | Comma-separated Telegram IDs allowed read-only reports |
 | `GIRLS_CHAT_ID` | _(none)_ | Group where registered-creator engagement is tracked |
 | `GIRLS_THREAD_ID` | _(none)_ | Optional topic containing ordinary engagement |
 | `POP_THREAD_ID` | _(none)_ | Thursday POP-proof topic |
