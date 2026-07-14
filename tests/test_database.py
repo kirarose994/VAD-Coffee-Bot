@@ -21,6 +21,8 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(db.set_status(10, "active", 99, self.path))
         self.assertTrue(db.set_vacation(10, "2026-07-31", 99, self.path))
         self.assertEqual(len(db.history(path=self.path)), 3)
+        with db.get_connection(self.path) as connection:
+            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()["version"], 3)
 
     def test_engagement_is_idempotent(self):
         db.register_creator(10, "girl", "Creator", self.path)

@@ -17,6 +17,10 @@ def _clean(text, limit=1000):
     return " ".join((text or "").replace("<", "").replace(">", "").split())[:limit]
 
 
+def _render_template(body, name, reason=""):
+    return body.replace("{name}",name).replace("{reason}",reason)
+
+
 def _token(ctx, key):
     token = secrets.token_urlsafe(8)
     ctx.user_data[key] = token
@@ -217,8 +221,14 @@ async def creator_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not rows:
         return await update.effective_message.reply_text("Creator not found.")
     r = rows[0]
+    summary = db.warning_summary(r["telegram_id"])
+    token = _token(ctx, f"timeline_nonce_{r['telegram_id']}")
     await update.effective_message.reply_text(
-        f"{r['display_name']} ({r['telegram_id']})\nRegistration: {r['status']}\nAvailability: {r['availability']}\nLast meaningful: {r['last_meaningful_at'] or 'none'}")
+        f"{r['display_name']} ({r['telegram_id']})\nRegistration: {r['status']}\nAvailability: {r['availability']}\n"
+        f"Warnings: {summary['warnings']} | Strikes: {summary['strikes']}\nLast meaningful: {r['last_meaningful_at'] or 'none'}",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📜 Creator Timeline", callback_data=f"timeline:{token}:{r['telegram_id']}:0")
+        ]]))
 
 
 async def contact_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -335,6 +345,147 @@ async def permission_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text("Permission updated for this running process and audited. Update ADMIN_PERMISSIONS_JSON to persist it.")
 
 
+async def warning_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    cfg, actor = ctx.bot_data["config"], update.effective_user.id
+    if not has_permission(actor, cfg, "adjust_warnings"):
+        return await update.effective_message.reply_text("You do not have permission to manage warnings.")
+    if len(ctx.args) < 3 or ctx.args[1] not in {"warning", "strike"}:
+        return await update.effective_message.reply_text("Usage: /warning_add TELEGRAM_ID warning|strike reason")
+    try: target = int(ctx.args[0])
+    except ValueError: return await update.effective_message.reply_text("Telegram ID must be numeric.")
+    reason = _clean(" ".join(ctx.args[2:]), 1000)
+    warning_id = db.add_warning(target, ctx.args[1], reason, actor)
+    if not warning_id:
+        return await update.effective_message.reply_text("Creator not found or warning was invalid.")
+    creator = db.get_creator(target)
+    template = db.message_template(ctx.args[1])
+    try:
+        await ctx.bot.send_message(target, _render_template(template["body"],creator["display_name"],reason))
+    except Exception:
+        db.record_audit(actor,"warning_delivery_failed","creator_warning",warning_id,target,reason="blocked or unavailable",result="error")
+    await update.effective_message.reply_text(f"{ctx.args[1].title()} #{warning_id} documented and audited.")
+
+
+async def warning_ack(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if len(ctx.args) != 1:
+        return await update.effective_message.reply_text("Usage: /warning_ack WARNING_ID")
+    try: warning_id = int(ctx.args[0])
+    except ValueError: return await update.effective_message.reply_text("Warning ID must be numeric.")
+    row = db.get_warning(warning_id)
+    if not row:
+        return await update.effective_message.reply_text("Warning not found.")
+    actor, cfg = update.effective_user.id, ctx.bot_data["config"]
+    if actor != row["telegram_id"] and not has_permission(actor, cfg, "adjust_warnings"):
+        return await update.effective_message.reply_text("You may acknowledge only your own warning.")
+    if not db.acknowledge_warning(warning_id, actor):
+        return await update.effective_message.reply_text("This warning is no longer awaiting acknowledgment.")
+    await update.effective_message.reply_text("Warning acknowledged. Thank you—this is now reflected in your timeline.")
+
+
+async def warning_remove(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not has_permission(update.effective_user.id, ctx.bot_data["config"], "adjust_warnings"):
+        return await update.effective_message.reply_text("You do not have permission to remove warnings.")
+    if len(ctx.args) < 2:
+        return await update.effective_message.reply_text("Usage: /warning_remove WARNING_ID reason")
+    try: warning_id = int(ctx.args[0])
+    except ValueError: return await update.effective_message.reply_text("Warning ID must be numeric.")
+    if not db.remove_warning(warning_id, update.effective_user.id, _clean(" ".join(ctx.args[1:]))):
+        return await update.effective_message.reply_text("Active warning not found.")
+    await update.effective_message.reply_text("Warning removed from standing calculations; its audit history remains preserved.")
+
+
+def _timeline_text(target, page):
+    rows = db.creator_timeline(target, 8, page * 8)
+    lines = [f"Creator Timeline — {target}"] + [f"{r['occurred_at']}\n{r['action'].replace('_', ' ').title()}" for r in rows]
+    return "\n\n".join(lines) if rows else f"Creator Timeline — {target}\n\nNo activity on this page.", len(rows)
+
+
+async def creator_timeline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    actor, cfg = update.effective_user.id, ctx.bot_data["config"]
+    target = actor
+    if ctx.args:
+        try: target = int(ctx.args[0])
+        except ValueError: return await update.effective_message.reply_text("Telegram ID must be numeric.")
+    if target != actor and not has_permission(actor, cfg, "view_creator_reports"):
+        return await update.effective_message.reply_text("You may view only your own timeline.")
+    token = _token(ctx, f"timeline_nonce_{target}")
+    text, count = _timeline_text(target, 0)
+    buttons = []
+    if count == 8: buttons.append(InlineKeyboardButton("Older ➡️", callback_data=f"timeline:{token}:{target}:1"))
+    await update.effective_message.reply_text(text[:3900], reply_markup=InlineKeyboardMarkup([buttons]) if buttons else None)
+
+
+async def timeline_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    parts = (query.data or "").split(":")
+    if len(parts) != 4:
+        return await query.answer("Invalid timeline action.", show_alert=True)
+    _, token, raw_target, raw_page = parts
+    try: target, page = int(raw_target), max(0, int(raw_page))
+    except ValueError: return await query.answer("Invalid timeline action.", show_alert=True)
+    if token != ctx.user_data.get(f"timeline_nonce_{target}"):
+        return await query.answer("This timeline button expired.", show_alert=True)
+    actor, cfg = update.effective_user.id, ctx.bot_data["config"]
+    if target != actor and not has_permission(actor, cfg, "view_creator_reports"):
+        return await query.answer("You are not authorized.", show_alert=True)
+    await query.answer()
+    text, count = _timeline_text(target, page)
+    buttons = []
+    if page: buttons.append(InlineKeyboardButton("⬅️ Newer", callback_data=f"timeline:{token}:{target}:{page - 1}"))
+    if count == 8: buttons.append(InlineKeyboardButton("Older ➡️", callback_data=f"timeline:{token}:{target}:{page + 1}"))
+    await query.edit_message_text(text[:3900], reply_markup=InlineKeyboardMarkup([buttons]) if buttons else None)
+
+
+async def template_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not has_permission(update.effective_user.id, ctx.bot_data["config"], "send_announcements"):
+        return await update.effective_message.reply_text("You do not have permission to use message templates.")
+    rows = db.message_templates()
+    await update.effective_message.reply_text("Message Templates\n" + "\n".join(f"/{r['template_key']} — {r['title']}" for r in rows))
+
+
+async def template_preview(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not has_permission(update.effective_user.id, ctx.bot_data["config"], "send_announcements"):
+        return await update.effective_message.reply_text("You do not have permission to use message templates.")
+    if len(ctx.args) < 2:
+        return await update.effective_message.reply_text("Usage: /template_preview TEMPLATE_KEY TELEGRAM_ID [reason]")
+    template = db.message_template(ctx.args[0])
+    try: target = int(ctx.args[1])
+    except ValueError: return await update.effective_message.reply_text("Telegram ID must be numeric.")
+    creator = db.get_creator(target)
+    if not template or not creator:
+        return await update.effective_message.reply_text("Template or creator not found.")
+    reason = _clean(" ".join(ctx.args[2:])) or "Please contact an admin if you have questions."
+    body = _render_template(template["body"],creator["display_name"],reason)
+    token = _token(ctx, "template_nonce")
+    ctx.user_data["template_draft"] = {"target":target,"key":template["template_key"],"body":body}
+    await update.effective_message.reply_text(f"Template Preview\n\n{body}", reply_markup=InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Send",callback_data=f"template:{token}:send"),
+        InlineKeyboardButton("❌ Cancel",callback_data=f"template:{token}:cancel"),
+    ]]))
+
+
+async def template_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    parts = (query.data or "").split(":")
+    if len(parts) != 3 or parts[1] != ctx.user_data.pop("template_nonce",None):
+        return await query.answer("This template preview expired or was already used.",show_alert=True)
+    draft = ctx.user_data.pop("template_draft",None)
+    if parts[2] != "send" or not draft:
+        await query.answer()
+        return await query.edit_message_text("Template message cancelled.")
+    if not has_permission(update.effective_user.id,ctx.bot_data["config"],"send_announcements"):
+        return await query.answer("You are not authorized.",show_alert=True)
+    try:
+        await ctx.bot.send_message(draft["target"],draft["body"])
+        result = "delivered"
+    except Exception:
+        result = "failed"
+    db.record_audit(update.effective_user.id,"template_message_sent","message_template",
+                    target_telegram_id=draft["target"],new_value={"template":draft["key"]},result="success" if result == "delivered" else "error")
+    await query.answer()
+    await query.edit_message_text(f"Template message {result}. The action was audited.")
+
+
 def register_operations(app):
     app.add_handler(CommandHandler("vacation_request", vacation_request))
     app.add_handler(CommandHandler("sick_request", sick_request))
@@ -351,7 +502,15 @@ def register_operations(app):
     app.add_handler(CommandHandler("export_records", export_records))
     app.add_handler(CommandHandler("role_set", role_set))
     app.add_handler(CommandHandler("permission_set", permission_set))
+    app.add_handler(CommandHandler("warning_add", warning_add))
+    app.add_handler(CommandHandler("warning_ack", warning_ack))
+    app.add_handler(CommandHandler("warning_remove", warning_remove))
+    app.add_handler(CommandHandler("creator_timeline", creator_timeline))
+    app.add_handler(CommandHandler("template_list", template_list))
+    app.add_handler(CommandHandler("template_preview", template_preview))
     app.add_handler(CallbackQueryHandler(absence_callback, pattern=r"^absence:"))
     app.add_handler(CallbackQueryHandler(review_callback, pattern=r"^review:"))
     app.add_handler(CallbackQueryHandler(review_confirm_callback, pattern=r"^reviewconfirm:"))
     app.add_handler(CallbackQueryHandler(announcement_callback, pattern=r"^announce:"))
+    app.add_handler(CallbackQueryHandler(timeline_callback, pattern=r"^timeline:"))
+    app.add_handler(CallbackQueryHandler(template_callback, pattern=r"^template:"))

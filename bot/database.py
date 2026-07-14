@@ -122,9 +122,45 @@ def initialize_database(path: Path | None = None):
           resource_key TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL,
           updated_at TEXT NOT NULL, updated_by INTEGER
         );
+        CREATE TABLE IF NOT EXISTS creator_warnings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER NOT NULL,
+          warning_type TEXT NOT NULL CHECK(warning_type IN ('warning','strike')),
+          reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active'
+            CHECK(status IN ('active','acknowledged','removed')),
+          issued_at TEXT NOT NULL, issued_by INTEGER NOT NULL,
+          acknowledged_at TEXT, acknowledged_by INTEGER,
+          removed_at TEXT, removed_by INTEGER, removal_reason TEXT,
+          FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id)
+        );
+        CREATE INDEX IF NOT EXISTS creator_warnings_status
+          ON creator_warnings(telegram_id,status,warning_type,issued_at DESC);
+        CREATE TABLE IF NOT EXISTS message_templates (
+          template_key TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL,
+          category TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1,
+          updated_at TEXT NOT NULL, updated_by INTEGER
+        );
         """)
         _migrate_legacy_schema(db)
-        db.execute("UPDATE schema_version SET version=2")
+        _seed_message_templates(db)
+        db.execute("UPDATE schema_version SET version=3")
+
+
+DEFAULT_MESSAGE_TEMPLATES = {
+    "friendly_reminder": ("Friendly Reminder", "Hi {name}! Just a friendly check-in from the VAD team. 💛", "community"),
+    "participation_reminder": ("Participation Reminder", "Hi {name}! We have not seen meaningful participation recently. Please check in when you can, or submit an Away Notice so tracking stays fair.", "participation"),
+    "pop_reminder": ("POP Reminder", "Hi {name}! This is your friendly Thursday POP reminder. Please submit in the designated topic, or make sure an Away Notice is on file.", "pop"),
+    "welcome": ("Welcome", "Welcome, {name}! The VAD Operations Bot is here to help you stay informed and keep participation tracking fair.", "welcome"),
+    "community_checkin": ("Community Check-In", "Hi {name}! The team is checking in. Let us know if you need support or time away.", "community"),
+    "warning": ("Warning Notice", "Hi {name}. A participation warning has been documented: {reason}. Please contact an admin if you need clarification or support.", "warning"),
+    "strike": ("Strike Notice", "Hi {name}. A strike has been documented: {reason}. The record is available in your dashboard, and you may contact an admin for support.", "warning"),
+}
+
+
+def _seed_message_templates(db):
+    now = utc_now()
+    for key, (title, body, category) in DEFAULT_MESSAGE_TEMPLATES.items():
+        db.execute("INSERT OR IGNORE INTO message_templates(template_key,title,body,category,updated_at) VALUES(?,?,?,?,?)",
+                   (key,title,body,category,now))
 
 
 def _columns(db, table):
@@ -349,6 +385,95 @@ def sync_absence_availability(day, path=None):
 def creator_history(telegram_id, path=None):
     with get_connection(path) as db:
         return db.execute("SELECT * FROM audit_events WHERE target_telegram_id=? ORDER BY id DESC", (telegram_id,)).fetchall()
+
+
+def creator_timeline(telegram_id, limit=10, offset=0, path=None):
+    with get_connection(path) as db:
+        return db.execute("""SELECT id,occurred_at,action,target_type,new_value,reason
+          FROM audit_events WHERE target_telegram_id=? ORDER BY occurred_at DESC,id DESC
+          LIMIT ? OFFSET ?""", (telegram_id,limit,offset)).fetchall()
+
+
+def latest_absence(telegram_id, path=None):
+    with get_connection(path) as db:
+        return db.execute("""SELECT * FROM absence_requests WHERE telegram_id=? AND deleted_at IS NULL
+          ORDER BY submitted_at DESC,id DESC LIMIT 1""", (telegram_id,)).fetchone()
+
+
+def creator_pop_status(telegram_id, week_key, path=None):
+    with get_connection(path) as db:
+        excuse = db.execute("SELECT 1 FROM pop_excuses WHERE telegram_id=? AND week_key=?", (telegram_id,week_key)).fetchone()
+        if excuse:
+            return "excused"
+        row = db.execute("SELECT status FROM pop_submissions WHERE telegram_id=? AND week_key=? AND deleted_at IS NULL", (telegram_id,week_key)).fetchone()
+        return row["status"] if row else "not submitted"
+
+
+def add_warning(telegram_id, warning_type, reason, actor_id, path=None):
+    if warning_type not in {"warning", "strike"} or not reason.strip():
+        return None
+    with get_connection(path) as db:
+        if not db.execute("SELECT 1 FROM creators WHERE telegram_id=? AND deleted_at IS NULL", (telegram_id,)).fetchone():
+            return None
+        cur = db.execute("""INSERT INTO creator_warnings
+          (telegram_id,warning_type,reason,issued_at,issued_by) VALUES(?,?,?,?,?)""",
+          (telegram_id,warning_type,reason[:1000],utc_now(),actor_id))
+        audit_event(db,actor_id,f"{warning_type}_issued","creator_warning",cur.lastrowid,telegram_id,
+                    new_value={"type":warning_type,"status":"active"},reason=reason)
+        return cur.lastrowid
+
+
+def warning_summary(telegram_id, path=None):
+    with get_connection(path) as db:
+        row = db.execute("""SELECT
+          SUM(CASE WHEN warning_type='warning' AND status!='removed' THEN 1 ELSE 0 END) AS warnings,
+          SUM(CASE WHEN warning_type='strike' AND status!='removed' THEN 1 ELSE 0 END) AS strikes
+          FROM creator_warnings WHERE telegram_id=?""", (telegram_id,)).fetchone()
+        return {"warnings": row["warnings"] or 0, "strikes": row["strikes"] or 0}
+
+
+def list_warnings(telegram_id, path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM creator_warnings WHERE telegram_id=? ORDER BY issued_at DESC,id DESC", (telegram_id,)).fetchall()
+
+
+def get_warning(warning_id, path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM creator_warnings WHERE id=?", (warning_id,)).fetchone()
+
+
+def acknowledge_warning(warning_id, actor_id, path=None):
+    with get_connection(path) as db:
+        row = db.execute("SELECT * FROM creator_warnings WHERE id=? AND status='active'", (warning_id,)).fetchone()
+        if not row:
+            return False
+        db.execute("UPDATE creator_warnings SET status='acknowledged',acknowledged_at=?,acknowledged_by=? WHERE id=?",
+                   (utc_now(),actor_id,warning_id))
+        audit_event(db,actor_id,"warning_acknowledged","creator_warning",warning_id,row["telegram_id"],
+                    previous_value="active",new_value="acknowledged")
+        return True
+
+
+def remove_warning(warning_id, actor_id, reason, path=None):
+    with get_connection(path) as db:
+        row = db.execute("SELECT * FROM creator_warnings WHERE id=? AND status!='removed'", (warning_id,)).fetchone()
+        if not row:
+            return False
+        db.execute("UPDATE creator_warnings SET status='removed',removed_at=?,removed_by=?,removal_reason=? WHERE id=?",
+                   (utc_now(),actor_id,reason[:1000],warning_id))
+        audit_event(db,actor_id,"warning_removed","creator_warning",warning_id,row["telegram_id"],
+                    previous_value=row["status"],new_value="removed",reason=reason)
+        return True
+
+
+def message_templates(path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM message_templates WHERE active=1 ORDER BY category,title").fetchall()
+
+
+def message_template(template_key, path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM message_templates WHERE template_key=? AND active=1", (template_key,)).fetchone()
 
 
 def add_admin_note(telegram_id, note, actor_id, path=None):

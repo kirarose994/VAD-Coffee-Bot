@@ -24,7 +24,8 @@ Before first production start:
 5. Run owner system-health and operational reports before enabling routine use.
 
 New tables: `absence_requests`, `availability_history`, `admin_notes`, `audit_events`,
-`announcements`, `resources`, and `pop_excuses`. Existing important records gain
+`announcements`, `resources`, `pop_excuses`, `creator_warnings`, and `message_templates`.
+The current schema version is 3. Existing important records gain
 soft-deletion and restoration metadata where applicable.
 
 ## Rollback
@@ -71,6 +72,8 @@ review, automatic POP excusal, POP submission/review, engagement counted/ignored
 warning/alert creation, admin-note creation, announcements, settings, roles, permissions,
 exports, soft deletion, and restoration. Events retain actor, action, target, previous/new
 values, reason, related IDs, source location where available, result, and timestamp.
+Warning creation, acknowledgment/removal, and template-message delivery are also audited
+and appear in the creator timeline.
 
 ## Manual phone checklist
 
@@ -93,6 +96,13 @@ values, reason, related IDs, source location where available, result, and timest
 17. As an admin, confirm `/admin_history`, export, restore, role, and health access are denied.
 18. Restart the bot and verify no duplicate warnings, POP credit, reviews, or announcements.
 19. Confirm `/start` contains no Coffee menu and no Coffee callbacks are accepted.
+20. Confirm the Creator dashboard clearly shows participation, POP, standing, Away Notice,
+    and availability.
+21. Add one warning, two warnings, and three strikes in a test profile; verify the standing
+    indicators and owner-review state.
+22. Acknowledge a warning from its dashboard button and confirm the timeline updates.
+23. Preview every message template, cancel one, deliver one, and verify the audit event.
+24. Page backward and forward through a creator timeline as creator and authorized admin.
 
 ## Deployment
 

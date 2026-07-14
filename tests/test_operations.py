@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).parents[1] / "bot"))
 
 import database as db
-from navigation import callback, home_markup
+from navigation import _standing, callback, home_markup, start
 from permissions import has_permission
 
 
@@ -62,6 +62,29 @@ class OperationsDatabaseTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             db.reset_history(30, self.path)
 
+    def test_warning_strike_standing_and_acknowledgment_are_audited(self):
+        warning_id = db.add_warning(10,"warning","Participation reminder",20,self.path)
+        for number in range(3):
+            db.add_warning(10,"strike",f"Strike {number + 1}",20,self.path)
+        self.assertEqual(db.warning_summary(10,self.path),{"warnings":1,"strikes":3})
+        self.assertTrue(db.acknowledge_warning(warning_id,10,self.path))
+        self.assertFalse(db.acknowledge_warning(warning_id,10,self.path))
+        actions = [row["action"] for row in db.creator_timeline(10,20,0,self.path)]
+        self.assertIn("warning_issued",actions)
+        self.assertIn("warning_acknowledged",actions)
+
+    def test_removed_warning_keeps_history_but_leaves_standing(self):
+        warning_id = db.add_warning(10,"warning","Temporary issue",20,self.path)
+        self.assertTrue(db.remove_warning(warning_id,20,"Resolved",self.path))
+        self.assertEqual(db.warning_summary(10,self.path)["warnings"],0)
+        self.assertEqual(db.get_warning(warning_id,self.path)["status"],"removed")
+
+    def test_message_templates_are_seeded_and_customizable(self):
+        templates = {row["template_key"] for row in db.message_templates(self.path)}
+        self.assertTrue({"friendly_reminder","participation_reminder","pop_reminder","welcome","community_checkin","warning","strike"}.issubset(templates))
+        body = db.message_template("welcome",self.path)["body"].format(name="Creator",reason="")
+        self.assertIn("Creator",body)
+
 
 class MenuAndPermissionTests(unittest.TestCase):
     def config(self):
@@ -90,6 +113,12 @@ class MenuAndPermissionTests(unittest.TestCase):
         self.assertTrue(has_permission(4, cfg, "review_pop"))
         self.assertFalse(has_permission(4, cfg, "send_announcements"))
 
+    def test_standing_indicators_are_supportive_and_escalate_three_strikes(self):
+        self.assertIn("Good standing",_standing({"warnings":0,"strikes":0}))
+        self.assertIn("1 warning",_standing({"warnings":1,"strikes":0}))
+        self.assertIn("2 warnings",_standing({"warnings":2,"strikes":0}))
+        self.assertIn("Owner review required",_standing({"warnings":0,"strikes":3}))
+
     def test_eastern_timezone_is_dst_aware(self):
         eastern = ZoneInfo("America/New_York")
         self.assertNotEqual(datetime(2026, 1, 1, tzinfo=eastern).utcoffset(), datetime(2026, 7, 1, tzinfo=eastern).utcoffset())
@@ -102,6 +131,17 @@ class MenuAndPermissionTests(unittest.TestCase):
 
 
 class CallbackSecurityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_start_explains_support_and_fair_away_notices(self):
+        cfg = SimpleNamespace(owner_user_ids=frozenset(),lead_admin_user_ids=frozenset(),admin_user_ids=frozenset(),admin_permissions={})
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=99,first_name="Kira"),effective_message=message)
+        ctx = SimpleNamespace(user_data={},bot_data={"config":cfg})
+        await start(update,ctx)
+        text = message.reply_text.await_args.args[0]
+        self.assertIn("here to help",text)
+        self.assertIn("Away Notices",text)
+        self.assertIn("fair",text)
+
     async def test_tampered_or_expired_callback_fails_safe(self):
         cfg = SimpleNamespace(owner_user_ids=frozenset({1}),lead_admin_user_ids=frozenset(),admin_user_ids=frozenset(),admin_permissions={})
         query = SimpleNamespace(data="op:forged:owner",answer=AsyncMock(),edit_message_text=AsyncMock())

@@ -1,6 +1,7 @@
 """Role-aware, nonce-protected application navigation."""
 
 import secrets
+from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
@@ -48,9 +49,51 @@ def menu_markup(ctx, actions, back="home"):
     return InlineKeyboardMarkup(rows)
 
 
+def _week_key(now):
+    year, week, _ = now.isocalendar()
+    return f"{year}-W{week:02d}"
+
+
+def _standing(summary):
+    if summary["strikes"] >= 3:
+        return "🔴 Owner review required"
+    if summary["strikes"]:
+        return f"🟠 {summary['strikes']} strike{'s' if summary['strikes'] != 1 else ''} documented"
+    if summary["warnings"] >= 2:
+        return f"🟠 {summary['warnings']} warnings"
+    if summary["warnings"] == 1:
+        return "💛 1 warning"
+    return "💚 Good standing"
+
+
+def creator_card(user_id, cfg):
+    creator = db.get_creator(user_id)
+    if not creator:
+        return "You are not registered yet. Tap Register to get started."
+    warning = db.warning_summary(user_id)
+    pop = db.creator_pop_status(user_id, _week_key(datetime.now(cfg.timezone))) if creator["status"] == "active" else "awaiting approval"
+    absence = db.latest_absence(user_id)
+    away = "None on file" if not absence else f"{absence['absence_type'].title()} {absence['start_date']}–{absence['end_date']} ({absence['status']})"
+    participation = "Active" if creator["status"] == "active" else creator["status"].title()
+    return (
+        f"Participation: {participation}\n"
+        f"POP this week: {pop.replace('_', ' ').title()}\n"
+        f"Standing: {_standing(warning)}\n"
+        f"Away Notice: {away}\n"
+        f"Availability: {creator['availability'].title()}"
+    )
+
+
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
-    text = "VAD Operations Bot\n\nChoose an area below. Your menu is based on your Telegram user ID."
+    text = (
+        f"Welcome to VAD Operations, {update.effective_user.first_name}! 💛\n\n"
+        "This bot is here to help you stay informed, submit what you need, and keep "
+        "community participation tracking consistent and fair.\n\n"
+        "Away Notices are simply a way to tell the team when you need time away. An approved "
+        "notice pauses participation and POP expectations for the covered dates—no private "
+        "medical details are needed.\n\nChoose an area below."
+    )
     markup = home_markup(ctx, update.effective_user.id)
     await update.effective_message.reply_text(text, reply_markup=markup)
 
@@ -71,17 +114,18 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cfg = ctx.bot_data["config"]
     role = role_for(user_id, cfg)
     if action == "home":
-        return await _show(query, "VAD Operations Bot", home_markup(ctx, user_id))
+        return await _show(query, "VAD Operations Bot\n\nHere to help keep your VAD participation clear, supported, and fair. 💛", home_markup(ctx, user_id))
     if action == "cancel":
         ctx.user_data.clear()
         return await _show(query, "Action cancelled.", home_markup(ctx, user_id))
     if action == "creator":
-        return await _show(query, "Creator Dashboard", menu_markup(ctx, [
+        return await _show(query, "Creator Dashboard\n\n" + creator_card(user_id, cfg), menu_markup(ctx, [
             ("📝 Register", "register"), ("🟢 Mark Available", "available"),
-            ("🔴 Mark Unavailable", "unavailable"), ("🌴 Request Vacation", "vacation_help"),
-            ("🤒 Report Sick Day", "sick_help"), ("📸 Submit Thursday POP", "pop_help"),
+            ("🔴 Mark Unavailable", "unavailable"), ("🌴 Vacation Away Notice", "vacation_help"),
+            ("🤒 Sick-Day Away Notice", "sick_help"), ("📸 Submit Thursday POP", "pop_help"),
             ("📈 My Activity", "my_activity"), ("⚠️ My Status", "my_status"),
-            ("📜 My History", "my_history"), ("💬 Contact Admin", "contact"),
+            ("💛 My Warnings", "my_warnings"), ("📜 My Timeline", "timeline_0"),
+            ("💬 Contact Admin", "contact"),
         ]))
     if action == "admin":
         if role < Role.ADMIN:
@@ -92,6 +136,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ("📸 POP Review Queue", "pop_queue"), ("⚠️ Inactivity Alerts", "reports"),
             ("👥 Creator Management", "creator_report"), ("🔎 Creator Search", "search_help"),
             ("📊 Creator Reports", "creator_report"), ("📅 Absence Calendar", "calendar"),
+            ("💛 Warnings & Strikes", "warnings_help"), ("💬 Message Templates", "templates_help"),
             ("📨 Announcements", "announce_help"), ("📜 Recent Admin Actions", "audit"),
         ]
         return await _show(query, "Admin Dashboard", menu_markup(ctx, actions))
@@ -122,16 +167,34 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "pop_help":
         return await _show(query, "Submit meaningful POP proof in the configured girls-group Thursday POP topic. Images elsewhere are ignored.", menu_markup(ctx, [], "creator"))
     if action in {"my_activity", "my_status"}:
-        creator = db.get_creator(user_id)
-        text = "You are not registered." if not creator else (
-            f"Status: {creator['status']}\nAvailability: {creator['availability']}\n"
-            f"Last meaningful engagement: {creator['last_meaningful_at'] or 'none recorded'}"
-        )
+        text = creator_card(user_id, cfg)
         return await _show(query, text, menu_markup(ctx, [], "creator"))
-    if action == "my_history":
-        rows = db.creator_history(user_id)[:15]
-        text = "Your recent history\n" + ("\n".join(f"{r['occurred_at']} — {r['action']}" for r in rows) or "No history yet.")
-        return await _show(query, text[:3900], menu_markup(ctx, [], "creator"))
+    if action == "my_warnings":
+        rows = db.list_warnings(user_id)
+        summary = db.warning_summary(user_id)
+        lines = [f"My Standing: {_standing(summary)}"] + [f"#{r['id']} {r['warning_type'].title()} — {r['status']}\n{r['reason']}" for r in rows]
+        actions = [(f"Acknowledge #{r['id']}",f"ackwarning_{r['id']}") for r in rows if r["status"] == "active"]
+        return await _show(query, "\n\n".join(lines)[:3900], menu_markup(ctx, actions, "creator"))
+    if action.startswith("ackwarning_"):
+        try: warning_id = int(action.split("_",1)[1])
+        except ValueError: warning_id = 0
+        warning = db.get_warning(warning_id)
+        if not warning or warning["telegram_id"] != user_id:
+            return await _show(query,"That warning is unavailable.",menu_markup(ctx,[],"creator"))
+        if not db.acknowledge_warning(warning_id,user_id):
+            text = "That warning was already acknowledged or removed."
+        else:
+            text = "Warning acknowledged. Thank you—your timeline has been updated. 💛"
+        return await _show(query,text,menu_markup(ctx,[],"creator"))
+    if action.startswith("timeline_"):
+        try: page = max(0, int(action.split("_", 1)[1]))
+        except ValueError: page = 0
+        rows = db.creator_timeline(user_id, 8, page * 8)
+        lines = ["My Timeline"] + [f"{r['occurred_at']}\n{r['action'].replace('_', ' ').title()}" for r in rows]
+        actions = []
+        if page: actions.append(("⬅️ Newer", f"timeline_{page - 1}"))
+        if len(rows) == 8: actions.append(("Older ➡️", f"timeline_{page + 1}"))
+        return await _show(query, "\n\n".join(lines) if rows else "My Timeline\n\nNo activity yet.", menu_markup(ctx, actions, "creator"))
     if action == "reports" and role < Role.ADMIN:
         creator = db.get_creator(user_id)
         text = "Register to view your personal report." if not creator else (
@@ -163,7 +226,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         rows = db.deleted_records()
         text = "Deleted creator records\n" + ("\n".join(f"{r['telegram_id']} {r['display_name']} — {r['deleted_at']}" for r in rows) or "None.")
         return await _show(query, text, menu_markup(ctx, [], "owner"))
-    if action in {"reports", "creator_report", "calendar", "registration_queue", "vacation_queue", "sick_queue", "pop_queue", "search_help", "announce_help", "roles", "settings", "export_help", "restore_help", "health"}:
+    if action in {"reports", "creator_report", "calendar", "registration_queue", "vacation_queue", "sick_queue", "pop_queue", "search_help", "warnings_help", "templates_help", "announce_help", "roles", "settings", "export_help", "restore_help", "health"}:
         if action not in {"reports", "calendar"} and role < Role.ADMIN:
             return await _show(query, "Administrator access is required.", home_markup(ctx, user_id))
         descriptions = {
@@ -175,6 +238,8 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "sick_queue": "Use /absence_queue sick to review sick-day requests.",
             "pop_queue": "Use /pop_report to review pending POP submissions.",
             "search_help": "Use /creator_search TELEGRAM_ID or username.",
+            "warnings_help": "Use /warning_add TELEGRAM_ID warning|strike reason. Creators acknowledge with /warning_ack WARNING_ID. Authorized admins may use /warning_remove WARNING_ID reason.",
+            "templates_help": "Use /template_list, then /template_preview TEMPLATE_KEY TELEGRAM_ID [reason]. Every message is previewed and confirmed before delivery.",
             "announce_help": "Use /announce AUDIENCE message to preview an authorized announcement.",
             "roles": "Owner-protected role assignments come from secure environment configuration.",
             "settings": "Use /settings. Sensitive history remains in the owner audit log.",

@@ -4,6 +4,11 @@ Telegram operations application for creator registration, availability, absences
 meaningful engagement, inactivity, Thursday POP, operational reporting, announcements,
 and owner oversight.
 
+The creator experience opens with a supportive explanation of the bot and Away Notices,
+then presents a status card covering participation, weekly POP, standing, latest Away
+Notice, and availability. Warning/strike records are documented community memory—not
+automatic punishment—and creators can acknowledge warnings from their dashboard.
+
 The active application starts with `cd bot && python main.py`. Coffee Date ordering is
 not imported or registered. Its historical implementation remains only in
 `bot_backup_before_tracker/`.
@@ -62,6 +67,19 @@ operational permission set.
 - Existing creator, engagement, notification, and POP data are migrated in place.
 - SQLite uses foreign keys, WAL mode, busy timeouts, indexes, and uniqueness constraints.
 - Secrets and runtime databases are ignored by Git.
+
+## Community memory and messaging
+
+- `/warning_add TELEGRAM_ID warning|strike reason` records an audited warning or strike.
+- Creators view and acknowledge active warnings from the Creator dashboard.
+- `/warning_remove WARNING_ID reason` removes an item from standing calculations while
+  preserving its timeline and audit history.
+- Three active strikes display `Owner review required`; the bot does not automatically
+  impose disciplinary action.
+- `/template_list` lists reusable messages and `/template_preview` previews and confirms
+  delivery. Default templates cover friendly, participation, POP, welcome, community
+  check-in, warning, and strike messaging.
+- `/creator_timeline TELEGRAM_ID` provides authorized, paginated chronological history.
 
 See [OPERATIONS_ROLLOUT.md](../docs/OPERATIONS_ROLLOUT.md) for migration, deployment,
 rollback, menus, permissions, and manual testing.
