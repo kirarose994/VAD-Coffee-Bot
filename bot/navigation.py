@@ -1041,7 +1041,13 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "pop":"pop_topic","pop_review":"pop_review_topic","reports":"reports_topic","away":"away_topic","registration":"registration_topic",
             "moderation":"moderation_topic","support":"support_topic","health":"health_topic"}.get(purpose)
         bot_permissions="Unable to verify; check that the bot is present"
+        privacy_status="Not checked"
         bot=getattr(ctx,"bot",None)
+        if bot and hasattr(bot,"get_me"):
+            try:
+                identity=await bot.get_me();can_read=bool(getattr(identity,"can_read_all_group_messages",False))
+                privacy_status="Disabled — ordinary messages available" if can_read else "Enabled — make the bot an Admin or disable privacy with BotFather"
+            except Exception:pass
         if chat_id and bot and hasattr(bot,"get_chat_member") and getattr(chat,"type",None) in {"group","supergroup","channel"}:
             try:
                 member=await bot.get_chat_member(chat_id,bot.id)
@@ -1053,7 +1059,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text=(f"📍 Verify {purpose.replace('_',' ').title()}\n\nConfirm this Telegram location before saving it.\n\n"
             f"Chat title: {title}\nChat type: {getattr(chat,'type','unknown')}\nChat ID: {chat_id}\nForum enabled: {'Yes' if forum else 'No'}\n"
             f"Topic title: {'General' if thread_id is None else 'Current topic (title unavailable)'}\nTopic ID: {thread_id or 'None'}\n"
-            f"Bot membership and permissions: {bot_permissions}\nCurrent configured destination: {current if current is not None else 'Not configured'}\n"
+            f"Bot membership and permissions: {bot_permissions}\nTelegram privacy mode: {privacy_status}\nCurrent configured destination: {current if current is not None else 'Not configured'}\n"
             f"Participation enabled here: {'Yes' if purpose == 'participation' and match else 'No'}\nMatch: {'Yes' if match else 'No'}\nRecommended correction: {recommendation}")
         actions=[] if value is None else [("Use This Location",f"setup_prepare_{key}")]
         return await _show(query,text,menu_markup(ctx,actions,"telegram_locations"))
@@ -1070,10 +1076,15 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "participation_monitor":
         if role is not Role.OWNER:return await _show(query,"Participation Monitor is owner-only.",home_markup(ctx,user_id))
         monitor=db.participation_monitor();cats=", ".join(f"{r['reason']}: {r['count']}" for r in monitor["ignored_categories"]) or "None"
+        state=db.system_state();privacy=state.get("telegram_can_read_all_group_messages",{}).get("value")
+        access="Yes" if privacy=="true" or monitor["last_detected"] else "No — disable privacy mode or make the bot an Admin"
+        observed_chat=state.get("last_group_message_chat_id",{}).get("value","None yet")
+        observed_topic=state.get("last_group_message_thread_id",{}).get("value","None yet")
         last=lambda row: friendly_timestamp(row["created_at"],timezone_name=cfg.timezone_name) if row else "None yet"
         text=("📈 Participation Monitor\n\nThis page confirms whether participation tracking is seeing and correctly processing messages in the approved VAD participation area.\n\n"
             f"Main group: {cfg.participation_chat_id or 'Not configured'}\nTopics: {', '.join(map(str,cfg.participation_topic_ids)) or 'General-only rule'}\n"
-            f"Connected: {'Yes' if cfg.participation_chat_id else 'No'}\nLast message detected: {last(monitor['last_detected'])}\n"
+            f"Connected: {'Yes' if cfg.participation_chat_id else 'No'}\nCan read ordinary messages: {access}\nLast message detected: {last(monitor['last_detected'])}\n"
+            f"Last observed group/topic: {observed_chat} / {observed_topic}\n"
             f"Last meaningful participation: {last(monitor['last_counted'])}\nApproved sellers tracked: {monitor['tracked']}\n"
             f"Ignored today: {monitor['ignored_today']}\nIgnored categories: {cats}\nProcessing failures: {monitor['failures']}")
         return await _show(query,text,menu_markup(ctx,[("🧾 Participation Event Log","participation_events")],"owner"))

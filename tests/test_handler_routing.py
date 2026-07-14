@@ -51,6 +51,12 @@ class HandlerRoutingTests(unittest.TestCase):
         self.assertTrue(self.app.handlers.get(10))
         self.assertFalse(any(handler.check_update(update) for handler in self.app.handlers[10]))
 
+    def test_generic_tracker_observer_matches_ordinary_group_text(self):
+        update=Update.de_json({"update_id":2,"message":{"message_id":11,"date":0,
+            "chat":{"id":-100,"type":"supergroup","title":"VAD"},
+            "from":{"id":20,"is_bot":False,"first_name":"Creator"},"text":"A thoughtful community contribution today."}},self.app.bot)
+        self.assertTrue(any(handler.check_update(update) for handler in self.app.handlers[10]))
+
     def test_temporary_setup_handlers_are_not_loaded(self):
         source=(Path(__file__).parents[1]/"bot"/"main.py").read_text(encoding="utf-8")
         self.assertNotIn("register_setup_handlers",source)

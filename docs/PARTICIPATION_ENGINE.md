@@ -6,6 +6,11 @@ days without meaningful participation, and without an active Away Notice, the Ad
 a follow-up alert. The purpose is to help keep the community lively so members have a reason to
 come back—not to reward simple check-ins.
 
+The ordinary text observer is registered in dispatcher group 10 with `TEXT` excluding commands.
+Startup records Telegram’s group-message privacy capability, and the Owner verification screens
+show whether normal group messages are available. A real accepted participation event updates both
+the creator timestamp and readiness evidence; readiness no longer depends solely on synthetic tests.
+
 Meaningful participation means contributing to genuine conversation that helps keep the
 community active and engaging. Approved creators can respond thoughtfully, ask questions,
 join discussions, offer help, or otherwise add value. The purpose is not to make someone
