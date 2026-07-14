@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Group transient Telegram/httpx read failures into durable incidents with first seen, last seen,
+  occurrence count, Open/Resolved status, sanitized tracebacks, bounded retry, and automatic recovery.
+- Added additive SQLite schema version 8 for restart-safe system incident tracking.
+
 - Added permission-aware Community Snapshots for Owners and Admins.
 - Added an Owner-configurable, 9:00 AM Eastern Daily Admin Brief with durable once-per-day delivery.
 - Added urgent-event routing and owner-visible, deduplicated delivery-failure handling.

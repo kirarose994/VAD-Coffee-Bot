@@ -12,7 +12,7 @@ import database as db
 from config import RESOURCE_DEFAULTS
 from permissions import Role, has_permission, role_for
 from pop_policy import current_period, label as pop_label
-from presentation import audit_entry, friendly_timestamp, timeline_entry
+from presentation import audit_entry, friendly_timestamp, system_error_detail, timeline_entry
 from runtime_config import persist_setting
 from routing import ROUTES, routing_summary, send_routed
 from readiness import readiness_items, status_icon, system_check_summary
@@ -633,7 +633,22 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         actions = [("Today","audit_filter_today"),("Admin actions","audit_filter_admins"),("Creator actions","audit_filter_creators"),
             ("System errors","audit_filter_errors"),("Deletions","audit_filter_deletions"),("Restorations","audit_filter_restorations"),
             ("Warnings & strikes","audit_filter_warnings"),("Role changes","audit_filter_roles"),("Exports","audit_filter_exports")]
+        if selected == "errors":
+            actions = [(f"View {row['error_reference'] or 'Error'}",f"system_error_{row['id']}_0") for row in rows] + actions
         return await _show(query, text[:3900], menu_markup(ctx, actions, "owner"))
+    if action.startswith("system_error_"):
+        if role is not Role.OWNER:
+            return await _show(query,"System error details are owner-only.",home_markup(ctx,user_id))
+        raw=action.removeprefix("system_error_");audit_raw,page_raw=raw.rsplit("_",1);audit_id,page=int(audit_raw),max(0,int(page_raw));row=db.get_audit_event(audit_id)
+        if not row or row["action"]!="system_error":
+            return await _show(query,"That system error record is unavailable.",menu_markup(ctx,[],"audit_filter_errors"))
+        details=json.loads(row["new_value"]) if row["new_value"] else {};incident=db.get_system_incident(details.get("incident_id")) if isinstance(details,dict) and details.get("incident_id") else None
+        detail=system_error_detail(row,getattr(cfg,"timezone_name","America/New_York"),incident);size=3400;pages=[detail[i:i+size] for i in range(0,len(detail),size)] or [detail]
+        page=min(page,len(pages)-1);actions=[]
+        if page:actions.append(("◀️ Previous Trace Page",f"system_error_{audit_id}_{page-1}"))
+        if page+1<len(pages):actions.append(("Next Trace Page ▶️",f"system_error_{audit_id}_{page+1}"))
+        suffix=f"\n\nTrace page {page+1} of {len(pages)}" if len(pages)>1 else ""
+        return await _show(query,pages[page]+suffix,menu_markup(ctx,actions,"audit_filter_errors"))
     if action == "deleted":
         if role is not Role.OWNER:
             return await _show(query, "Deleted records are owner-only.", home_markup(ctx, user_id))

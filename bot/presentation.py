@@ -85,5 +85,28 @@ def audit_entry(row, resolver=None, timezone_name="America/New_York"):
     change = change_summary(row["previous_value"],row["new_value"])
     if change: parts.insert(2,change)
     if row["error_reference"]: parts.append(f"Reference: {row['error_reference']}")
+    if row["action"] == "system_error":
+        details=_value(row["new_value"])
+        if isinstance(details,dict) and details.get("exception_type"):
+            parts.append(f"Exception: {details['exception_type']}")
     if row["result"] == "error": parts.append("Status: Needs review")
     return "\n".join(parts)
+
+
+def system_error_detail(row,timezone_name="America/New_York",incident=None):
+    """Render stored diagnostics for the Owner-only Telegram detail screen."""
+    details=_value(row["new_value"])
+    if not isinstance(details,dict) or not details.get("exception_type"):
+        return (f"⚠️ System Error\n\nReference: {row['error_reference'] or 'Unavailable'}\n"
+            f"Time: {friendly_timestamp(row['occurred_at'],timezone_name=timezone_name)}\nStatus: Needs review\n\n"
+            "Detailed exception data was not stored for this historical error. Match the reference in the Replit console logs to recover its stack trace.")
+    incident_lines=""
+    if incident:
+        incident_lines=(f"First seen: {friendly_timestamp(incident['first_seen'],timezone_name=timezone_name)}\n"
+            f"Last seen: {friendly_timestamp(incident['last_seen'],timezone_name=timezone_name)}\n"
+            f"Occurrences: {incident['occurrence_count']}\nStatus: {incident['status'].title()}\n")
+    status_lines=incident_lines or "Status: Needs review\n"
+    return (f"⚠️ System Error\n\nReference: {row['error_reference']}\n"
+        f"Time: {friendly_timestamp(row['occurred_at'],timezone_name=timezone_name)}\n"
+        f"Exception: {details.get('exception_type','Unknown')}\nMessage: {details.get('message','Unavailable')}\n"
+        f"{status_lines}\nStack trace\n{(incident['traceback'] if incident else details.get('traceback')) or 'Traceback unavailable.'}")
