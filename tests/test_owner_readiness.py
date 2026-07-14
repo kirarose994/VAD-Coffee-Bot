@@ -49,6 +49,14 @@ class ReadinessCalculationTests(unittest.TestCase):
         self.assertEqual(rows[0]["telegram_id"],50)
         self.assertIsNone(db.get_creator(50,self.path));self.assertIsNone(db.get_member(50,self.path))
 
+    def test_real_counted_message_verifies_message_access_and_monitor(self):
+        db.register_creator(20,"creator","Creator",self.path);db.set_status(20,"active",1,self.path)
+        for key in ("telegram_can_read_all_group_messages","last_participation_message_detected","last_meaningful_participation_counted"):
+            db.set_system_state(key,"true",self.path)
+        items={item["key"]:item for item in readiness_items(config(participation_topic_ids=frozenset({10})),self.path)}
+        self.assertEqual(items["privacy"]["state"],"ready");self.assertEqual(items["ordinary_messages"]["state"],"ready")
+        self.assertEqual(items["monitor"]["state"],"ready")
+
 
 class SafeTestIsolationTests(unittest.IsolatedAsyncioTestCase):
     async def test_safe_message_never_records_real_engagement(self):
@@ -62,6 +70,21 @@ class SafeTestIsolationTests(unittest.IsolatedAsyncioTestCase):
              patch("tracker.db.set_system_state") as set_state,patch("tracker.db.record_audit"),patch("tracker.db.record_engagement") as real:
             await observe(update,ctx)
         real.assert_not_called();self.assertTrue(any(call.args[0]=="readiness:meaningful_test" for call in set_state.call_args_list))
+
+    async def test_real_meaningful_message_updates_creator_and_readiness(self):
+        cfg=config(participation_topic_ids=frozenset({10}))
+        msg=SimpleNamespace(text="I appreciate this thoughtful community discussion today.",chat_id=EXPECTED_MAIN_CHAT_ID,
+            message_thread_id=10,message_id=88,photo=None,sticker=None,animation=None,video=None,voice=None,document=None,caption=None)
+        update=SimpleNamespace(effective_message=msg,effective_user=SimpleNamespace(id=20));ctx=SimpleNamespace(bot_data={"config":cfg})
+        creator={"status":"active","vacation_until":None}
+        with patch("tracker.db.system_state",return_value={}),patch("tracker.db.get_creator",return_value=creator), \
+             patch("tracker.db.approved_absence_on",return_value=None),patch("tracker.db.recent_hash_exists",return_value=False), \
+             patch("tracker.db.record_engagement",return_value=True) as record,patch("tracker.db.set_system_state") as state:
+            await observe(update,ctx)
+        self.assertEqual(record.call_args.args[5],"accepted")
+        keys=[call.args[0] for call in state.call_args_list]
+        self.assertIn("last_participation_message_detected",keys);self.assertIn("last_meaningful_participation_counted",keys)
+        self.assertIn("readiness:meaningful_test",keys)
 
 
 class OwnerFlowTests(unittest.IsolatedAsyncioTestCase):
@@ -79,6 +102,13 @@ class OwnerFlowTests(unittest.IsolatedAsyncioTestCase):
              patch("database.system_state",return_value={}),patch("main.set_system_state") as mark:
             await startup_readiness_notice(app)
         app.bot.send_message.assert_awaited_once();self.assertEqual(app.bot.send_message.await_args.args[0],1);mark.assert_called_once()
+
+    async def test_startup_records_telegram_privacy_capability(self):
+        bot=SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(can_read_all_group_messages=False)),send_message=AsyncMock())
+        app=SimpleNamespace(bot_data={"config":config()},bot=bot)
+        with patch("main.critical_fingerprint",return_value=("finger",[])),patch("main.set_system_state") as state:
+            await startup_readiness_notice(app)
+        self.assertTrue(any(call.args==( "telegram_can_read_all_group_messages","false") for call in state.call_args_list))
 
     async def test_setup_wizard_resumes_saved_step(self):
         cfg=config();query=SimpleNamespace(data="op:n:setup_wizard",answer=AsyncMock(),edit_message_text=AsyncMock(),message=SimpleNamespace())

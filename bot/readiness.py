@@ -38,6 +38,10 @@ def readiness_items(config,path=None,now=None):
         except (ValueError,TypeError): pass
     main=getattr(config,"participation_chat_id",None)
     verified=lambda key: key in state
+    detected=verified("last_participation_message_detected")
+    counted=verified("last_meaningful_participation_counted") or verified("readiness:meaningful_test")
+    privacy=state.get("telegram_can_read_all_group_messages",{}).get("value")
+    message_access_ready=privacy=="true" or detected
     route_specs=(
         ("registration","Registration-review topic","registration_thread_id","location_registration"),
         ("away","Away Notice topic","away_thread_id","location_away"),
@@ -53,7 +57,9 @@ def readiness_items(config,path=None,now=None):
         _item("token","Bot token available","ready" if bool(getattr(config,"token",None)) else "problem","The token is checked without displaying its value.","readiness_token_help"),
         _item("main","Main participation group configured","ready" if main==EXPECTED_MAIN_CHAT_ID else "problem" if main else "setup",f"Expected Main VAD group: {EXPECTED_MAIN_CHAT_ID}.","location_main"),
         _item("participation_topic","Participation topic configured","ready" if topics else "setup","The General participation topic must be verified; it is never guessed.","location_participation"),
-        _item("ordinary_messages","Bot can read ordinary messages in participation area","ready" if verified("readiness:meaningful_test") else "unverified","Run the safe meaningful-participation test.","test_meaningful"),
+        _item("privacy","Telegram group-message access","ready" if message_access_ready else "problem" if privacy=="false" else "unverified",
+            "Ready when Telegram privacy mode is disabled or an ordinary participation message has been observed.","location_participation"),
+        _item("ordinary_messages","Bot can read ordinary messages in participation area","ready" if detected or counted else "unverified","Send a meaningful test message in the verified participation topic.","test_meaningful"),
         _item("sellers","Sellers group configured","ready" if _configured(getattr(config,"creator_group_id",None)) else "setup","The Sellers group is required for seller workflows.","location_sellers"),
         _item("pop_topic","POP topic configured","ready" if _configured(getattr(config,"pop_thread_id",None)) else "setup","Verify the Sellers group POP topic.","location_pop"),
         _item("admin","Admin group configured","ready" if _configured(getattr(config,"admin_chat_id",None)) else "setup","Private operational cards require an Admin group.","location_admin"),
@@ -61,12 +67,11 @@ def readiness_items(config,path=None,now=None):
     for key,label,attr,action in route_specs:
         items.append(_item(key,label,"ready" if _configured(getattr(config,attr,None)) else "setup",f"Verify the dedicated {label.lower()}.",action))
     active_creators=len([r for r in db.list_creators(path) if r["status"]=="active"])
-    participation_verified=bool(topics and active_creators and all(verified(key) for key in
-        ("readiness:meaningful_test","readiness:ignored_test","readiness:wrong_topic_test","readiness:wrong_group_test")))
+    participation_verified=bool(topics and active_creators and counted and message_access_ready)
     items.extend([
         _item("registration_queue","Registration queue working","ready" if verified("readiness:registration_route_test") else "unverified","Run the safe registration routing test after configuring its topic.","test_route_registration"),
         _item("identity","Creator identity isolation working","ready","Self-service lookups use immutable Telegram IDs and have automated coverage.","test_privacy"),
-        _item("monitor","Participation monitor active","ready" if participation_verified else "unverified","Ready requires an approved test creator plus meaningful, ignored, wrong-topic, and wrong-group tests.","test_center"),
+        _item("monitor","Participation monitor active","ready" if participation_verified else "unverified","Ready requires message access, a verified topic, an approved creator, and one successfully counted meaningful message.","test_center"),
         _item("two_day","Two-day reminders configured","ready" if getattr(config,"warning_hours",None) else "setup",f"Current threshold: {getattr(config,'warning_hours','not set')} hours.","settings_warning"),
         _item("three_day","Three-day alerts configured","ready" if getattr(config,"alert_hours",None) else "setup",f"Current threshold: {getattr(config,'alert_hours','not set')} hours.","settings_alert"),
         _item("pop_deadline","Thursday POP deadline configured","ready" if getattr(config,"pop_cutoff_time",None) is not None else "setup",f"Current cutoff: {getattr(config,'pop_cutoff_time','not set')} ET.","settings_pop"),
@@ -98,5 +103,5 @@ def system_check_summary(config,path=None,docs_root=None):
 
 def critical_fingerprint(config,path=None):
     incomplete=[i["key"] for i in readiness_items(config,path) if i["state"] in {"setup","problem"} and i["key"] in
-        {"owners","token","main","participation_topic","admin","reports","health"}]
+        {"owners","token","main","participation_topic","privacy","admin","reports","health"}]
     return hashlib.sha256("|".join(sorted(incomplete)).encode()).hexdigest()[:16],incomplete
