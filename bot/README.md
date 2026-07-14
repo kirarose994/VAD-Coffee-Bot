@@ -59,6 +59,17 @@ Operational:
 - `LOG_LEVEL` — defaults to `INFO`
 - `DAILY_OWNER_SUMMARY_ENABLED` — defaults to `false`; no summary job is registered unless true
 - `DAILY_OWNER_SUMMARY_TIME` — Eastern Time `HH:MM`, defaults to `09:00`
+- `POP_DUE_WEEKDAY` — Monday is `0`; Thursday defaults to `3`
+- `POP_CUTOFF_TIME` — Eastern Time `HH:MM`; defaults to `23:59`
+- `REGISTRATION_THREAD_ID` — optional registration-review topic; falls back to reports
+- `AWAY_THREAD_ID` — optional Away Notice review topic; falls back to reports
+- `MODERATION_THREAD_ID` — optional warning/strike topic; falls back to reports
+- `HEALTH_THREAD_ID` — optional owner health topic; errors otherwise go directly to owners
+
+All POP displays and counts use `bot/pop_policy.py`. Before Thursday, a creator without a
+submission is **Not due yet**. On Thursday before the cutoff the status is **Due today**.
+Only after the Eastern Time cutoff may the status become **Missing**. Submitted, awaiting
+review, and excused states always override the deadline state.
 
 `OWNER_TELEGRAM_IDS` is accepted as an alias for owner IDs. Do not configure real IDs
 in repository files.

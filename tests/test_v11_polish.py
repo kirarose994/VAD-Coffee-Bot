@@ -69,7 +69,7 @@ class V11DatabaseTests(unittest.TestCase):
         cfg = SimpleNamespace(timezone=ZoneInfo("America/New_York"))
         with patch("navigation.db.get_creator",return_value=db.get_creator(10,self.path)), \
              patch("navigation.db.warning_summary",return_value={"warnings":0,"strikes":0}), \
-             patch("navigation.db.creator_pop_status",return_value="not submitted"), \
+             patch("navigation.db.creator_current_pop_status",return_value="not_due"), \
              patch("navigation.db.latest_absence",return_value=None):
             card = creator_card(10,cfg)
         self.assertIn("⚪ Unavailable",card)
@@ -116,7 +116,7 @@ class V11NavigationTests(unittest.IsolatedAsyncioTestCase):
             admin_chat_id=-100,reports_thread_id=1)
         bot = SimpleNamespace(send_message=AsyncMock())
         ctx = SimpleNamespace(bot=bot,bot_data={"config":cfg})
-        with patch("tracker.db.sync_absence_availability"),patch("tracker.db.due_creators",return_value=[creator]), \
+        with patch("tracker.db.sync_absence_availability"),patch("tracker.db.set_system_state"),patch("tracker.db.due_creators",return_value=[creator]), \
              patch("tracker.db.approved_absence_on",return_value=None),patch("tracker.db.calendar_absences",return_value=[]), \
              patch("tracker.db.claim_notification",side_effect=[True,False]),patch("tracker.db.record_audit"):
             await inactivity_job(ctx); await inactivity_job(ctx)
@@ -131,7 +131,7 @@ class V11NavigationTests(unittest.IsolatedAsyncioTestCase):
             admin_chat_id=-100,reports_thread_id=7)
         bot = SimpleNamespace(send_message=AsyncMock())
         ctx = SimpleNamespace(bot=bot,bot_data={"config":cfg})
-        with patch("tracker.db.sync_absence_availability"),patch("tracker.db.due_creators",return_value=[creator]), \
+        with patch("tracker.db.sync_absence_availability"),patch("tracker.db.set_system_state"),patch("tracker.db.due_creators",return_value=[creator]), \
              patch("tracker.db.approved_absence_on",return_value=None),patch("tracker.db.calendar_absences",return_value=[]), \
              patch("tracker.db.claim_notification",return_value=True),patch("tracker.db.record_audit"):
             await inactivity_job(ctx)

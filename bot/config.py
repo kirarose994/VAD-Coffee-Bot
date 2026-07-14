@@ -50,6 +50,12 @@ class Config:
     setup_mode: bool
     daily_owner_summary_enabled: bool
     daily_owner_summary_time: str
+    pop_due_weekday: int
+    pop_cutoff_time: str
+    registration_thread_id: int | None
+    away_thread_id: int | None
+    moderation_thread_id: int | None
+    health_thread_id: int | None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -86,6 +92,12 @@ class Config:
             setup_mode=os.environ.get("SETUP_MODE", "false").strip().casefold() == "true",
             daily_owner_summary_enabled=os.environ.get("DAILY_OWNER_SUMMARY_ENABLED", "false").strip().casefold() == "true",
             daily_owner_summary_time=os.environ.get("DAILY_OWNER_SUMMARY_TIME", "09:00"),
+            pop_due_weekday=int(os.environ.get("POP_DUE_WEEKDAY", "3")),
+            pop_cutoff_time=os.environ.get("POP_CUTOFF_TIME", "23:59"),
+            registration_thread_id=_parse_int_env("REGISTRATION_THREAD_ID"),
+            away_thread_id=_parse_int_env("AWAY_THREAD_ID"),
+            moderation_thread_id=_parse_int_env("MODERATION_THREAD_ID"),
+            health_thread_id=_parse_int_env("HEALTH_THREAD_ID"),
         )
 
     @property

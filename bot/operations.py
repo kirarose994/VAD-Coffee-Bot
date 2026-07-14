@@ -7,7 +7,7 @@ import time
 from datetime import date, datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 import database as db
 from permissions import Role, has_permission, role_for
@@ -81,7 +81,7 @@ async def absence_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await ctx.bot.send_message(cfg.admin_chat_id,
                 f"Pending {draft['type']} request #{request_id}\nCreator: {update.effective_user.full_name} ({update.effective_user.id})\n"
                 f"Dates: {draft['start']} to {draft['end']}\nNote: {draft['note'] or 'none'}\nUse /absence_queue {draft['type']} to review.",
-                message_thread_id=cfg.reports_thread_id)
+                message_thread_id=getattr(cfg,"away_thread_id",None) or cfg.reports_thread_id)
         except Exception:
             pass
 
@@ -257,6 +257,136 @@ async def contact_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Your message was sent to the admin team.")
     except Exception:
         await update.effective_message.reply_text("The message could not be delivered. Please try again later.")
+
+
+async def guided_contact_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    guided = ctx.user_data.get("guided_input")
+    if guided == "admin_note":
+        cfg,actor=ctx.bot_data["config"],update.effective_user.id
+        if not has_permission(actor,cfg,"add_admin_notes"):
+            ctx.user_data.pop("guided_input",None);return await update.effective_message.reply_text("Private notes aren’t included in your access.")
+        target=ctx.user_data.pop("admin_note_target",None);note=_clean(update.effective_message.text,2000);ctx.user_data.pop("guided_input",None)
+        if not target or not note: return await update.effective_message.reply_text("No note was saved.")
+        note_id=db.add_admin_note(target,note,actor)
+        return await update.effective_message.reply_text(f"✅ Private note #{note_id} saved and audited.")
+    if guided == "away_dates":
+        parts=update.effective_message.text.split()
+        if len(parts)<2: return await update.effective_message.reply_text("Please enter a start date and end date in YYYY-MM-DD format.")
+        try:
+            start,end=date.fromisoformat(parts[0]),date.fromisoformat(parts[1])
+            if end<start or (end-start).days>366: raise ValueError
+        except ValueError: return await update.effective_message.reply_text("Those dates don’t look right. Use YYYY-MM-DD YYYY-MM-DD, with the end on or after the start.")
+        category=ctx.user_data.pop("away_category","other");ctx.user_data.pop("guided_input",None)
+        absence_type="vacation" if category in {"vacation_trip","other"} else "sick"
+        note=_clean(" ".join(parts[2:]));token=_token(ctx,"absence_nonce")
+        ctx.user_data["absence_draft"]={"type":absence_type,"category":category,"start":start.isoformat(),"end":end.isoformat(),"note":note}
+        labels={"vacation_trip":"🌴 Vacation or trip","not_feeling_well":"🤒 Not feeling well","personal_day":"🧠 Mental health or personal day","emergency":"🚨 Emergency","other":"💙 Other time away"}
+        return await update.effective_message.reply_text(f"Confirm Away Notice\n\n{labels[category]}\nDates: {start} → {end}\nNote: {note or 'No note'}",reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Confirm",callback_data=f"absence:{token}:confirm"),InlineKeyboardButton("❌ Cancel",callback_data=f"absence:{token}:cancel")]]))
+    if guided == "template_custom":
+        cfg,actor=ctx.bot_data["config"],update.effective_user.id
+        if not has_permission(actor,cfg,"send_announcements"):
+            ctx.user_data.pop("guided_input",None)
+            return await update.effective_message.reply_text("Messaging isn’t included in your access.")
+        body=_clean(update.effective_message.text,3500)
+        if not body: return await update.effective_message.reply_text("Please write a message first.")
+        ctx.user_data.pop("guided_input",None);ctx.user_data["custom_template_body"]=body
+        nonce=secrets.token_urlsafe(6);ctx.user_data["menu_nonce"]=nonce
+        rows=list(db.list_creators())
+        buttons=[[InlineKeyboardButton(r["display_name"][:40],callback_data=f"op:{nonce}:template_custom_member_{r['telegram_id']}")] for r in rows[:20]]
+        buttons.append([InlineKeyboardButton("❌ Cancel",callback_data=f"op:{nonce}:templates_help")])
+        return await update.effective_message.reply_text("Choose a recipient.",reply_markup=InlineKeyboardMarkup(buttons))
+    if guided == "warning_reason":
+        cfg,actor=ctx.bot_data["config"],update.effective_user.id
+        if not has_permission(actor,cfg,"adjust_warnings"):
+            ctx.user_data.pop("guided_input",None)
+            return await update.effective_message.reply_text("Standing management isn’t included in your access.")
+        draft=ctx.user_data.get("warning_draft"); reason=_clean(update.effective_message.text,1000)
+        if not draft or not reason: return await update.effective_message.reply_text("Please provide a short reason.")
+        draft["reason"]=reason; ctx.user_data.pop("guided_input",None)
+        creator,template=db.get_creator(draft["target"]),db.message_template(draft["type"])
+        body=_render_template(template["body"],creator["display_name"],reason)
+        nonce=secrets.token_urlsafe(6); ctx.user_data["menu_nonce"]=nonce
+        return await update.effective_message.reply_text(f"⚠️ Preview\n\nType: {draft['type'].title()}\nReason: {reason}\n\n{body}",reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Confirm, Record & Send",callback_data=f"op:{nonce}:warning_send")],
+            [InlineKeyboardButton("❌ Cancel",callback_data=f"op:{nonce}:warnings_help")],
+        ]))
+    if guided == "access_add":
+        cfg, actor = ctx.bot_data["config"], update.effective_user.id
+        if role_for(actor,cfg) is not Role.OWNER:
+            ctx.user_data.pop("guided_input",None)
+            return await update.effective_message.reply_text("Access management is owner-only.")
+        try: target = int(update.effective_message.text.strip())
+        except ValueError: return await update.effective_message.reply_text("Please enter the numeric Telegram ID only.")
+        if target in cfg.owner_user_ids:
+            return await update.effective_message.reply_text("That account is already an owner. Owner access is protected by secure configuration.")
+        ctx.user_data.pop("guided_input",None)
+        nonce=secrets.token_urlsafe(6); ctx.user_data["menu_nonce"]=nonce
+        return await update.effective_message.reply_text("Choose the role to confirm.",reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("👥 Admin",callback_data=f"op:{nonce}:access_confirm_admin_{target}")],
+            [InlineKeyboardButton("🛡️ Lead Admin",callback_data=f"op:{nonce}:access_confirm_lead_{target}")],
+            [InlineKeyboardButton("❌ Cancel",callback_data=f"op:{nonce}:roles")],
+        ]))
+    if guided in {"creator_search_name","creator_search_id"}:
+        cfg, actor = ctx.bot_data["config"], update.effective_user.id
+        if not has_permission(actor,cfg,"view_creator_reports"):
+            ctx.user_data.pop("guided_input",None)
+            return await update.effective_message.reply_text("Creator search isn’t included in your access.")
+        needle = _clean(update.effective_message.text,100).lstrip("@").casefold()
+        rows = list(db.list_creators())
+        if guided.endswith("id"):
+            rows = [r for r in rows if str(r["telegram_id"]) == needle]
+        else:
+            rows = [r for r in rows if needle in r["display_name"].casefold() or needle in (r["username"] or "").casefold()]
+        ctx.user_data.pop("guided_input",None)
+        nonce = secrets.token_urlsafe(6)
+        ctx.user_data["menu_nonce"] = nonce
+        buttons = [[InlineKeyboardButton(r["display_name"][:40],callback_data=f"op:{nonce}:creator_select_{r['telegram_id']}")] for r in rows[:20]]
+        buttons.append([InlineKeyboardButton("🏠 Home",callback_data=f"op:{nonce}:home"),InlineKeyboardButton("◀️ Back",callback_data=f"op:{nonce}:creator_report")])
+        return await update.effective_message.reply_text(
+            f"🔎 Search Results\n\nSelect a creator below." if rows else "No creator matched that search.",
+            reply_markup=InlineKeyboardMarkup(buttons))
+    if guided != "contact_admin":
+        return
+    body = _clean(update.effective_message.text,1500)
+    if not body:
+        return await update.effective_message.reply_text("Please write a short message, without private medical details.")
+    ctx.user_data.pop("guided_input",None)
+    token = _token(ctx,"contact_nonce")
+    ctx.user_data["contact_draft"] = body
+    await update.effective_message.reply_text("💬 Message Preview\n\n" + body,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Send to Admin",callback_data=f"contactflow:{token}:send"),
+            InlineKeyboardButton("❌ Cancel",callback_data=f"contactflow:{token}:cancel"),
+        ]]))
+
+
+async def guided_contact_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    parts = (query.data or "").split(":")
+    if len(parts) != 3 or parts[1] != ctx.user_data.pop("contact_nonce",None):
+        return await query.answer("This message preview expired.",show_alert=True)
+    body = ctx.user_data.pop("contact_draft",None)
+    if parts[2] != "send" or not body:
+        await query.answer()
+        return await query.edit_message_text("Message cancelled. Nothing was sent.")
+    cfg = ctx.bot_data["config"]
+    if not cfg.admin_chat_id:
+        await query.answer()
+        return await query.edit_message_text("Admin messaging is not configured yet. Please try again later.")
+    try:
+        await ctx.bot.send_message(cfg.admin_chat_id,
+            f"💬 Creator support request\nFrom: {update.effective_user.full_name}\n\n{body}",
+            message_thread_id=cfg.reports_thread_id)
+        db.record_audit(update.effective_user.id,"support_message_delivered","notification",
+            target_telegram_id=update.effective_user.id,new_value={"length":len(body)})
+        text = "✅ Your message was delivered to the admin team."
+    except Exception:
+        db.record_audit(update.effective_user.id,"support_message_delivery_failed","notification",
+            target_telegram_id=update.effective_user.id,result="error")
+        text = "Your message could not be delivered right now. It was not lost from the preview; please try again later."
+    await query.answer()
+    await query.edit_message_text(text)
 
 
 async def announce(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -546,3 +676,5 @@ def register_operations(app):
     app.add_handler(CallbackQueryHandler(announcement_callback, pattern=r"^announce:"))
     app.add_handler(CallbackQueryHandler(timeline_callback, pattern=r"^timeline:"))
     app.add_handler(CallbackQueryHandler(template_callback, pattern=r"^template:"))
+    app.add_handler(CallbackQueryHandler(guided_contact_callback, pattern=r"^contactflow:"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,guided_contact_text),group=5)

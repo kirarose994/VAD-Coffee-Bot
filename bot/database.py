@@ -7,6 +7,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from pop_policy import calculate_status, current_period
+
 DATABASE_PATH = Path(__file__).with_name("vad_tracker.db")
 
 
@@ -163,6 +165,9 @@ def initialize_database(path: Path | None = None):
           previous_body TEXT NOT NULL, new_body TEXT NOT NULL, changed_at TEXT NOT NULL,
           changed_by INTEGER NOT NULL, reason TEXT,
           FOREIGN KEY(template_key) REFERENCES message_templates(template_key)
+        );
+        CREATE TABLE IF NOT EXISTS system_state (
+          state_key TEXT PRIMARY KEY, state_value TEXT NOT NULL, updated_at TEXT NOT NULL
         );
         """)
         _migrate_legacy_schema(db)
@@ -549,9 +554,7 @@ def dashboard_metrics(week_key, path=None):
             "pending_vacations": scalar("SELECT COUNT(*) FROM absence_requests WHERE status='pending' AND absence_type='vacation' AND deleted_at IS NULL"),
             "pending_sick": scalar("SELECT COUNT(*) FROM absence_requests WHERE status='pending' AND absence_type='sick' AND deleted_at IS NULL"),
             "pending_pop": scalar("SELECT COUNT(*) FROM pop_submissions WHERE week_key=? AND status='pending' AND deleted_at IS NULL",(week_key,)),
-            "missing_pop": scalar("""SELECT COUNT(*) FROM creators c WHERE c.status='active' AND c.deleted_at IS NULL
-              AND NOT EXISTS(SELECT 1 FROM pop_submissions p WHERE p.telegram_id=c.telegram_id AND p.week_key=? AND p.deleted_at IS NULL)
-              AND NOT EXISTS(SELECT 1 FROM pop_excuses x WHERE x.telegram_id=c.telegram_id AND x.week_key=?)""",(week_key,week_key)),
+            "missing_pop": 0,
             "active_warnings": scalar("SELECT COUNT(*) FROM creator_warnings WHERE status IN ('active','acknowledged') AND warning_type='warning'"),
             "active_strikes": scalar("SELECT COUNT(*) FROM creator_warnings WHERE status IN ('active','acknowledged') AND warning_type='strike'"),
             "away_now": scalar("SELECT COUNT(*) FROM creators WHERE status='active' AND deleted_at IS NULL AND availability IN ('vacation','sick')"),
@@ -567,6 +570,46 @@ def dashboard_metrics(week_key, path=None):
             + scalar("SELECT COUNT(*) FROM creator_warnings WHERE status='active'")
         )
         return metrics
+
+
+def pop_status_report(now=None, due_weekday=3, cutoff_time="23:59", timezone_name="America/New_York", path=None):
+    """Return every active creator's status from the shared POP deadline policy."""
+    now = now or datetime.now(ZoneInfo(timezone_name))
+    period = current_period(now,due_weekday,cutoff_time,timezone_name)
+    with get_connection(path) as db:
+        rows = db.execute("""SELECT c.telegram_id,c.display_name,c.registered_at,p.id,p.status AS submission_status,
+          p.submitted_at,CASE WHEN x.id IS NULL THEN 0 ELSE 1 END AS excused
+          FROM creators c
+          LEFT JOIN pop_submissions p ON p.telegram_id=c.telegram_id AND p.week_key=? AND p.deleted_at IS NULL
+          LEFT JOIN pop_excuses x ON x.telegram_id=c.telegram_id AND x.week_key=?
+          WHERE c.status='active' AND c.deleted_at IS NULL ORDER BY c.display_name COLLATE NOCASE""",
+          (period.week_key,period.week_key)).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["week_key"] = period.week_key
+            item["due_at"] = period.due_at
+            item["effective_status"] = calculate_status(now,submission_status=row["submission_status"],
+                excused=bool(row["excused"]),registered_at=row["registered_at"],due_weekday=due_weekday,
+                cutoff_time=cutoff_time,timezone_name=timezone_name)
+            result.append(item)
+        return result
+
+
+def pop_status_counts(now=None, due_weekday=3, cutoff_time="23:59", timezone_name="America/New_York", path=None):
+    rows = pop_status_report(now,due_weekday,cutoff_time,timezone_name,path)
+    keys = {"not_due","due_today","still_needed","missing","submitted","awaiting_review","excused","resubmission_requested","rejected"}
+    counts = {key:0 for key in keys}
+    for row in rows: counts[row["effective_status"]] = counts.get(row["effective_status"],0) + 1
+    counts["total"] = len(rows)
+    return counts
+
+
+def creator_current_pop_status(telegram_id, now=None, due_weekday=3, cutoff_time="23:59", timezone_name="America/New_York", path=None):
+    for row in pop_status_report(now,due_weekday,cutoff_time,timezone_name,path):
+        if row["telegram_id"] == telegram_id:
+            return row["effective_status"]
+    return "not_due"
 
 
 def _participation_attention_rows(connection, warning_hours, alert_hours):
@@ -593,15 +636,17 @@ def participation_attention(warning_hours=48, alert_hours=72, path=None):
         return _participation_attention_rows(connection, warning_hours, alert_hours)
 
 
-def needs_attention_counts(week_key, path=None):
+def needs_attention_counts(week_key, path=None, now=None, due_weekday=3, cutoff_time="23:59", timezone_name="America/New_York"):
     """Actionable owner/admin counts; informational metrics do not inflate the total."""
     with get_connection(path) as connection:
         scalar = lambda sql, params=(): connection.execute(sql, params).fetchone()[0]
         attention = _participation_attention_rows(connection, 48, 72)
+        pop = pop_status_counts(now,due_weekday,cutoff_time,timezone_name,path)
         counts = {
             "registrations": scalar("SELECT COUNT(*) FROM creators WHERE status='pending' AND deleted_at IS NULL"),
             "away_notices": scalar("SELECT COUNT(*) FROM absence_requests WHERE status='pending' AND deleted_at IS NULL"),
-            "pop_reviews": scalar("SELECT COUNT(*) FROM pop_submissions WHERE week_key=? AND status='pending' AND deleted_at IS NULL", (week_key,)),
+            "pop_reviews": pop["awaiting_review"],
+            "missing_pop": pop["missing"],
             "near_two_days": sum(42 <= row["hours"] < 72 for row in attention),
             "three_day_alerts": sum(row["hours"] >= 72 for row in attention),
             "unacknowledged_warnings": scalar("SELECT COUNT(*) FROM creator_warnings WHERE status='active'"),
@@ -675,10 +720,10 @@ def calendar_absences(start_date, end_date, path=None):
 
 def record_audit(actor_id, action, target_type=None, target_record_id=None,
                  target_telegram_id=None, previous_value=None, new_value=None,
-                 reason=None, result="success", path=None):
+                 reason=None, result="success", path=None, error_reference=None):
     with get_connection(path) as connection:
         audit_event(connection,actor_id,action,target_type,target_record_id,target_telegram_id,
-                    previous_value,new_value,reason,result=result)
+                    previous_value,new_value,reason,result=result,error_reference=error_reference)
 
 
 def export_snapshot(path=None):
@@ -688,6 +733,7 @@ def export_snapshot(path=None):
             "creators": [dict(r) for r in db.execute("SELECT * FROM creators").fetchall()],
             "absences": [dict(r) for r in db.execute("SELECT * FROM absence_requests").fetchall()],
             "pop": [dict(r) for r in db.execute("SELECT * FROM pop_submissions").fetchall()],
+            "warnings": [dict(r) for r in db.execute("SELECT * FROM creator_warnings").fetchall()],
             "notifications": [dict(r) for r in db.execute("SELECT * FROM notifications").fetchall()],
             "audit": [dict(r) for r in db.execute("SELECT * FROM audit_events").fetchall()],
         }
@@ -848,6 +894,24 @@ def reset_history(actor_id, path=None):
 def audit_setting_change(actor_id, key, old_value, new_value, path=None):
     with get_connection(path) as db:
         audit_event(db, actor_id, "setting_changed", "setting", previous_value={key: old_value}, new_value={key: new_value})
+
+
+def set_system_state(key, value, path=None):
+    with get_connection(path) as db:
+        db.execute("""INSERT INTO system_state(state_key,state_value,updated_at) VALUES(?,?,?)
+          ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at=excluded.updated_at""",
+          (key,str(value),utc_now()))
+
+
+def system_state(path=None):
+    with get_connection(path) as db:
+        return {row["state_key"]:{"value":row["state_value"],"updated_at":row["updated_at"]}
+            for row in db.execute("SELECT * FROM system_state").fetchall()}
+
+
+def schema_version(path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT version FROM schema_version").fetchone()[0]
 
 
 def audit_event(db, actor_id, action, target_type=None, target_record_id=None,

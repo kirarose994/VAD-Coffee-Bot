@@ -4,6 +4,8 @@
 import logging
 import os
 import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -11,7 +13,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from config import Config
-from database import initialize_database
+from database import initialize_database, set_system_state
 from handlers.error import error_handler
 from navigation import register_navigation
 from operations import register_operations
@@ -62,6 +64,7 @@ def register_application_handlers(app: Application) -> None:
 def main() -> None:
     config = Config.from_env()
     initialize_database()
+    set_system_state("last_restart", datetime.now(ZoneInfo("America/New_York")).isoformat())
     setup_logging(config.log_level)
     logger = logging.getLogger(__name__)
     logger.info("Starting VAD Operations Bot")

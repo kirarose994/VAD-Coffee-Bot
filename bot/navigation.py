@@ -1,5 +1,7 @@
 """Role-aware, nonce-protected application navigation."""
 
+import io
+import json
 import secrets
 from datetime import datetime, timedelta
 
@@ -9,6 +11,8 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 import database as db
 from config import RESOURCE_DEFAULTS
 from permissions import Role, has_permission, role_for
+from pop_policy import current_period, label as pop_label
+from presentation import audit_entry, friendly_timestamp, timeline_entry
 
 
 def _nonce(ctx):
@@ -43,7 +47,7 @@ def home_markup(ctx, user_id):
     if role is Role.OWNER:
         rows.append([_button("🔐 Owner Dashboard", nonce, "owner")])
     rows.extend([
-        [_button("📖 Resources", nonce, "resources"), _button("🆘 Support", nonce, "support")],
+        [_button("📚 Help Center", nonce, "resources"), _button("🆘 Support", nonce, "support")],
     ])
     return InlineKeyboardMarkup(rows)
 
@@ -79,15 +83,18 @@ AVAILABILITY_LABELS = {
     "sick": "🤒 Not feeling well",
 }
 
-POP_LABELS = {
-    "approved": "✅ Submitted",
-    "pending": "⏳ Awaiting review",
-    "rejected": "⚪ Not submitted",
-    "resubmission_requested": "🟡 Resubmission requested",
-    "excused": "💙 Excused by Away Notice",
-    "missing": "⚪ Not submitted",
-    "not submitted": "⚪ Not submitted",
-}
+def _pop_args(cfg):
+    return (getattr(cfg,"pop_due_weekday",3),getattr(cfg,"pop_cutoff_time","23:59"),getattr(cfg,"timezone_name","America/New_York"))
+
+
+def _metrics(cfg):
+    now = datetime.now(cfg.timezone)
+    period = current_period(now,*_pop_args(cfg))
+    metrics = db.dashboard_metrics(period.week_key)
+    pop = db.pop_status_counts(now,*_pop_args(cfg))
+    metrics["pending_pop"] = pop["awaiting_review"]
+    metrics["missing_pop"] = pop["missing"]
+    return metrics
 
 
 def _friendly_time(value, cfg):
@@ -95,7 +102,7 @@ def _friendly_time(value, cfg):
         return "No participation recorded yet"
     try:
         moment = datetime.fromisoformat(value).astimezone(cfg.timezone)
-        return moment.strftime("%b %-d at %-I:%M %p")
+        return f"{moment.strftime('%b')} {moment.day} at {moment.strftime('%I').lstrip('0')}:{moment.strftime('%M %p')}"
     except (ValueError, TypeError):
         return "Not available"
 
@@ -105,7 +112,7 @@ def creator_card(user_id, cfg):
     if not creator:
         return "You are not registered yet. Tap Register to get started."
     warning = db.warning_summary(user_id)
-    pop = db.creator_pop_status(user_id, _week_key(datetime.now(cfg.timezone))) if creator["status"] == "active" else "awaiting approval"
+    pop = db.creator_current_pop_status(user_id,datetime.now(cfg.timezone),*_pop_args(cfg)) if creator["status"] == "active" else "not_due"
     absence = db.latest_absence(user_id)
     away = "None" if not absence else f"{absence['start_date']}–{absence['end_date']} · {absence['status'].title()}"
     participation = "Active" if creator["status"] == "active" else creator["status"].title()
@@ -130,7 +137,7 @@ def creator_card(user_id, cfg):
     return (
         "📋 Today’s Status\n"
         f"🤝 Participation: {participation}\n"
-        f"📸 Thursday POP: {POP_LABELS.get(pop, pop.replace('_', ' ').title())}\n"
+        f"📸 Thursday POP: {pop_label(pop)}\n"
         f"{_standing(warning)}\n"
         f"💙 Away Notice: {away}\n"
         f"{AVAILABILITY_LABELS.get(creator['availability'], '⚪ Unavailable')}\n"
@@ -140,7 +147,7 @@ def creator_card(user_id, cfg):
 
 
 def admin_card(cfg):
-    metrics = db.dashboard_metrics(_week_key(datetime.now(cfg.timezone)))
+    metrics = _metrics(cfg)
     pending = metrics["pending_registrations"] + metrics["pending_vacations"] + metrics["pending_sick"] + metrics["pending_pop"]
     return (
         f"🚨 Admin queue: {pending + metrics.get('participation_flags', 0) + metrics.get('failed_notifications', 0)}\n"
@@ -153,7 +160,7 @@ def admin_card(cfg):
 
 
 def owner_card(cfg):
-    metrics = db.dashboard_metrics(_week_key(datetime.now(cfg.timezone)))
+    metrics = _metrics(cfg)
     attention_total = metrics.get("needs_attention", 0)
     return (
         f"🚨 Needs attention: {attention_total}\n"
@@ -209,7 +216,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         creator = db.get_creator(user_id)
         if not creator:
             return await _show(query,"Your VAD Dashboard\n\nYou are not registered yet. Registration takes one tap and sends your profile for review.",
-                grid_markup(ctx,[[ ("📝 Register","register") ],[("📖 Resources","resources"),("💬 Get Help","contact")]]))
+                grid_markup(ctx,[[ ("📝 Register","register") ],[("📚 Help Center","resources"),("💬 Get Help","contact")]]))
         return await _show(query, "Your VAD Dashboard\n\n" + creator_card(user_id, cfg), grid_markup(ctx, [
             [("🟢 Available","available"),("⚪ Unavailable","unavailable")],
             [("💙 Let Us Know You’ll Be Away","away_help")],
@@ -221,10 +228,8 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return await _show(query, "Admin access is required.", home_markup(ctx, user_id))
         rows = [[("🚨 Admin Queue","admin_queue")]]
         if has_permission(user_id,cfg,"review_registrations"): rows.append([("📝 Registrations","registration_queue")])
-        away = []
-        if has_permission(user_id,cfg,"review_vacations"): away.append(("🌴 Vacation","vacation_queue"))
-        if has_permission(user_id,cfg,"review_sick_days"): away.append(("🤒 Sick Day","sick_queue"))
-        if away: rows.append(away)
+        if has_permission(user_id,cfg,"review_vacations") or has_permission(user_id,cfg,"review_sick_days"):
+            rows.append([("💙 Away Notices","away_queue")])
         if has_permission(user_id,cfg,"review_pop"): rows.append([("📸 POP Reviews","pop_queue")])
         if has_permission(user_id,cfg,"view_creator_reports"): rows.append([("👥 Creator Directory","creator_report"),("📅 Calendar","calendar")])
         tools = []
@@ -249,7 +254,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             try:
                 await ctx.bot.send_message(cfg.admin_chat_id,
                     f"📝 New registration\n{update.effective_user.full_name} is waiting for review.",
-                    message_thread_id=getattr(cfg,"reports_thread_id",None))
+                    message_thread_id=getattr(cfg,"registration_thread_id",None) or getattr(cfg,"reports_thread_id",None))
                 db.record_audit(None,"registration_notification_delivered","notification",target_telegram_id=user_id)
             except Exception:
                 db.record_audit(None,"registration_notification_delivery_failed","notification",target_telegram_id=user_id,result="error")
@@ -259,7 +264,9 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return await _show(query, "Needs Attention is available only to owners.", home_markup(ctx,user_id))
         if action == "admin_queue" and role < Role.ADMIN:
             return await _show(query, "Admin access is required.", home_markup(ctx,user_id))
-        counts = db.needs_attention_counts(_week_key(datetime.now(cfg.timezone)))
+        now = datetime.now(cfg.timezone)
+        period = current_period(now,*_pop_args(cfg))
+        counts = db.needs_attention_counts(period.week_key,now=now,due_weekday=_pop_args(cfg)[0],cutoff_time=_pop_args(cfg)[1],timezone_name=_pop_args(cfg)[2])
         permitted = []
         if has_permission(user_id,cfg,"review_registrations"):
             permitted.append(("📝 Registrations",counts["registrations"],"registration_queue"))
@@ -271,6 +278,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             permitted.extend([
                 ("🟡 Near two days",counts["near_two_days"],"participation_queue"),
                 ("🔴 Three-day alerts",counts["three_day_alerts"],"participation_queue"),
+                ("🔴 Missing POP",counts.get("missing_pop",0),"pop_queue"),
             ])
         if has_permission(user_id,cfg,"adjust_warnings"):
             permitted.extend([
@@ -315,10 +323,16 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             text = f"You’re now marked {action}."
         return await _show(query, text, menu_markup(ctx, [], "creator"))
     if action == "away_help":
-        return await _show(query, "💙 Let Us Know You’ll Be Away\n\n🌴 Vacation or trip · /vacation_request\n🤒 Not feeling well · /sick_request\n🧠 Mental health or personal day · /personal_day_request\n🚨 Emergency · /emergency_away_request\n💙 Other time away · /other_away_request\n\nUse: command START_DATE END_DATE [optional note]\nPrivate details are never required.", menu_markup(ctx, [], "creator"))
+        return await _show(query, "💙 Let Us Know You’ll Be Away\n\nChoose the category that fits best. Private details are never required.", menu_markup(ctx, [
+            ("🌴 Vacation or trip","away_category_vacation_trip"),("🤒 Not feeling well","away_category_not_feeling_well"),
+            ("🧠 Mental health or personal day","away_category_personal_day"),("🚨 Emergency","away_category_emergency"),
+            ("💙 Other time away","away_category_other")], "creator"))
+    if action.startswith("away_category_"):
+        if not db.get_creator(user_id): return await _show(query,"Away Notices become available after registration.",menu_markup(ctx,[],"creator"))
+        ctx.user_data["away_category"]=action.removeprefix("away_category_");ctx.user_data["guided_input"]="away_dates"
+        return await _show(query,"🗓️ Choose Dates\n\nType the start date and end date as YYYY-MM-DD YYYY-MM-DD. You may add an optional short note after the dates.\n\nExample: 2026-08-01 2026-08-03 Family trip",menu_markup(ctx,[],"away_help"))
     if action in {"vacation_help", "sick_help"}:
-        command = "vacation_request" if action.startswith("vacation") else "sick_request"
-        return await _show(query, f"Send /{command} YYYY-MM-DD YYYY-MM-DD followed by an optional note. You will confirm before submission.", menu_markup(ctx, [], "creator"))
+        return await _show(query,"Choose Let Us Know You’ll Be Away to start the guided Away Notice workflow.",menu_markup(ctx,[("💙 Start Away Notice","away_help")],"creator"))
     if action == "pop_help":
         return await _show(query, "Submit meaningful POP proof in the configured girls-group Thursday POP topic. Images elsewhere are ignored.", menu_markup(ctx, [], "creator"))
     if action in {"my_activity", "my_status"}:
@@ -345,7 +359,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try: page = max(0, int(action.split("_", 1)[1]))
         except ValueError: page = 0
         rows = db.creator_timeline(user_id, 8, page * 8)
-        lines = ["My Timeline"] + [f"{r['occurred_at']}\n{r['action'].replace('_', ' ').title()}" for r in rows]
+        lines = ["📜 My Timeline"] + [timeline_entry(r,getattr(cfg,"timezone_name","America/New_York")) for r in rows]
         actions = []
         if page: actions.append(("⬅️ Newer", f"timeline_{page - 1}"))
         if len(rows) == 8: actions.append(("Older ➡️", f"timeline_{page + 1}"))
@@ -362,19 +376,44 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = "My Absence Calendar\n" + ("\n".join(f"{r['start_date']}–{r['end_date']} {r['absence_type']} ({r['status']})" for r in rows) or "No absence requests.")
         return await _show(query, text[:3900], menu_markup(ctx, [], "home"))
     if action in {"contact", "support"}:
-        return await _show(query, "Send /contact_admin followed by your message. Do not include sensitive medical information.", menu_markup(ctx, [], "creator" if action == "contact" else "home"))
+        ctx.user_data["guided_input"] = "contact_admin"
+        return await _show(query, "💬 Contact Admin\n\nWhat do you need help with? Send one message below. Please do not include private medical details.\n\nYou’ll preview it before anything is sent.", menu_markup(ctx, [], "creator" if action == "contact" else "home"))
     if action == "resources":
-        return await _show(query, "Resources", menu_markup(ctx, [(title, f"resource_{key}") for key, (title, _) in RESOURCE_DEFAULTS.items()]))
+        help_actions = [("⭐ Getting Started","resource_about"),("📜 Community Rules","resource_rules"),
+            ("📈 Participation Guide","resource_engagement"),("📸 Thursday POP Guide","resource_pop"),
+            ("💙 Away Notice Guide","resource_vacation"),("❓ Frequently Asked Questions","resource_faq"),
+            ("💬 Contact Admin","contact")]
+        return await _show(query, "📚 Help Center\n\nChoose a topic below.", menu_markup(ctx, help_actions))
     if action.startswith("resource_"):
         key = action.removeprefix("resource_")
         title, body = RESOURCE_DEFAULTS.get(key, ("Resource", "Resource not found."))
         return await _show(query, f"{title}\n\n{body}", menu_markup(ctx, [], "resources"))
-    if action == "audit":
+    if action == "audit" or action.startswith("audit_filter_"):
         if role is not Role.OWNER:
             return await _show(query, "The complete audit log and administrator identities are owner-only.", menu_markup(ctx, [], "admin"))
-        rows = db.history(20)
-        text = "Full Audit Log\n" + ("\n".join(f"#{r['id']} {r['occurred_at']} actor={r['actor_id']} {r['action']}" for r in rows) or "No events.")
-        return await _show(query, text[:3900], menu_markup(ctx, [], "owner"))
+        rows = list(db.history(100))
+        selected = action.removeprefix("audit_filter_") if action.startswith("audit_filter_") else "today"
+        today = datetime.now(cfg.timezone).date()
+        filters = {
+            "today": lambda r: datetime.fromisoformat(r["occurred_at"]).astimezone(cfg.timezone).date()==today,
+            "admins": lambda r: r["actor_role"] in {"admin","lead_admin","owner"},
+            "creators": lambda r: r["actor_role"] == "creator",
+            "errors": lambda r: r["result"] == "error",
+            "deletions": lambda r: "deleted" in r["action"],
+            "restorations": lambda r: "restored" in r["action"],
+            "warnings": lambda r: "warning" in r["action"] or "strike" in r["action"],
+            "roles": lambda r: "role" in r["action"] or "permission" in r["action"],
+            "exports": lambda r: "export" in r["action"],
+        }
+        rows = [row for row in rows if filters.get(selected,filters["today"])(row)][:12]
+        def resolve(actor_id):
+            creator = db.get_creator(actor_id)
+            return creator["display_name"] if creator else None
+        text = "🔐 Owner Audit\n\n" + ("\n\n".join(audit_entry(r,resolve,getattr(cfg,"timezone_name","America/New_York")) for r in rows) or "✅ No audit records match this filter.")
+        actions = [("Today","audit_filter_today"),("Admin actions","audit_filter_admins"),("Creator actions","audit_filter_creators"),
+            ("System errors","audit_filter_errors"),("Deletions","audit_filter_deletions"),("Restorations","audit_filter_restorations"),
+            ("Warnings & strikes","audit_filter_warnings"),("Role changes","audit_filter_roles"),("Exports","audit_filter_exports")]
+        return await _show(query, text[:3900], menu_markup(ctx, actions, "owner"))
     if action == "deleted":
         if role is not Role.OWNER:
             return await _show(query, "Deleted records are owner-only.", home_markup(ctx, user_id))
@@ -383,8 +422,26 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await _show(query, text, menu_markup(ctx, [], "owner"))
     if action == "registration_queue" and has_permission(user_id,cfg,"review_registrations"):
         rows = [r for r in db.list_creators() if r["status"] == "pending"]
-        text = "Registration Reviews\n\n" + ("\n\n".join(f"{r['display_name']} · {r['telegram_id']}\nApprove: /creator_approve {r['telegram_id']}" for r in rows[:10]) or "All caught up! No registrations are waiting. ✨")
-        return await _show(query,text[:3900],menu_markup(ctx,[],"admin"))
+        buttons = [[(r["display_name"][:40],f"registration_select_{r['telegram_id']}")] for r in rows[:20]]
+        text = "📝 Registration Reviews\n\n" + ("Select a creator to review." if rows else "✅ No registrations are waiting.\nYou’re all caught up.")
+        return await _show(query,text,grid_markup(ctx,buttons,"admin"))
+    if action.startswith("registration_select_"):
+        if not has_permission(user_id,cfg,"review_registrations"):
+            return await _show(query,"Registration review isn’t included in your access.",home_markup(ctx,user_id))
+        target = int(action.removeprefix("registration_select_"))
+        creator = db.get_creator(target)
+        if not creator or creator["status"] != "pending": return await _show(query,"This registration is no longer pending.",menu_markup(ctx,[],"registration_queue"))
+        return await _show(query,f"📝 Review Registration\n\n{creator['display_name']}\n@{creator['username'] or 'no username'}\n\nWhat would you like to record?",
+            menu_markup(ctx,[("✅ Approve",f"registration_confirm_approve_{target}"),("🚫 Decline",f"registration_confirm_reject_{target}")],"registration_queue"))
+    if action.startswith("registration_confirm_"):
+        if not has_permission(user_id,cfg,"review_registrations"):
+            return await _show(query,"Registration review isn’t included in your access.",home_markup(ctx,user_id))
+        parts = action.split("_")
+        decision,target = parts[2],int(parts[3])
+        status = "active" if decision == "approve" else "rejected"
+        if not db.set_status(target,status,user_id): text = "This registration was already handled."
+        else: text = "✅ Creator approved." if status == "active" else "Registration declined and recorded."
+        return await _show(query,text,menu_markup(ctx,[],"registration_queue"))
     if action in {"vacation_queue","sick_queue"}:
         absence_type = "vacation" if action == "vacation_queue" else "sick"
         permission = "review_vacations" if absence_type == "vacation" else "review_sick_days"
@@ -394,20 +451,116 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = f"{absence_type.title()} Away Notices\n\n" + ("\n\n".join(f"#{r['id']} · {r['display_name']}\n{r['start_date']} → {r['end_date']}\nReview: /absence_queue {absence_type}" for r in rows[:10]) or "All caught up! No Away Notices are waiting. ✨")
         return await _show(query,text[:3900],menu_markup(ctx,[],"admin"))
     if action == "pop_queue" and has_permission(user_id,cfg,"review_pop"):
-        key = _week_key(datetime.now(cfg.timezone))
-        rows = db.pop_report(key)
-        pending = [r for r in rows if r["status"] == "pending"]
-        missing = [r for r in rows if not r["status"]]
-        lines = [f"Thursday POP · {key}",f"Waiting for review · {len(pending)}",f"Not submitted · {len(missing)}"]
-        lines += [f"\n{r['display_name']} · Submission #{r['id']}\nReview with /pop_approve, /pop_reject, or /pop_resubmit" for r in pending[:8]]
-        if not pending: lines.append("\nNo POP reviews are waiting. ✨")
-        return await _show(query,"\n".join(lines)[:3900],menu_markup(ctx,[],"admin"))
+        now = datetime.now(cfg.timezone)
+        period = current_period(now,*_pop_args(cfg))
+        rows = db.pop_status_report(now,*_pop_args(cfg))
+        pending = [r for r in rows if r["effective_status"] == "awaiting_review"]
+        missing = [r for r in rows if r["effective_status"] == "missing"]
+        due = f"{period.due_at.strftime('%A, %b')} {period.due_at.day} at {period.due_at.strftime('%I').lstrip('0')}:{period.due_at.strftime('%M %p')} ET"
+        lines = ["📸 Thursday POP Review",f"Due: {due}",f"Waiting for review: {len(pending)}",f"Missing after deadline: {len(missing)}"]
+        lines += [f"\n{r['display_name']} · Awaiting review" for r in pending[:8]]
+        if not pending: lines.append("\n📸 No POP reviews are waiting.\nYou’re all caught up.")
+        buttons=[(r["display_name"][:40],f"pop_select_{r['id']}") for r in pending[:20]]
+        return await _show(query,"\n".join(lines)[:3900],menu_markup(ctx,buttons,"admin"))
+    if action.startswith("pop_select_"):
+        if not has_permission(user_id,cfg,"review_pop"): return await _show(query,"POP review isn’t included in your access.",home_markup(ctx,user_id))
+        submission_id=int(action.removeprefix("pop_select_"));submission=db.get_pop_submission(submission_id)
+        if not submission or submission["status"]!="pending": return await _show(query,"That POP submission is no longer pending.",menu_markup(ctx,[],"pop_queue"))
+        creator=db.get_creator(submission["telegram_id"])
+        return await _show(query,f"📸 Review POP\n\n{creator['display_name']}\nSubmitted: {friendly_timestamp(submission['submitted_at'],timezone_name=getattr(cfg,'timezone_name','America/New_York'))}\n\nChoose a decision.",
+            menu_markup(ctx,[("✅ Approve",f"pop_decide_approved_{submission_id}"),("🔴 Reject",f"pop_decide_rejected_{submission_id}"),("🟡 Request Resubmission",f"pop_decide_resubmission_requested_{submission_id}")],"pop_queue"))
+    if action.startswith("pop_decide_"):
+        if not has_permission(user_id,cfg,"review_pop"): return await _show(query,"POP review isn’t included in your access.",home_markup(ctx,user_id))
+        raw=action.removeprefix("pop_decide_");status,submission_raw=raw.rsplit("_",1);submission_id=int(submission_raw)
+        changed=db.review_pop(submission_id,status,user_id,"Guided review")
+        return await _show(query,"✅ POP decision recorded and audited." if changed else "That submission was already reviewed.",menu_markup(ctx,[],"pop_queue"))
     if action == "creator_report" and has_permission(user_id,cfg,"view_creator_reports"):
-        rows = db.list_creators()
-        lines = ["Creator Directory"] + [f"{r['display_name']} · {r['availability'].title()}\nParticipation: {r['status'].title()} · ID {r['telegram_id']}" for r in rows[:15]]
-        if not rows: lines.append("No creator profiles yet.")
-        lines.append("\nSearch: /creator_search name or Telegram ID")
-        return await _show(query,"\n\n".join(lines)[:3900],menu_markup(ctx,[],"admin"))
+        actions = [("🔎 Search by Name","creator_search_name"),("🆔 Search by Telegram ID","creator_search_id"),
+            ("📋 Browse All Creators","creator_list_all"),("🟢 Available","creator_list_available"),
+            ("⚪ Unavailable","creator_list_unavailable"),("💙 Away","creator_list_away"),
+            ("🟠 Needs Attention","creator_list_attention")]
+        return await _show(query,"👥 Creator Directory\n\nSearch, browse, or filter creator profiles.",menu_markup(ctx,actions,"admin"))
+    if action in {"creator_search_name","creator_search_id"}:
+        if not has_permission(user_id,cfg,"view_creator_reports"):
+            return await _show(query,"Creator search isn’t included in your access.",home_markup(ctx,user_id))
+        ctx.user_data["guided_input"] = action
+        prompt = "Type the creator’s display name or username." if action.endswith("name") else "Type the creator’s numeric Telegram ID."
+        return await _show(query,"🔎 Creator Search\n\n"+prompt+"\n\nYou can cancel or go back without searching.",menu_markup(ctx,[],"creator_report"))
+    if action.startswith("creator_list_"):
+        if not has_permission(user_id,cfg,"view_creator_reports"):
+            return await _show(query,"Creator Directory isn’t included in your access.",home_markup(ctx,user_id))
+        selected = action.removeprefix("creator_list_")
+        rows = list(db.list_creators())
+        if selected == "available": rows = [r for r in rows if r["availability"] == "available"]
+        if selected == "unavailable": rows = [r for r in rows if r["availability"] == "unavailable"]
+        if selected == "away": rows = [r for r in rows if r["availability"] in {"vacation","sick"}]
+        if selected == "attention": rows = [r for r in rows if sum(db.warning_summary(r["telegram_id"]).values()) or r["status"] != "active"]
+        buttons = [[(r["display_name"][:40],f"creator_select_{r['telegram_id']}")] for r in rows[:20]]
+        text = "👥 Creator Directory\n\n" + (f"Select a creator below. Showing {len(rows)} result(s)." if rows else "No creators match this filter.")
+        return await _show(query,text,grid_markup(ctx,buttons,"creator_report"))
+    if action.startswith("creator_select_"):
+        if not has_permission(user_id,cfg,"view_creator_reports"):
+            return await _show(query,"Creator records aren’t included in your access.",home_markup(ctx,user_id))
+        try: target = int(action.removeprefix("creator_select_"))
+        except ValueError: target = 0
+        creator = db.get_creator(target)
+        if not creator: return await _show(query,"That creator profile is unavailable.",menu_markup(ctx,[],"creator_report"))
+        pop = db.creator_current_pop_status(target,datetime.now(cfg.timezone),*_pop_args(cfg))
+        warning = db.warning_summary(target)
+        username = f"@{creator['username']}" if creator["username"] else "No username"
+        text = (f"👤 {creator['display_name']}\n{username}\n\n{AVAILABILITY_LABELS.get(creator['availability'],'⚪ Unavailable')}\n"
+            f"🤝 Participation: {creator['status'].title()}\n🕒 Last meaningful: {_friendly_time(creator['last_meaningful_at'],cfg)}\n"
+            f"📸 POP: {pop_label(pop)}\n💛 Warnings: {warning['warnings']} · Strikes: {warning['strikes']}")
+        actions = [("📊 Overview",f"creator_select_{target}"),("📜 Timeline",f"creator_admin_timeline_{target}_0"),
+            ("📸 POP History","pop_queue"),("💙 Away Notices","calendar"),("⚠️ Standing","warnings_help")]
+        if has_permission(user_id,cfg,"add_admin_notes"): actions.append(("📝 Private Notes",f"notes_member_{target}"))
+        if has_permission(user_id,cfg,"send_announcements"): actions.append(("💬 Send Message",f"template_member_{target}"))
+        if has_permission(user_id,cfg,"manage_creators"): actions.extend([("✏️ Edit",f"creator_edit_{target}"),("🗃️ Archive",f"archive_creator_{target}")])
+        actions.append(("ℹ️ Member Details",f"creator_details_{target}"))
+        return await _show(query,text,menu_markup(ctx,actions,"creator_report"))
+    if action.startswith("creator_details_"):
+        if not has_permission(user_id,cfg,"view_creator_reports"):
+            return await _show(query,"Member details aren’t included in your access.",home_markup(ctx,user_id))
+        target = int(action.removeprefix("creator_details_"))
+        creator = db.get_creator(target)
+        return await _show(query,f"ℹ️ Member Details\n\nTelegram ID: {target}\nRegistered: {friendly_timestamp(creator['registered_at'],timezone_name=getattr(cfg,'timezone_name','America/New_York'))}",menu_markup(ctx,[],f"creator_select_{target}"))
+    if action.startswith("creator_admin_timeline_"):
+        if not has_permission(user_id,cfg,"view_creator_reports"):
+            return await _show(query,"Creator timelines aren’t included in your access.",home_markup(ctx,user_id))
+        raw=action.removeprefix("creator_admin_timeline_"); target_raw,page_raw=raw.rsplit("_",1);target,page=int(target_raw),max(0,int(page_raw))
+        rows=db.creator_timeline(target,8,page*8);creator=db.get_creator(target)
+        lines=[f"📜 {creator['display_name']} · Timeline"]+[timeline_entry(r,getattr(cfg,"timezone_name","America/New_York")) for r in rows]
+        buttons=[]
+        if page: buttons.append(("⬅️ Newer",f"creator_admin_timeline_{target}_{page-1}"))
+        if len(rows)==8: buttons.append(("Older ➡️",f"creator_admin_timeline_{target}_{page+1}"))
+        return await _show(query,"\n\n".join(lines) if rows else "No timeline activity yet.",menu_markup(ctx,buttons,f"creator_select_{target}"))
+    if action.startswith("notes_member_"):
+        if not has_permission(user_id,cfg,"add_admin_notes"): return await _show(query,"Private notes aren’t included in your access.",home_markup(ctx,user_id))
+        target=int(action.removeprefix("notes_member_"));notes=db.list_admin_notes(target)
+        ctx.user_data["admin_note_target"]=target;ctx.user_data["guided_input"]="admin_note"
+        text="📝 Private Notes\n\n"+("\n\n".join(f"• {n['note']}\n{friendly_timestamp(n['created_at'],timezone_name=getattr(cfg,'timezone_name','America/New_York'))}" for n in notes[:8]) if notes else "No private notes yet.")
+        return await _show(query,text+"\n\nWrite a new note below, or go Back without adding one.",menu_markup(ctx,[],f"creator_select_{target}"))
+    if action.startswith("creator_edit_") and action.removeprefix("creator_edit_").isdigit():
+        if not has_permission(user_id,cfg,"manage_creators"): return await _show(query,"Creator editing isn’t included in your access.",home_markup(ctx,user_id))
+        target=int(action.removeprefix("creator_edit_"))
+        return await _show(query,"✏️ Correct Creator Record\n\nChoose the field to correct. Every change preserves the previous value and is audited.",menu_markup(ctx,[
+            ("🟢 Mark Available",f"creator_edit_avail_available_{target}"),("⚪ Mark Unavailable",f"creator_edit_avail_unavailable_{target}"),
+            ("✅ Activate",f"creator_edit_status_active_{target}"),("⏸ Deactivate",f"creator_edit_status_inactive_{target}")],f"creator_select_{target}"))
+    if action.startswith("creator_edit_avail_") or action.startswith("creator_edit_status_"):
+        if not has_permission(user_id,cfg,"manage_creators"): return await _show(query,"Creator editing isn’t included in your access.",home_markup(ctx,user_id))
+        if action.startswith("creator_edit_avail_"):
+            raw=action.removeprefix("creator_edit_avail_");value,target_raw=raw.rsplit("_",1);changed=db.set_availability(int(target_raw),value,user_id,"Guided admin correction")
+        else:
+            raw=action.removeprefix("creator_edit_status_");value,target_raw=raw.rsplit("_",1);changed=db.set_status(int(target_raw),value,user_id)
+        return await _show(query,"✅ Record corrected and audited." if changed else "No change was recorded.",menu_markup(ctx,[],f"creator_select_{target_raw}"))
+    if action.startswith("archive_creator_"):
+        if not has_permission(user_id,cfg,"manage_creators"): return await _show(query,"Archiving isn’t included in your access.",home_markup(ctx,user_id))
+        target=int(action.removeprefix("archive_creator_"));creator=db.get_creator(target)
+        return await _show(query,f"🗃️ Archive {creator['display_name']}?\n\nThe profile will leave active lists but remain recoverable. Audit and history are preserved.",menu_markup(ctx,[("🗃️ Confirm Archive",f"archive_confirm_{target}")],f"creator_select_{target}"))
+    if action.startswith("archive_confirm_"):
+        if not has_permission(user_id,cfg,"manage_creators"): return await _show(query,"Archiving isn’t included in your access.",home_markup(ctx,user_id))
+        target=int(action.removeprefix("archive_confirm_"));changed=db.delete_creator(target,user_id)
+        return await _show(query,"✅ Creator archived. The record can be restored by an owner." if changed else "That record was already archived.",menu_markup(ctx,[],"creator_report"))
     if action == "calendar" and role >= Role.ADMIN:
         today = datetime.now(cfg.timezone).date()
         rows = db.calendar_absences(today.isoformat(),(today + timedelta(days=30)).isoformat())
@@ -419,14 +572,195 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await _show(query,text,menu_markup(ctx,[],"owner" if role is Role.OWNER else "admin"))
     if action == "templates_help" and has_permission(user_id,cfg,"send_announcements"):
         rows = db.message_templates()
-        text = "Message Templates\n\n" + "\n".join(f"• {r['title']} · {r['template_key']}" for r in rows) + "\n\nPreview: /template_preview KEY TELEGRAM_ID"
-        return await _show(query,text[:3900],menu_markup(ctx,[],"admin"))
+        buttons=[(r["title"][:40],f"template_select_{r['template_key']}") for r in rows]
+        buttons.append(("✍️ Custom Message","template_custom"))
+        return await _show(query,"💬 Message Center\n\nChoose a message template.",menu_markup(ctx,buttons,"admin"))
+    if action.startswith("template_select_"):
+        if not has_permission(user_id,cfg,"send_announcements"): return await _show(query,"Messaging isn’t included in your access.",home_markup(ctx,user_id))
+        key=action.removeprefix("template_select_"); template=db.message_template(key)
+        if not template: return await _show(query,"That template is unavailable.",menu_markup(ctx,[],"templates_help"))
+        creators=list(db.list_creators()); buttons=[[(r["display_name"][:40],f"template_preview_{key}_{r['telegram_id']}")] for r in creators[:20]]
+        return await _show(query,f"{template['title']}\n\nChoose a recipient.",grid_markup(ctx,buttons,"templates_help"))
+    if action == "template_custom":
+        if not has_permission(user_id,cfg,"send_announcements"): return await _show(query,"Messaging isn’t included in your access.",home_markup(ctx,user_id))
+        ctx.user_data["guided_input"]="template_custom"
+        return await _show(query,"✍️ Custom Message\n\nWrite the message below. You will choose a recipient and preview it before sending.",menu_markup(ctx,[],"templates_help"))
+    if action.startswith("template_custom_member_"):
+        if not has_permission(user_id,cfg,"send_announcements"): return await _show(query,"Messaging isn’t included in your access.",home_markup(ctx,user_id))
+        target=int(action.removeprefix("template_custom_member_")); body=ctx.user_data.get("custom_template_body")
+        if not body: return await _show(query,"That custom-message draft expired.",menu_markup(ctx,[],"templates_help"))
+        ctx.user_data["guided_template"]={"key":"custom","target":target,"body":body}
+        return await _show(query,"💬 Message Preview\n\n"+body,menu_markup(ctx,[("✅ Confirm & Send","template_send")],"templates_help"))
+    if action.startswith("template_preview_"):
+        if not has_permission(user_id,cfg,"send_announcements"): return await _show(query,"Messaging isn’t included in your access.",home_markup(ctx,user_id))
+        raw=action.removeprefix("template_preview_"); key,target_raw=raw.rsplit("_",1); target=int(target_raw)
+        template,creator=db.message_template(key),db.get_creator(target)
+        if not template or not creator: return await _show(query,"Template or recipient unavailable.",menu_markup(ctx,[],"templates_help"))
+        body=template["body"].replace("{name}",creator["display_name"]).replace("{reason}","Please contact an admin if you have questions.")
+        ctx.user_data["guided_template"]={"key":key,"target":target,"body":body}
+        return await _show(query,"💬 Message Preview\n\n"+body,menu_markup(ctx,[("✅ Confirm & Send","template_send")],"templates_help"))
+    if action == "template_send":
+        if not has_permission(user_id,cfg,"send_announcements"): return await _show(query,"Messaging isn’t included in your access.",home_markup(ctx,user_id))
+        draft=ctx.user_data.pop("guided_template",None)
+        if not draft: return await _show(query,"That preview expired. Nothing was sent.",menu_markup(ctx,[],"templates_help"))
+        try:
+            await ctx.bot.send_message(draft["target"],draft["body"]); result="success"; text="✅ Message delivered and audited."
+        except Exception:
+            result="error"; text="The message could not be delivered. The failure is in Needs Attention."
+        db.record_audit(user_id,"template_message_sent" if result=="success" else "template_message_delivery_failed","message_template",
+            target_telegram_id=draft["target"],new_value={"template":draft["key"],"length":len(draft["body"])},result=result)
+        return await _show(query,text,menu_markup(ctx,[],"templates_help"))
+    if action == "warnings_help" and has_permission(user_id,cfg,"adjust_warnings"):
+        creators=list(db.list_creators()); buttons=[[(r["display_name"][:40],f"warning_member_{r['telegram_id']}")] for r in creators[:20]]
+        return await _show(query,"⚠️ Warning & Strike Management\n\nSelect a member.",grid_markup(ctx,buttons,"admin"))
+    if action.startswith("warning_member_"):
+        if not has_permission(user_id,cfg,"adjust_warnings"): return await _show(query,"Standing management isn’t included in your access.",home_markup(ctx,user_id))
+        target=int(action.removeprefix("warning_member_")); creator=db.get_creator(target)
+        return await _show(query,f"⚠️ {creator['display_name']}\n\nChoose the record type.",menu_markup(ctx,[("💛 Warning",f"warning_type_warning_{target}"),("🔴 Strike",f"warning_type_strike_{target}")],"warnings_help"))
+    if action.startswith("warning_type_"):
+        if not has_permission(user_id,cfg,"adjust_warnings"): return await _show(query,"Standing management isn’t included in your access.",home_markup(ctx,user_id))
+        raw=action.removeprefix("warning_type_"); kind,target_raw=raw.split("_",1); target=int(target_raw)
+        ctx.user_data["warning_draft"]={"type":kind,"target":target}
+        return await _show(query,"Choose a reason or write a custom reason.",menu_markup(ctx,[("Participation follow-up","warning_reason_participation"),
+            ("Community-rule concern","warning_reason_rules"),("✍️ Custom reason","warning_reason_custom")],f"warning_member_{target}"))
+    if action.startswith("warning_reason_"):
+        if not has_permission(user_id,cfg,"adjust_warnings"): return await _show(query,"Standing management isn’t included in your access.",home_markup(ctx,user_id))
+        draft=ctx.user_data.get("warning_draft")
+        if not draft: return await _show(query,"That workflow expired.",menu_markup(ctx,[],"warnings_help"))
+        choice=action.removeprefix("warning_reason_")
+        if choice=="custom":
+            ctx.user_data["guided_input"]="warning_reason"
+            return await _show(query,"Write the reason below. You will preview and confirm it before sending.",menu_markup(ctx,[],"warnings_help"))
+        draft["reason"]="Participation follow-up" if choice=="participation" else "Community-rule concern"
+        creator=db.get_creator(draft["target"]); template=db.message_template(draft["type"])
+        body=template["body"].replace("{name}",creator["display_name"]).replace("{reason}",draft["reason"])
+        return await _show(query,f"⚠️ Preview\n\nType: {draft['type'].title()}\nReason: {draft['reason']}\n\n{body}",menu_markup(ctx,[("✅ Confirm, Record & Send","warning_send")],"warnings_help"))
+    if action == "warning_send":
+        if not has_permission(user_id,cfg,"adjust_warnings"): return await _show(query,"Standing management isn’t included in your access.",home_markup(ctx,user_id))
+        draft=ctx.user_data.pop("warning_draft",None)
+        if not draft or not draft.get("reason"): return await _show(query,"That warning preview expired.",menu_markup(ctx,[],"warnings_help"))
+        warning_id=db.add_warning(draft["target"],draft["type"],draft["reason"],user_id,template_key=draft["type"])
+        creator,template=db.get_creator(draft["target"]),db.message_template(draft["type"])
+        body=template["body"].replace("{name}",creator["display_name"]).replace("{reason}",draft["reason"])
+        try: await ctx.bot.send_message(draft["target"],body); result="delivered"
+        except Exception: db.record_audit(user_id,"warning_delivery_failed","creator_warning",warning_id,draft["target"],result="error"); result="recorded; delivery failed"
+        if cfg.admin_chat_id:
+            try: await ctx.bot.send_message(cfg.admin_chat_id,f"⚠️ {draft['type'].title()} recorded\nMember: {creator['display_name']}",message_thread_id=getattr(cfg,"moderation_thread_id",None) or cfg.reports_thread_id)
+            except Exception: db.record_audit(user_id,"moderation_notification_delivery_failed","creator_warning",warning_id,draft["target"],result="error")
+        return await _show(query,f"✅ {draft['type'].title()} #{warning_id} {result}. The full action is audited.",menu_markup(ctx,[],"warnings_help"))
     if action == "health" and role is Role.OWNER:
-        return await _show(query,"System Health\n\n🟢 Database ready\n🟢 Handler routing ready\n🟢 Scheduled checks configured\n🔒 Secrets are never displayed",menu_markup(ctx,[],"owner"))
+        state=db.system_state(); zone=getattr(cfg,"timezone_name","America/New_York")
+        def when(key):
+            return friendly_timestamp(state[key]["updated_at"],timezone_name=zone) if key in state else "Not recorded yet"
+        failed=db.needs_attention_counts(current_period(datetime.now(cfg.timezone),*_pop_args(cfg)).week_key,
+            now=datetime.now(cfg.timezone),due_weekday=_pop_args(cfg)[0],cutoff_time=_pop_args(cfg)[1],timezone_name=_pop_args(cfg)[2])["failed_notifications"]
+        text=("🩺 System Health\n\n🟢 Bot online\n🟢 Telegram connected\n🟢 Database ready\n🟢 Handler routing ready\n"
+            f"🟢 Scheduler running\nLast check: {when('last_scheduled_check')}\n"
+            f"{'🟢' if not failed else '🟠'} Admin notifications: {failed} unresolved failure(s)\n"
+            f"Last success: {when('last_admin_notification')}\n🟢 Database schema current: {db.schema_version()}\n"
+            f"Last restart: {when('last_restart')}\nDatabase backup: Not tracked by the bot\n\n🔒 Secret values are never displayed.")
+        return await _show(query,text,menu_markup(ctx,[("🔄 Refresh","health"),("⚠️ Review Errors","audit_filter_errors")],"owner"))
     if action == "settings" and role is Role.OWNER:
-        return await _show(query,"System Settings\n\nParticipation reminder · 48 hours\nParticipation alert · 72 hours\nTime zone · America/New_York\n\nUse /settings for configured routing IDs.",menu_markup(ctx,[],"owner"))
+        period = current_period(datetime.now(cfg.timezone),*_pop_args(cfg))
+        text = ("⚙️ System Settings\n\n"
+            f"🟡 Participation reminder: {cfg.warning_hours} hours\n"
+            f"🔴 Three-day alert: {cfg.alert_hours} hours\n"
+            f"📸 POP due: {period.due_at.strftime('%A')} at {period.due_at.strftime('%I').lstrip('0')}:{period.due_at.strftime('%M %p')} ET\n"
+            f"🌎 Time zone: {getattr(cfg,'timezone_name','America/New_York')}\n"
+            f"📊 Daily summary: {'Enabled' if getattr(cfg,'daily_owner_summary_enabled',False) else 'Disabled'}\n"
+            f"📨 Admin routing: {'Configured' if cfg.admin_chat_id else 'Needs setup'}\n"
+            "🤖 Bot version: 1.1\n🗄️ Database schema: 4")
+        return await _show(query,text,menu_markup(ctx,[("🟡 Reminder Threshold","settings_warning"),("🔴 Alert Threshold","settings_alert"),
+            ("📸 POP Cutoff","settings_pop"),("📊 Daily Summary","settings_summary")],"owner"))
+    if action in {"settings_warning","settings_alert","settings_pop","settings_summary"}:
+        if role is not Role.OWNER: return await _show(query,"Settings are owner-only.",home_markup(ctx,user_id))
+        choices = {
+            "settings_warning":[("36 hours","setting_warning_36"),("48 hours","setting_warning_48")],
+            "settings_alert":[("72 hours","setting_alert_72"),("96 hours","setting_alert_96")],
+            "settings_pop":[("Thursday 6 PM","setting_pop_18:00"),("Thursday 11:59 PM","setting_pop_23:59")],
+            "settings_summary":[("Enable","setting_summary_on"),("Disable","setting_summary_off")],
+        }
+        return await _show(query,"Choose a new value. The change affects this running process and will be audited.",menu_markup(ctx,choices[action],"settings"))
+    if action.startswith("setting_"):
+        if role is not Role.OWNER: return await _show(query,"Settings are owner-only.",home_markup(ctx,user_id))
+        _,key,value = action.split("_",2)
+        attrs = {"warning":"warning_hours","alert":"alert_hours","pop":"pop_cutoff_time","summary":"daily_owner_summary_enabled"}
+        attr = attrs.get(key)
+        if not attr: return await _show(query,"That setting is unavailable.",menu_markup(ctx,[],"settings"))
+        old = getattr(cfg,attr)
+        if key == "summary": new = value == "on"
+        elif key in {"warning","alert"}: new = int(value)
+        else: new = value
+        setattr(cfg,attr,new)
+        db.audit_setting_change(user_id,attr,old,new)
+        return await _show(query,"✅ Setting updated and audited. Persistent environment configuration must match before the next restart.",menu_markup(ctx,[],"settings"))
     if action == "roles" and role is Role.OWNER:
-        return await _show(query,f"Access Overview\n\nOwners · {len(cfg.owner_user_ids)}\nLead admins · {len(cfg.lead_admin_user_ids)}\nAdmins · {len(cfg.admin_user_ids)}\n\nUse /role_set or /permission_set for changes.",menu_markup(ctx,[],"owner"))
+        return await _show(query,f"👥 Access Management\n\n👑 Owners: {len(cfg.owner_user_ids)}\n🛡️ Lead Admins: {len(cfg.lead_admin_user_ids)}\n👥 Admins: {len(cfg.admin_user_ids)}",
+            menu_markup(ctx,[("👑 Owners","access_owners"),("🛡️ Lead Admins","access_leads"),("👥 Admins","access_admins"),
+                ("➕ Add Admin","access_add"),("✏️ Edit Permissions","access_edit"),("➖ Remove Admin","access_remove"),("📜 Role History","audit_filter_roles")],"owner"))
+    if action in {"access_owners","access_leads","access_admins"}:
+        if role is not Role.OWNER: return await _show(query,"Access management is owner-only.",home_markup(ctx,user_id))
+        ids = cfg.owner_user_ids if action.endswith("owners") else cfg.lead_admin_user_ids if action.endswith("leads") else cfg.admin_user_ids
+        names = []
+        for member_id in ids:
+            member = db.get_creator(member_id)
+            names.append(member["display_name"] if member else f"Configured account ending in {str(member_id)[-4:]}")
+        return await _show(query,"\n".join(names) or "No accounts are configured in this role.",menu_markup(ctx,[],"roles"))
+    if action == "access_add":
+        if role is not Role.OWNER: return await _show(query,"Access management is owner-only.",home_markup(ctx,user_id))
+        ctx.user_data["guided_input"] = "access_add"
+        return await _show(query,"➕ Add Admin\n\nEnter the person’s numeric Telegram ID. You will choose a role and confirm before access changes.",menu_markup(ctx,[],"roles"))
+    if action in {"access_edit","access_remove"}:
+        if role is not Role.OWNER: return await _show(query,"Access management is owner-only.",home_markup(ctx,user_id))
+        ids = sorted(set(cfg.admin_user_ids)|set(cfg.lead_admin_user_ids))
+        buttons = [[((db.get_creator(i)["display_name"] if db.get_creator(i) else f"Admin •••{str(i)[-4:]}")[:40],f"access_member_{i}")] for i in ids]
+        return await _show(query,"Select an administrator.",grid_markup(ctx,buttons,"roles"))
+    if action.startswith("access_member_"):
+        if role is not Role.OWNER: return await _show(query,"Access management is owner-only.",home_markup(ctx,user_id))
+        target = int(action.removeprefix("access_member_"))
+        return await _show(query,"Choose the change to review.",menu_markup(ctx,[("👥 Make Admin",f"access_confirm_admin_{target}"),
+            ("🛡️ Make Lead Admin",f"access_confirm_lead_{target}"),("➖ Remove Admin",f"access_confirm_none_{target}")],"roles"))
+    if action.startswith("access_confirm_"):
+        if role is not Role.OWNER: return await _show(query,"Access management is owner-only.",home_markup(ctx,user_id))
+        _,_,new_role,target_raw = action.split("_",3); target = int(target_raw)
+        if target in cfg.owner_user_ids: return await _show(query,"Owner access is protected by secure configuration.",menu_markup(ctx,[],"roles"))
+        previous = role_for(target,cfg).name.lower(); admins,leads=set(cfg.admin_user_ids),set(cfg.lead_admin_user_ids)
+        admins.discard(target); leads.discard(target)
+        if new_role == "admin": admins.add(target)
+        if new_role == "lead": leads.add(target)
+        cfg.admin_user_ids,cfg.lead_admin_user_ids=frozenset(admins),frozenset(leads)
+        db.record_audit(user_id,"role_changed","admin_role",target,target,previous,new_role)
+        return await _show(query,"✅ Access changed and audited. Update secure persistent configuration before restart.",menu_markup(ctx,[],"roles"))
+    if action == "export_help" and role is Role.OWNER:
+        return await _show(query,"💾 Export Records\n\nChoose an export. You will confirm before a private file is created.",menu_markup(ctx,[
+            ("📄 Creator List","export_confirm_creators"),("📄 Audit Log","export_confirm_audit"),("📄 Warning & Strike History","export_confirm_warnings"),
+            ("📄 Away Notice History","export_confirm_absences"),("📄 POP History","export_confirm_pop"),("📦 Full Owner Export","export_confirm_full")],"owner"))
+    if action.startswith("export_confirm_"):
+        if role is not Role.OWNER: return await _show(query,"Exports are owner-only.",home_markup(ctx,user_id))
+        kind = action.removeprefix("export_confirm_")
+        return await _show(query,f"Confirm {kind.replace('_',' ').title()} export?\n\nA private file will be sent to you. This action is audited.",menu_markup(ctx,[("✅ Create Export",f"export_send_{kind}")],"export_help"))
+    if action.startswith("export_send_"):
+        if role is not Role.OWNER: return await _show(query,"Exports are owner-only.",home_markup(ctx,user_id))
+        kind = action.removeprefix("export_send_"); snapshot=db.export_snapshot()
+        mapping={"creators":"creators","audit":"audit","warnings":"warnings","absences":"absences","pop":"pop"}
+        payload=snapshot if kind=="full" else {kind:snapshot.get(mapping.get(kind,kind),[])}
+        data=json.dumps(payload,indent=2,default=str).encode(); stream=io.BytesIO(data); stream.name=f"vad-{kind}-export.json"
+        await ctx.bot.send_document(user_id,stream,caption="Private owner export. Store it securely.")
+        db.record_audit(user_id,"records_exported","system",new_value={"kind":kind,"bytes":len(data)})
+        return await _show(query,"✅ Export delivered privately and audited.",menu_markup(ctx,[],"owner"))
+    if action == "restore_help" and role is Role.OWNER:
+        rows=db.deleted_records(); buttons=[[(r["display_name"][:40],f"restore_select_{r['telegram_id']}")] for r in rows[:20]]
+        return await _show(query,"♻️ Restore Records\n\n"+("Select an archived record." if rows else "🔐 No archived records match this filter."),grid_markup(ctx,buttons,"owner"))
+    if action.startswith("restore_select_"):
+        if role is not Role.OWNER: return await _show(query,"Restoration is owner-only.",home_markup(ctx,user_id))
+        target=int(action.removeprefix("restore_select_")); row=next((r for r in db.deleted_records() if r["telegram_id"]==target),None)
+        if not row: return await _show(query,"That archived record is unavailable.",menu_markup(ctx,[],"restore_help"))
+        text=f"🗃️ {row['display_name']}\nDeleted: {friendly_timestamp(row['deleted_at'],timezone_name=getattr(cfg,'timezone_name','America/New_York'))}\nReason: {row['deletion_reason'] or 'Not provided'}\n\nRestoration is reversible and will be audited."
+        return await _show(query,text,menu_markup(ctx,[("♻️ Restore",f"restore_confirm_{target}")],"restore_help"))
+    if action.startswith("restore_confirm_"):
+        if role is not Role.OWNER: return await _show(query,"Restoration is owner-only.",home_markup(ctx,user_id))
+        target=int(action.removeprefix("restore_confirm_")); restored=db.restore_creator(target,user_id,"Guided owner restoration")
+        return await _show(query,"✅ Record restored and audited." if restored else "That record was already restored.",menu_markup(ctx,[],"restore_help"))
     permission_actions = {
         "registration_queue":"review_registrations", "vacation_queue":"review_vacations",
         "sick_queue":"review_sick_days", "pop_queue":"review_pop",
@@ -442,22 +776,22 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if action not in {"reports", "calendar"} and role < Role.ADMIN:
             return await _show(query, "Administrator access is required.", home_markup(ctx, user_id))
         descriptions = {
-            "reports": "Use the dashboard report buttons or /creator_report and /pop_report.",
-            "creator_report": "Use /creator_report for the current operational creator report.",
-            "calendar": "Use /absence_calendar for Today, This Week, Next 30 Days, Away Now, and Upcoming Absences.",
-            "registration_queue": "Use /registration_queue to review pending registrations.",
-            "vacation_queue": "Use /absence_queue vacation to review vacation requests.",
-            "sick_queue": "Use /absence_queue sick to review sick-day requests.",
-            "pop_queue": "Use /pop_report to review pending POP submissions.",
-            "search_help": "Use /creator_search TELEGRAM_ID or username.",
-            "warnings_help": "Use /warning_add TELEGRAM_ID warning|strike reason. Creators acknowledge with /warning_ack WARNING_ID. Authorized admins may use /warning_remove WARNING_ID reason.",
-            "templates_help": "Use /template_list, then /template_preview TEMPLATE_KEY TELEGRAM_ID [reason]. Broadcast to an audience with /announce AUDIENCE message. Every message is previewed before delivery.",
-            "announce_help": "Use /announce AUDIENCE message to preview an authorized announcement.",
+            "reports": "Choose a report from the dashboard.",
+            "creator_report": "Choose Search, Browse, or a creator filter.",
+            "calendar": "Choose a calendar view.",
+            "registration_queue": "Select a pending registration to review it.",
+            "vacation_queue": "Choose Away Notices to review requests.",
+            "sick_queue": "Choose Away Notices to review requests.",
+            "pop_queue": "Select a pending POP submission to review it.",
+            "search_help": "Choose Search by Name or Search by Telegram ID.",
+            "warnings_help": "Select a member to begin a guided warning or strike workflow.",
+            "templates_help": "Choose a template, recipient, preview, and confirm.",
+            "announce_help": "Choose an audience, preview the message, and confirm.",
             "roles": "Owner-protected role assignments come from secure environment configuration.",
-            "settings": "Use /settings. Sensitive history remains in the owner audit log.",
-            "export_help": "Use /export_records. Full exports are owner-only and audited.",
-            "restore_help": "Use /creator_restore TELEGRAM_ID reason. Restoration is owner-only and audited.",
-            "health": "Use /system_health. Security and system health are owner-only.",
+            "settings": "Choose the setting you want to review or change.",
+            "export_help": "Choose an export type. Every export requires confirmation and is audited.",
+            "restore_help": "Browse archived records, review deletion details, and confirm restoration.",
+            "health": "Review live system checks and safe diagnostics.",
         }
         back = "owner" if role is Role.OWNER and action in {"roles","settings","export_help","restore_help","health"} else "admin"
         return await _show(query, descriptions[action], menu_markup(ctx, [], back))

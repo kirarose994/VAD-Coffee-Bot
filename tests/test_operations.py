@@ -160,7 +160,7 @@ class CallbackSecurityTests(unittest.IsolatedAsyncioTestCase):
         query = SimpleNamespace(data="op:menu:admin",answer=AsyncMock(),edit_message_text=AsyncMock())
         update = SimpleNamespace(callback_query=query,effective_user=SimpleNamespace(id=4))
         ctx = SimpleNamespace(user_data={"menu_nonce":"menu"},bot_data={"config":cfg})
-        with patch("navigation.db.dashboard_metrics",return_value=self.metrics()):
+        with patch("navigation.db.dashboard_metrics",return_value=self.metrics()),patch("navigation.db.pop_status_counts",return_value={"awaiting_review":0,"missing":0}):
             await callback(update,ctx)
         markup = query.edit_message_text.await_args.kwargs["reply_markup"]
         labels = [button.text for row in markup.inline_keyboard for button in row]
@@ -181,7 +181,7 @@ class CallbackSecurityTests(unittest.IsolatedAsyncioTestCase):
         query = SimpleNamespace(data="op:menu:owner",answer=AsyncMock(),edit_message_text=AsyncMock())
         update = SimpleNamespace(callback_query=query,effective_user=SimpleNamespace(id=1))
         ctx = SimpleNamespace(user_data={"menu_nonce":"menu"},bot_data={"config":cfg})
-        with patch("navigation.db.dashboard_metrics",return_value=self.metrics()):
+        with patch("navigation.db.dashboard_metrics",return_value=self.metrics()),patch("navigation.db.pop_status_counts",return_value={"awaiting_review":0,"missing":0}):
             await callback(update,ctx)
         markup = query.edit_message_text.await_args.kwargs["reply_markup"]
         labels = [button.text for row in markup.inline_keyboard for button in row]

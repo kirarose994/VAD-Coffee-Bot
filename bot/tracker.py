@@ -9,6 +9,7 @@ from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
 import database as db
 from engagement import classify
 from permissions import can_manage_sensitive, can_mutate, can_read, can_view_audit, has_permission, role_for
+from pop_policy import label as pop_label
 
 
 def config(ctx):
@@ -135,9 +136,9 @@ def week_key(now):
 
 async def pop_report_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await require_permission(update, ctx, "view_creator_reports"): return
-    key = ctx.args[0] if ctx.args else week_key(datetime.now(config(ctx).timezone))
-    rows = db.pop_report(key)
-    lines = [f"POP report {key}"] + [f"{r['display_name']} ({r['telegram_id']}): {r['status'] or 'missing'}" + (f" [submission {r['id']}]" if r['id'] else "") for r in rows]
+    cfg=config(ctx);now=datetime.now(cfg.timezone)
+    rows=db.pop_status_report(now,getattr(cfg,"pop_due_weekday",3),getattr(cfg,"pop_cutoff_time","23:59"),getattr(cfg,"timezone_name","America/New_York"))
+    lines = ["Thursday POP Report"] + [f"{r['display_name']}: {pop_label(r['effective_status'])}" for r in rows]
     await update.message.reply_text("\n".join(lines)[:4000])
 
 
@@ -249,6 +250,7 @@ async def inactivity_job(ctx: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(timezone.utc)
     local_date = now.astimezone(cfg.timezone).date()
     db.sync_absence_availability(local_date)
+    db.set_system_state("last_scheduled_check",datetime.now(cfg.timezone).isoformat())
     for creator in db.due_creators():
         absence = db.approved_absence_on(creator["telegram_id"], local_date)
         if absence or (creator["vacation_until"] and date.fromisoformat(creator["vacation_until"]) >= local_date):
@@ -270,6 +272,7 @@ async def inactivity_job(ctx: ContextTypes.DEFAULT_TYPE):
                         f"🔴 Admin follow-up required\n{escape(creator['display_name'])} has reached the three-day community participation limit.",
                         message_thread_id=cfg.reports_thread_id)
                     db.record_audit(None,"alert_delivered","notification",target_telegram_id=creator["telegram_id"])
+                    db.set_system_state("last_admin_notification",datetime.now(cfg.timezone).isoformat())
                 except Exception:
                     db.record_audit(None,"alert_delivery_failed","notification",target_telegram_id=creator["telegram_id"],result="error")
         elif hours >= cfg.warning_hours and db.claim_notification(creator["telegram_id"], anchor, "warning"):

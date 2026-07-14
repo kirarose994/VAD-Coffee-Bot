@@ -13,6 +13,29 @@
   `DAILY_OWNER_SUMMARY_ENABLED=true` and optionally `DAILY_OWNER_SUMMARY_TIME=09:00`.
   The time uses `America/New_York`, and each owner/date claim is restart-safe.
 
+### Functional correction pass
+
+- `pop_policy.py` is the single source of truth for the current period and Eastern Time
+  cutoff. Dashboards, queues, reports, counts, and Needs Attention consume its states.
+- Creator search, registration review, Away Notices, access changes, settings, exports,
+  restoration, warnings/strikes, templates, and Contact Admin use guided buttons and
+  confirmations. Slash commands remain fallback tools but are not advertised in screens.
+- Timelines and owner audit filters use friendly Eastern Time and plain-language events.
+- Repeated `BadRequest: Message is not modified` callback events are classified as harmless
+  duplicate edits and no longer create owner-facing system-error records.
+
+### Routing
+
+| Event | Chat | Topic |
+|---|---|---|
+| Meaningful participation | `GIRLS_CHAT_ID` only | `GIRLS_THREAD_ID` when configured |
+| POP proof | `GIRLS_CHAT_ID` only | required `POP_THREAD_ID` |
+| Registration review | `ADMIN_CHAT_ID` | `REGISTRATION_THREAD_ID`, else `REPORTS_THREAD_ID` |
+| Away Notice review | `ADMIN_CHAT_ID` | `AWAY_THREAD_ID`, else `REPORTS_THREAD_ID` |
+| Participation alerts/reports | `ADMIN_CHAT_ID` | `REPORTS_THREAD_ID` |
+| Warning/strike moderation | `ADMIN_CHAT_ID` | `MODERATION_THREAD_ID`, else reports |
+| System health failures | owners privately | optional `HEALTH_THREAD_ID` |
+
 ## Architecture
 
 - `bot/main.py`: application startup and handler registration
