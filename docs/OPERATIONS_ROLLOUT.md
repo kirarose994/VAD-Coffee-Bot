@@ -107,7 +107,7 @@ Every submenu has Home, Back, and Cancel. Expired/reused menu buttons return saf
 - Unassigned community member: choose **I'm a Creator / Seller** or **I'm a Buyer**.
 - Creator: **My Creator Hub**, Help Center, and Get Help. Administration is not shown.
 - Buyer: **Buyer Home**, Help Center, and Get Help. Creator and administration tools are not shown.
-- Admin / lead admin: **Admin Tools** with only individually permitted review and moderation tools.
+- Admin: **Admin Tools** with only individually permitted review and moderation tools.
 - Owner: Admin Tools plus **Owner Dashboard** and every protected capability.
   - Owner Dashboard: Needs Attention, Reports, Access, Audit, Archive, Restore, Setup, Health, Export.
   - Setup: Participation Chat, Participation Topics, POP Group, POP Topic, Admin Group,

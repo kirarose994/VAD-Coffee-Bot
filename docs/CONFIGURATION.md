@@ -15,7 +15,7 @@ is required for routine in-bot adjustments.
 
 ## Optional bootstrap values
 
-`LEAD_ADMIN_USER_IDS`, `ADMIN_USER_IDS`, `ADMIN_PERMISSIONS_JSON`, `GIRLS_CHAT_ID`,
+`ADMIN_USER_IDS`, `ADMIN_PERMISSIONS_JSON`, `GIRLS_CHAT_ID`,
 `POP_CHAT_ID`, `POP_THREAD_ID`, `ADMIN_CHAT_ID`, `REPORTS_THREAD_ID`, routing topic IDs,
 `BUYER_GROUP_ID`, `TIMEZONE`, inactivity thresholds, POP deadline settings, and meaningful
 message thresholds.

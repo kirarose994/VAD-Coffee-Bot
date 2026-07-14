@@ -338,7 +338,6 @@ async def guided_contact_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         nonce=secrets.token_urlsafe(6); ctx.user_data["menu_nonce"]=nonce
         return await update.effective_message.reply_text("Choose the role to confirm.",reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("👥 Admin",callback_data=f"op:{nonce}:access_confirm_admin_{target}")],
-            [InlineKeyboardButton("🛡️ Lead Admin",callback_data=f"op:{nonce}:access_confirm_lead_{target}")],
             [InlineKeyboardButton("👑 Owner",callback_data=f"op:{nonce}:access_confirm_owner_{target}")],
             [InlineKeyboardButton("❌ Cancel",callback_data=f"op:{nonce}:roles")],
         ]))
@@ -436,7 +435,7 @@ async def announcement_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await query.answer("You are not authorized.", show_alert=True)
     row = db.announcement(announcement_id)
     recipients = db.announcement_recipients(row["audience"], cfg.owner_user_ids,
-        cfg.admin_user_ids | cfg.lead_admin_user_ids)
+        cfg.admin_user_ids)
     delivered = failed = 0
     for recipient in recipients:
         try:
@@ -463,23 +462,21 @@ async def role_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cfg, actor = ctx.bot_data["config"], update.effective_user.id
     if role_for(actor, cfg) is not Role.OWNER:
         return await update.effective_message.reply_text("Role management is owner-only.")
-    if len(ctx.args) != 2 or ctx.args[1] not in {"admin", "lead", "owner", "none"}:
-        return await update.effective_message.reply_text("Usage: /role_set TELEGRAM_ID admin|lead|owner|none")
+    if len(ctx.args) != 2 or ctx.args[1] not in {"admin", "owner", "none"}:
+        return await update.effective_message.reply_text("Usage: /role_set TELEGRAM_ID admin|owner|none")
     try: target = int(ctx.args[0])
     except ValueError: return await update.effective_message.reply_text("Telegram ID must be numeric.")
     previous = role_for(target, cfg).name.lower()
-    admins, leads, owners = set(cfg.admin_user_ids), set(cfg.lead_admin_user_ids), set(cfg.owner_user_ids)
-    admins.discard(target); leads.discard(target)
+    admins, owners = set(cfg.admin_user_ids), set(cfg.owner_user_ids)
+    admins.discard(target)
     if ctx.args[1] == "none" and target in owners:
         if target == actor:return await update.effective_message.reply_text("You cannot remove your own Owner access.")
         if len(owners)<=1:return await update.effective_message.reply_text("At least one Owner must remain configured.")
         owners.discard(target);admins.add(target)
     if ctx.args[1] == "admin": admins.add(target)
-    if ctx.args[1] == "lead": leads.add(target)
     if ctx.args[1] == "owner":owners.add(target)
-    cfg.admin_user_ids, cfg.lead_admin_user_ids, cfg.owner_user_ids = frozenset(admins), frozenset(leads), frozenset(owners)
+    cfg.admin_user_ids, cfg.owner_user_ids = frozenset(admins), frozenset(owners)
     persist_setting(cfg,"admin_user_ids",cfg.admin_user_ids,actor)
-    persist_setting(cfg,"lead_admin_user_ids",cfg.lead_admin_user_ids,actor)
     persist_setting(cfg,"owner_user_ids",cfg.owner_user_ids,actor)
     db.record_audit(actor,"role_changed","admin_role",target,target,previous,ctx.args[1])
     await update.effective_message.reply_text("Additive roles updated, persisted, and audited.")

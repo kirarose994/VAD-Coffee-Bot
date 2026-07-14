@@ -21,7 +21,7 @@ class HandlerRoutingTests(unittest.TestCase):
         )
         self.app.bot_data["config"] = SimpleNamespace(
             owner_user_ids=frozenset({3}),
-            lead_admin_user_ids=frozenset({1}), admin_user_ids=frozenset({2})
+            lead_admin_user_ids=frozenset(), admin_user_ids=frozenset({1,2})
         )
         register_application_handlers(self.app)
 

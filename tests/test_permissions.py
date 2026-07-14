@@ -13,7 +13,7 @@ class PermissionTests(unittest.TestCase):
     def setUp(self):
         self.config = SimpleNamespace(
             owner_user_ids=frozenset({0}),
-            lead_admin_user_ids=frozenset({1}),
+            lead_admin_user_ids=frozenset(),
             admin_user_ids=frozenset({1, 2}),
         )
 
@@ -25,8 +25,8 @@ class PermissionTests(unittest.TestCase):
         self.assertTrue(can_manage_sensitive(0, self.config))
         self.assertEqual(roles_for(0,self.config),frozenset({Membership.CREATOR,Membership.ADMIN,Membership.OWNER}))
 
-    def test_lead_admin_has_operational_permissions_only(self):
-        self.assertEqual(role_for(1, self.config), Role.LEAD_ADMIN)
+    def test_admin_has_operational_permissions_only(self):
+        self.assertEqual(role_for(1, self.config), Role.ADMIN)
         self.assertTrue(can_read(1, self.config))
         self.assertTrue(can_mutate(1, self.config))
         self.assertFalse(can_view_audit(1, self.config))
@@ -38,13 +38,13 @@ class PermissionTests(unittest.TestCase):
         self.assertTrue(can_mutate(2, self.config))
         self.assertFalse(can_view_audit(2, self.config))
         self.assertTrue(has_permission(2,self.config,"adjust_warnings"))
-        self.assertFalse(has_permission(2,self.config,"review_registrations"))
+        self.assertTrue(has_permission(2,self.config,"review_registrations"))
         self.assertEqual(roles_for(2,self.config),frozenset({Membership.CREATOR,Membership.ADMIN}))
 
     def test_creator_membership_is_independent_of_admin_membership(self):
         self.assertEqual(roles_for(50,self.config,has_creator_profile=True),frozenset({Membership.CREATOR}))
 
-    def test_lead_admin_receives_review_tools_but_not_owner_setup(self):
+    def test_admin_receives_review_tools_but_not_owner_setup(self):
         self.assertTrue(has_permission(1,self.config,"review_registrations"))
         self.assertTrue(has_permission(1,self.config,"review_pop"))
         self.assertFalse(has_permission(1,self.config,"change_settings"))

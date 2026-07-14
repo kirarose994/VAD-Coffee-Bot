@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "bot"))
 
 import database as db
 from config import Config
-from navigation import callback, home_markup
+from navigation import callback, home_markup, menu_markup
 from runtime_config import apply_persisted_settings, persist_setting
 from tracker import participation_enabled
 
@@ -21,8 +21,8 @@ def labels(markup):
 
 class RoleSeparationTests(unittest.TestCase):
     def cfg(self):
-        return SimpleNamespace(owner_user_ids=frozenset({1}), lead_admin_user_ids=frozenset({2}),
-            admin_user_ids=frozenset({3}), admin_permissions={})
+        return SimpleNamespace(owner_user_ids=frozenset({1}), lead_admin_user_ids=frozenset(),
+            admin_user_ids=frozenset({2,3}), admin_permissions={})
 
     def menu(self, user_id, creator=None, member=None):
         ctx = SimpleNamespace(user_data={},bot_data={"config":self.cfg()})
@@ -99,6 +99,46 @@ class SetupMenuTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Keely",labels(result.kwargs["reply_markup"]))
         self.assertIn("never creates a duplicate creator record",result.args[0])
 
+    async def test_people_and_roles_shows_only_owner_and_admin_counts(self):
+        result=await self.screen("roles")
+        text=result.args[0];visible=labels(result.kwargs["reply_markup"])
+        self.assertIn("Owners: 1",text);self.assertIn("Admins: 1",text)
+        self.assertEqual({label for label in visible if label in {"👑 Owners","👥 Admins"}}, {"👑 Owners","👥 Admins"})
+
+    async def test_add_admin_offers_only_admin_and_owner(self):
+        creator={"telegram_id":50,"display_name":"Keeley","status":"active"}
+        with patch("navigation.db.get_creator",return_value=creator),patch("navigation.db.pending_bot_users",return_value=[]):
+            result=await self.screen("access_candidate_50")
+        visible=labels(result.kwargs["reply_markup"])
+        self.assertIn("Make Admin",visible);self.assertIn("Make Owner",visible)
+        self.assertEqual(2,len([label for label in visible if label.startswith("Make ")]))
+
+    async def test_make_owner_is_owner_only(self):
+        result=await self.screen("access_confirm_owner_50",user_id=2)
+        self.assertIn("owner-only",result.args[0])
+
+    def test_rendered_menus_have_unique_labels_and_callback_actions(self):
+        for user_id in (1,2,20):
+            creator={"telegram_id":user_id} if user_id==20 else None
+            ctx=SimpleNamespace(user_data={},bot_data={"config":self.cfg()})
+            with patch("navigation.db.get_creator",return_value=creator),patch("navigation.db.get_member",return_value=None):
+                markup=home_markup(ctx,user_id)
+            visible=[button.text for row in markup.inline_keyboard for button in row]
+            actions=[button.callback_data.rsplit(":",1)[-1] for row in markup.inline_keyboard for button in row]
+            self.assertEqual(len(visible),len(set(visible)))
+            self.assertEqual(len(actions),len(set(actions)))
+
+    def test_shared_dashboard_destinations_are_deduplicated(self):
+        ctx=SimpleNamespace(user_data={},bot_data={"config":self.cfg()})
+        markup=menu_markup(ctx,[("📚 Help Center","resources"),("Help","resources"),
+            ("📜 Timeline","timeline_0"),("📜 Timeline","other_timeline"),("📅 Calendar","calendar")],"owner")
+        visible=[button.text for row in markup.inline_keyboard for button in row]
+        actions=[button.callback_data.rsplit(":",1)[-1] for row in markup.inline_keyboard for button in row]
+        self.assertEqual(1,sum(action=="resources" for action in actions))
+        self.assertEqual(1,sum(label=="📜 Timeline" for label in visible))
+        self.assertEqual(len(actions),len(set(actions)))
+        self.assertEqual(len(visible),len(set(visible)))
+
     async def test_owner_can_explicitly_replace_numbered_topics_with_general(self):
         cfg=self.cfg();chat=SimpleNamespace(id=-100,title="VAD Main Group",is_forum=True)
         message=SimpleNamespace(chat=chat,message_thread_id=None)
@@ -147,6 +187,14 @@ class ParticipationRoutingTests(unittest.TestCase):
         self.assertTrue(participation_enabled(cfg,-100,None))
         self.assertFalse(participation_enabled(cfg,-100,99))
 
+    def test_legacy_elevated_environment_ids_become_admins_without_duplicating_owners(self):
+        values={"TELEGRAM_BOT_TOKEN":"test-only","OWNER_USER_IDS":"1","ADMIN_USER_IDS":"60",
+            "LEAD_ADMIN_USER_IDS":"1,50"}
+        with patch.dict(os.environ,values,clear=True):cfg=Config.from_env()
+        self.assertEqual(cfg.owner_user_ids,frozenset({1}))
+        self.assertEqual(cfg.admin_user_ids,frozenset({50,60}))
+        self.assertEqual(cfg.lead_admin_user_ids,frozenset())
+
 
 class BuyerIdentityTests(unittest.TestCase):
     def test_buyer_identity_does_not_create_creator(self):
@@ -186,4 +234,14 @@ class PersistedSetupTests(unittest.TestCase):
             restored=SimpleNamespace(owner_user_ids=frozenset({1}),admin_user_ids=frozenset(),lead_admin_user_ids=frozenset())
             apply_persisted_settings(restored,path)
             self.assertEqual(restored.owner_user_ids,frozenset({1,50}))
-            self.assertEqual(restored.admin_user_ids,frozenset({50}))
+            self.assertEqual(restored.admin_user_ids,frozenset())
+
+    def test_legacy_elevated_admins_migrate_to_owner_or_admin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/"bot.db";db.initialize_database(path)
+            db.set_system_state("config:lead_admin_user_ids","[1, 50]",path)
+            cfg=SimpleNamespace(owner_user_ids=frozenset({1}),admin_user_ids=frozenset({60}),lead_admin_user_ids=frozenset())
+            apply_persisted_settings(cfg,path)
+            self.assertEqual(cfg.owner_user_ids,frozenset({1}))
+            self.assertEqual(cfg.admin_user_ids,frozenset({50,60}))
+            self.assertEqual(cfg.lead_admin_user_ids,frozenset())

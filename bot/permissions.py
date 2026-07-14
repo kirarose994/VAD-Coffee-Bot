@@ -12,8 +12,7 @@ class Membership(StrEnum):
 class Role(IntEnum):
     NONE = 0
     ADMIN = 1
-    LEAD_ADMIN = 2
-    OWNER = 3
+    OWNER = 2
 
 
 def role_for(user_id: int | None, config) -> Role:
@@ -21,9 +20,8 @@ def role_for(user_id: int | None, config) -> Role:
         return Role.NONE
     if user_id in config.owner_user_ids:
         return Role.OWNER
-    if user_id in config.lead_admin_user_ids:
-        return Role.LEAD_ADMIN
-    if user_id in config.admin_user_ids:
+    legacy_leads = getattr(config, "lead_admin_user_ids", frozenset())
+    if user_id in config.admin_user_ids or user_id in legacy_leads:
         return Role.ADMIN
     return Role.NONE
 
@@ -48,7 +46,7 @@ def can_read(user_id: int | None, config) -> bool:
 
 
 def can_mutate(user_id: int | None, config) -> bool:
-    """Owners, lead admins, and admins may perform operational changes."""
+    """Owners and admins may perform operational changes."""
     return role_for(user_id, config) >= Role.ADMIN
 
 
@@ -62,19 +60,12 @@ def can_manage_sensitive(user_id: int | None, config) -> bool:
     return role_for(user_id, config) is Role.OWNER
 
 
-LEAD_ADMIN_DEFAULT_PERMISSIONS = frozenset({
+ADMIN_DEFAULT_PERMISSIONS = frozenset({
     "review_registrations", "review_vacations", "review_sick_days", "review_pop",
     "view_creator_reports", "manage_creators", "add_admin_notes", "send_announcements",
     "adjust_warnings",
     "manage_support",
 })
-
-# Regular admins receive moderation and communication tools only. Owners may grant an
-# individual additional operational permission; hidden buttons never replace server checks.
-ADMIN_DEFAULT_PERMISSIONS = frozenset({
-    "view_creator_reports", "add_admin_notes", "send_announcements", "adjust_warnings", "manage_support",
-})
-
 
 def has_permission(user_id: int | None, config, permission: str) -> bool:
     role = role_for(user_id, config)
@@ -83,5 +74,4 @@ def has_permission(user_id: int | None, config, permission: str) -> bool:
     if role < Role.ADMIN:
         return False
     assigned = getattr(config, "admin_permissions", {}).get(user_id)
-    defaults = LEAD_ADMIN_DEFAULT_PERMISSIONS if role is Role.LEAD_ADMIN else ADMIN_DEFAULT_PERMISSIONS
-    return permission in (assigned if assigned is not None else defaults)
+    return permission in (assigned if assigned is not None else ADMIN_DEFAULT_PERMISSIONS)

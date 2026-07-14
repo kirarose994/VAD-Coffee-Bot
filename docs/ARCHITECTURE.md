@@ -12,7 +12,7 @@ wrapper.
 - `config.py` parses bootstrap environment settings.
 - `runtime_config.py` persists and restores owner-approved operational overrides.
 - `navigation.py` builds role-aware screens and nonce-protected callbacks.
-- `permissions.py` resolves Owner, Lead Admin, Admin, and unprivileged access.
+- `permissions.py` resolves additive Owner, Admin, Creator, and unprivileged access.
 - `database.py` owns schema migration and durable operations.
 - `tracker.py` routes registration, participation, POP, reminders, and reports.
 - `engagement.py` classifies meaningful messages deterministically.

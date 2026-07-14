@@ -33,6 +33,12 @@ def apply_persisted_settings(config, path=None):
         except (TypeError, ValueError, KeyError):
             # Invalid persisted data is ignored; the environment/default remains active.
             continue
+    # One-time compatibility migration: stored elevated administrators become regular
+    # Admins unless their immutable ID already belongs to an Owner.
+    legacy = set(getattr(config,"lead_admin_user_ids",frozenset()))
+    owners = set(getattr(config,"owner_user_ids",frozenset()))
+    config.admin_user_ids = frozenset((set(getattr(config,"admin_user_ids",frozenset())) | legacy) - owners)
+    config.lead_admin_user_ids = frozenset()
     return config
 
 

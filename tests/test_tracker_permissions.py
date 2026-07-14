@@ -13,8 +13,8 @@ class AuditVisibilityTests(unittest.IsolatedAsyncioTestCase):
     def context(self, args=None):
         return SimpleNamespace(args=args or [], bot_data={"config": SimpleNamespace(
             owner_user_ids=frozenset({10}),
-            lead_admin_user_ids=frozenset({20}),
-            admin_user_ids=frozenset({30}),
+            lead_admin_user_ids=frozenset(),
+            admin_user_ids=frozenset({20,30}),
         )})
 
     def update(self, user_id):
@@ -42,7 +42,7 @@ class AuditVisibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("actor=20", response)
         self.assertIn("target=99", response)
 
-    async def test_lead_admin_cannot_view_audit_information(self):
+    async def test_admin_cannot_view_audit_information(self):
         update = self.update(20)
         with patch("tracker.db.history") as history:
             await history_command(update, self.context())
@@ -60,20 +60,20 @@ class AuditVisibilityTests(unittest.IsolatedAsyncioTestCase):
             "Sorry, the private audit log is for owners only."
         )
 
-    async def test_lead_admin_can_approve_creators(self):
+    async def test_admin_can_approve_creators(self):
         update = self.update(20)
         with patch("tracker.db.set_status", return_value=True) as set_status:
             await approve(update, self.context(["99"]))
         set_status.assert_called_once_with(99, "active", 20)
         update.message.reply_text.assert_awaited_once_with("Creator 99 is approved and ready to participate.")
 
-    async def test_lead_admin_can_manage_other_creator_vacations(self):
+    async def test_admin_can_manage_other_creator_vacations(self):
         update = self.update(20)
         with patch("tracker.db.set_vacation", return_value=True) as set_vacation:
             await vacation(update, self.context(["99", "2026-07-31"]))
         set_vacation.assert_called_once_with(99, "2026-07-31", 20)
 
-    async def test_lead_admin_can_approve_pop_submissions(self):
+    async def test_admin_can_approve_pop_submissions(self):
         update = self.update(20)
         with patch("tracker.db.get_pop_submission", return_value=None), \
              patch("tracker.db.review_pop", return_value=True) as review_pop:

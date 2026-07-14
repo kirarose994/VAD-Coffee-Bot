@@ -95,6 +95,7 @@ class Config:
             logging.getLogger(__name__).warning("ADMIN_PERMISSIONS_JSON is invalid; defaults used")
             admin_permissions = {}
         owners = _parse_ids("OWNER_USER_IDS") | _parse_ids("OWNER_TELEGRAM_IDS")
+        legacy_admins = _parse_ids("LEAD_ADMIN_USER_IDS")
         girls_chat_id = _parse_int_env("GIRLS_CHAT_ID")
         girls_thread_id = _parse_int_env("GIRLS_THREAD_ID")
         participation_topics = set(_parse_ids("PARTICIPATION_TOPIC_IDS")) | set(_parse_ids("PARTICIPATION_THREAD_IDS"))
@@ -107,8 +108,10 @@ class Config:
             admin_chat_id=_parse_int_env("ADMIN_CHAT_ID"),
             log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
             owner_user_ids=frozenset(owners),
-            lead_admin_user_ids=_parse_ids("LEAD_ADMIN_USER_IDS"),
-            admin_user_ids=_parse_ids("ADMIN_USER_IDS"),
+            # Retain an empty compatibility field for old database snapshots while converting
+            # every legacy elevated administrator to the single Admin role.
+            lead_admin_user_ids=frozenset(),
+            admin_user_ids=(_parse_ids("ADMIN_USER_IDS") | legacy_admins) - owners,
             admin_permissions=admin_permissions,
             girls_chat_id=girls_chat_id,
             girls_thread_id=girls_thread_id,

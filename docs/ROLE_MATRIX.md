@@ -7,7 +7,7 @@
 | Owner Setup, roles, full audit, export, restore, health | Yes | No | No | No |
 | Buyer Help Center and support | Yes | Yes | Yes | Yes |
 
-Owner = Creator + Admin + Owner. Admin = Creator + Admin. The internal Lead Admin permission
-bundle remains supported for existing assignments.
+Owner = Creator + Admin + Owner. Admin = Creator + Admin. Historical elevated-admin assignments
+are converted to regular Admin membership during configuration migration.
 
 No hidden menu is a permission grant. Direct callback manipulation is rejected server-side.

@@ -26,7 +26,7 @@ async def require_admin(update, ctx):
     user_id = update.effective_user.id if update.effective_user else None
     if can_read(user_id, config(ctx)):
         return True
-    await update.effective_message.reply_text("Sorry, this command is for admins and lead admins only.")
+    await update.effective_message.reply_text("Sorry, this command is for admins only.")
     return False
 
 

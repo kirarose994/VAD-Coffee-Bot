@@ -2,11 +2,11 @@
 
 Authorization uses immutable Telegram numeric IDs. Public roles are additive: every Owner is
 also an Admin and Creator, every Admin is also a Creator, and Creator-only members have no
-administrative access. The legacy Lead Admin tier remains an Admin permission bundle for
-backward compatibility; it is not a separate identity.
+administrative access. Historical elevated-admin configuration is migrated into regular Admin
+membership and is never shown as a separate role.
 
-Owners receive every permission. Lead Admin defaults cover operational reviews and creator
-management. Admin defaults cover reports, moderation, notes, and messaging. Individual
+Owners receive every permission. Admin defaults cover operational reviews, creator management,
+reports, moderation, notes, and messaging. Individual
 allow-lists may narrow or extend non-owner permissions, but only Owners can access Setup,
 full audit, protected archive/restore, exports, security health, and access management.
 
