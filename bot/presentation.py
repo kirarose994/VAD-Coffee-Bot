@@ -6,6 +6,8 @@ from zoneinfo import ZoneInfo
 
 
 ACTION_LABELS = {
+    "engagement_counted_voice_message": "🎙️ Voice participation counted",
+    "engagement_counted_audio_message": "🎧 Audio participation counted",
     "creator_registered": "📝 Creator registered",
     "creator_status_changed": "🛡️ Creator status changed",
     "availability_changed": "🟢 Availability changed",

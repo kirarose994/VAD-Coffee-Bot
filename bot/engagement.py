@@ -25,6 +25,11 @@ def normalize(text: str) -> str:
     return " ".join(text.split())
 
 
+def contains_promotional_spam(text: str) -> bool:
+    """Detect the same explicit promotional markers used by text participation."""
+    return bool(PROMO.search(normalize(text)))
+
+
 def classify(text, *, media=False, is_repeat=lambda digest, since: False, now=None,
              min_words=3, min_characters=12, repeat_window_days=7) -> Decision:
     """Classify one message using deterministic, owner-configurable thresholds."""

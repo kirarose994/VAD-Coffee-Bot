@@ -48,6 +48,13 @@ class DatabaseTests(unittest.TestCase):
         self.assertFalse(db.record_engagement(10, 7, -1, 3, "hash", "accepted", "meaningful", self.path))
         self.assertIsNotNone(db.get_creator(10, self.path)["last_meaningful_at"])
 
+    def test_voice_engagement_updates_last_meaningful_and_timeline(self):
+        db.register_creator(10,"girl","Creator",self.path);db.set_status(10,"active",99,self.path)
+        self.assertTrue(db.record_engagement(10,8,-1,3,"voice-hash","accepted","voice_message",self.path,event_type="voice_message"))
+        self.assertIsNotNone(db.get_creator(10,self.path)["last_meaningful_at"])
+        actions=[row["action"] for row in db.creator_timeline(10,20,0,self.path)]
+        self.assertIn("engagement_counted_voice_message",actions)
+
     def test_pop_and_notifications_are_idempotent(self):
         db.register_creator(10, "girl", "Creator", self.path)
         db.set_status(10, "active", 99, self.path)

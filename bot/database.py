@@ -931,7 +931,7 @@ def set_vacation(target_id, until, actor_id, path=None):
         return bool(cur.rowcount)
 
 
-def record_engagement(telegram_id, message_id, chat_id, thread_id, normalized_hash, decision, reason, path=None):
+def record_engagement(telegram_id, message_id, chat_id, thread_id, normalized_hash, decision, reason, path=None, event_type="text_message"):
     now = utc_now()
     with get_connection(path) as db:
         try:
@@ -941,7 +941,9 @@ def record_engagement(telegram_id, message_id, chat_id, thread_id, normalized_ha
             return False
         if decision == "accepted":
             db.execute("UPDATE creators SET last_meaningful_at=? WHERE telegram_id=?", (now,telegram_id))
-        audit_event(db, telegram_id, "engagement_counted" if decision == "accepted" else "engagement_ignored",
+        audit_action = f"engagement_counted_{event_type}" if decision == "accepted" and event_type != "text_message" else (
+            "engagement_counted" if decision == "accepted" else "engagement_ignored")
+        audit_event(db, telegram_id, audit_action,
                     "engagement", target_telegram_id=telegram_id, new_value=decision,
                     reason=reason, source_chat_id=chat_id, source_thread_id=thread_id)
         return True
@@ -1197,6 +1199,25 @@ def participation_events(limit=30,path=None):
         return db.execute("""SELECT e.created_at,e.decision,e.reason,e.telegram_id,c.display_name
           FROM engagement_events e LEFT JOIN creators c ON c.telegram_id=e.telegram_id
           ORDER BY e.id DESC LIMIT ?""",(limit,)).fetchall()
+
+
+def creator_participation_diagnostics(path=None):
+    """Return active creators and their latest sanitized observer outcome."""
+    with get_connection(path) as db:
+        creators=db.execute("""SELECT telegram_id,display_name,username FROM creators
+          WHERE status='active' AND deleted_at IS NULL ORDER BY display_name COLLATE NOCASE""").fetchall()
+        states={row["state_key"].rsplit(":",1)[-1]:row for row in db.execute("""SELECT state_key,state_value,updated_at
+          FROM system_state WHERE state_key LIKE 'participation:last_creator:%'""").fetchall()}
+    results=[]
+    for creator in creators:
+        state=states.get(str(creator["telegram_id"]));diagnostic=None
+        if state:
+            try:
+                diagnostic=json.loads(state["state_value"])
+            except (TypeError,json.JSONDecodeError):
+                diagnostic={"reason":"unreadable_diagnostic","observed_at":state["updated_at"]}
+        results.append({"creator":creator,"diagnostic":diagnostic})
+    return results
 
 
 def reset_history(actor_id, path=None):

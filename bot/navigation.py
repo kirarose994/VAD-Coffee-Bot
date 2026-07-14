@@ -1080,13 +1080,39 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         access="Yes" if privacy=="true" or monitor["last_detected"] else "No — disable privacy mode or make the bot an Admin"
         observed_chat=state.get("last_group_message_chat_id",{}).get("value","None yet")
         observed_topic=state.get("last_group_message_thread_id",{}).get("value","None yet")
+        configured_chat=cfg.participation_chat_id or cfg.girls_chat_id
+        configured_topics=sorted(cfg.participation_topic_ids) if cfg.participation_topic_ids else []
+        expected_topics=", ".join(map(str,configured_topics)) if configured_topics else "General (no thread ID)"
+        chat_match="Not yet observed" if observed_chat=="None yet" else ("Yes" if str(observed_chat)==str(configured_chat) else "No")
+        observed_topic_value=None if observed_topic=="general:none" else observed_topic
+        topic_match="Not yet observed" if observed_topic=="None yet" else ("Yes" if ((not configured_topics and observed_topic_value is None) or str(observed_topic_value) in {str(v) for v in configured_topics}) else "No")
+        reason_labels={"accepted":"Counted as meaningful participation","wrong_chat":"Rejected: wrong chat","wrong_topic":"Rejected: wrong topic",
+            "accepted_voice_message":"Counted: qualifying voice message","accepted_audio_message":"Counted: qualifying audio message",
+            "creator_not_approved":"Rejected: creator not approved","audio_too_short":"Ignored: audio too short",
+            "duplicate_audio":"Ignored: duplicate audio","audio_missing_file_identity":"Ignored: audio identity unavailable",
+            "active_away_notice":"Not counted: active Away Notice","legacy_vacation_active":"Not counted: active legacy vacation",
+            "pop_workflow_message":"Not counted: POP workflow message","duplicate_telegram_update":"Ignored: duplicate Telegram update",
+            "greeting_only":"Ignored: greeting only","emoji_only":"Ignored: emoji only","too_short":"Ignored: too short",
+            "promotional_spam":"Ignored: promotional content","link_only":"Ignored: link only","repeated_text":"Ignored: repeated text",
+            "non_text":"Ignored: no meaningful text","command":"Ignored: bot command"}
+        creator_lines=[]
+        for item in db.creator_participation_diagnostics():
+            creator=item["creator"];diag=item["diagnostic"]
+            if not diag:
+                creator_lines.append(f"{creator['display_name']} — No message from this creator has reached the participation observer.")
+                continue
+            reason=reason_labels.get(diag.get("reason"),f"Ignored: {str(diag.get('reason','unknown')).replace('_',' ')}")
+            creator_lines.append(f"{creator['display_name']} — {reason}\nObserved chat/topic: {diag.get('observed_chat_id')} / {diag.get('observed_thread_id') if diag.get('observed_thread_id') is not None else 'General (none)'}\n"
+                f"Configured chat/topics: {diag.get('configured_chat_id')} / {', '.join(map(str,diag.get('configured_thread_ids') or [])) or 'General (none)'}\n"
+                f"Observed: {friendly_timestamp(diag.get('observed_at'),timezone_name=cfg.timezone_name)}")
         last=lambda row: friendly_timestamp(row["created_at"],timezone_name=cfg.timezone_name) if row else "None yet"
         text=("📈 Participation Monitor\n\nThis page confirms whether participation tracking is seeing and correctly processing messages in the approved VAD participation area.\n\n"
-            f"Main group: {cfg.participation_chat_id or 'Not configured'}\nTopics: {', '.join(map(str,cfg.participation_topic_ids)) or 'General-only rule'}\n"
+            f"Configured chat ID: {configured_chat or 'Not configured'}\nConfigured topic IDs: {expected_topics}\n"
             f"Connected: {'Yes' if cfg.participation_chat_id else 'No'}\nCan read ordinary messages: {access}\nLast message detected: {last(monitor['last_detected'])}\n"
-            f"Last observed group/topic: {observed_chat} / {observed_topic}\n"
+            f"Last observed chat ID: {observed_chat}\nLast observed topic ID: {observed_topic}\nChat matches: {chat_match}\nTopic matches: {topic_match}\n"
             f"Last meaningful participation: {last(monitor['last_counted'])}\nApproved sellers tracked: {monitor['tracked']}\n"
-            f"Ignored today: {monitor['ignored_today']}\nIgnored categories: {cats}\nProcessing failures: {monitor['failures']}")
+            f"Ignored today: {monitor['ignored_today']}\nIgnored categories: {cats}\nProcessing failures: {monitor['failures']}\n\n"
+            "Last approved-creator outcomes\n"+("\n\n".join(creator_lines) or "No approved creators are currently tracked."))
         return await _show(query,text,menu_markup(ctx,[("🧾 Participation Event Log","participation_events")],"owner"))
     if action == "participation_events":
         if role is not Role.OWNER:return await _show(query,"Participation Event Log is owner-only.",home_markup(ctx,user_id))
