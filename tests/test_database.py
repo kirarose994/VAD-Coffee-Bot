@@ -90,6 +90,32 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(resolved[303],"telegram303")
         self.assertEqual(resolved[304],"Telegram user 304")
 
+    def test_get_creator_applies_canonical_identity_to_detail_consumers(self):
+        user_id=8129455408
+        db.record_bot_user(user_id,"OMyEve","Eve Goddess",self.path)
+        db.register_creator(user_id,"OMyEve",f"Telegram user {user_id}",self.path)
+        db.set_status(user_id,"active",99,self.path)
+        creator=db.get_creator(user_id,self.path)
+        self.assertEqual(creator["telegram_id"],user_id)
+        self.assertEqual(creator["display_name"],"Eve Goddess")
+        self.assertEqual(creator["username"],"OMyEve")
+
+    def test_creator_queues_and_activity_use_canonical_identity(self):
+        user_id=8129455408
+        db.record_bot_user(user_id,"OMyEve","Eve Goddess",self.path)
+        db.register_creator(user_id,"OMyEve",f"Telegram user {user_id}",self.path)
+        db.set_status(user_id,"active",99,self.path)
+        db.create_absence_request(user_id,"vacation","2026-07-20","2026-07-21",path=self.path)
+        db.create_support_request(user_id,"general","Please help",self.path)
+        db.record_engagement(user_id,88,-100,None,"canonical-identity","accepted","meaningful",self.path)
+
+        self.assertEqual(db.list_absence_requests(path=self.path)[0]["display_name"],"Eve Goddess")
+        self.assertEqual(db.support_queue(self.path)[0]["display_name"],"Eve Goddess")
+        self.assertEqual(db.pop_report("2026-W30",self.path)[0]["display_name"],"Eve Goddess")
+        self.assertEqual(db.participation_events(path=self.path)[0]["display_name"],"Eve Goddess")
+        diagnostic=db.creator_participation_diagnostics(self.path)[0]
+        self.assertEqual(diagnostic["creator"]["display_name"],"Eve Goddess")
+
     def test_archived_creator_is_not_resolved_as_active_identity(self):
         db.register_creator(6558268505,"kira","Kira",self.path)
         db.delete_creator(6558268505,99,self.path)
