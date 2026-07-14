@@ -22,7 +22,8 @@ def _button(label, nonce, action):
 
 
 def _nav(nonce, back="home"):
-    return [_button("🏠 Home", nonce, "home"), _button("◀️ Back", nonce, back), _button("❌ Cancel", nonce, "cancel")]
+    """Passive screens need Home and Back; Cancel belongs to active workflows only."""
+    return [_button("🏠 Home", nonce, "home"), _button("◀️ Back", nonce, back)]
 
 
 def grid_markup(ctx, rows, back="home"):
@@ -71,6 +72,34 @@ def _standing(summary):
     return "💚 Good standing"
 
 
+AVAILABILITY_LABELS = {
+    "available": "🟢 Available",
+    "unavailable": "⚪ Unavailable",
+    "vacation": "🌴 On vacation",
+    "sick": "🤒 Not feeling well",
+}
+
+POP_LABELS = {
+    "approved": "✅ Submitted",
+    "pending": "⏳ Awaiting review",
+    "rejected": "⚪ Not submitted",
+    "resubmission_requested": "🟡 Resubmission requested",
+    "excused": "💙 Excused by Away Notice",
+    "missing": "⚪ Not submitted",
+    "not submitted": "⚪ Not submitted",
+}
+
+
+def _friendly_time(value, cfg):
+    if not value:
+        return "No participation recorded yet"
+    try:
+        moment = datetime.fromisoformat(value).astimezone(cfg.timezone)
+        return moment.strftime("%b %-d at %-I:%M %p")
+    except (ValueError, TypeError):
+        return "Not available"
+
+
 def creator_card(user_id, cfg):
     creator = db.get_creator(user_id)
     if not creator:
@@ -78,14 +107,35 @@ def creator_card(user_id, cfg):
     warning = db.warning_summary(user_id)
     pop = db.creator_pop_status(user_id, _week_key(datetime.now(cfg.timezone))) if creator["status"] == "active" else "awaiting approval"
     absence = db.latest_absence(user_id)
-    away = "None on file" if not absence else f"{absence['absence_type'].title()} {absence['start_date']}–{absence['end_date']} ({absence['status']})"
+    away = "None" if not absence else f"{absence['start_date']}–{absence['end_date']} · {absence['status'].title()}"
     participation = "Active" if creator["status"] == "active" else creator["status"].title()
+    timing = ""
+    next_step = ""
+    anchor = creator["last_meaningful_at"] or creator["approved_at"] or creator["registered_at"]
+    if creator["status"] == "active" and anchor and creator["availability"] not in {"vacation","sick"}:
+        try:
+            elapsed = (datetime.now(cfg.timezone) - datetime.fromisoformat(anchor).astimezone(cfg.timezone)).total_seconds() / 3600
+            warning_hours, alert_hours = getattr(cfg,"warning_hours",48), getattr(cfg,"alert_hours",72)
+            if elapsed >= alert_hours:
+                participation = "🔴 Admin follow-up required"
+                next_step = "\n➡️ The three-day limit was reached; the admin team has been notified."
+            elif elapsed >= warning_hours:
+                participation = "🟠 Participation reminder"
+                timing = f"\n⏱ Admin follow-up in about {max(0, int(alert_hours-elapsed))}h"
+                next_step = "\n➡️ Join a meaningful conversation or record an Away Notice."
+            else:
+                timing = f"\n⏱ Friendly reminder in about {max(0, int(warning_hours-elapsed))}h"
+        except (TypeError,ValueError):
+            pass
     return (
-        f"🤝 Participation · {participation}\n"
-        f"📸 Thursday POP · {pop.replace('_', ' ').title()}\n"
-        f"💛 Community standing · {_standing(warning)}\n"
-        f"🌴 Away Notice · {away}\n"
-        f"🟢 Availability · {creator['availability'].title()}"
+        "📋 Today’s Status\n"
+        f"🤝 Participation: {participation}\n"
+        f"📸 Thursday POP: {POP_LABELS.get(pop, pop.replace('_', ' ').title())}\n"
+        f"{_standing(warning)}\n"
+        f"💙 Away Notice: {away}\n"
+        f"{AVAILABILITY_LABELS.get(creator['availability'], '⚪ Unavailable')}\n"
+        f"🕒 Last meaningful participation: {_friendly_time(creator['last_meaningful_at'], cfg)}"
+        f"{timing}{next_step}"
     )
 
 
@@ -93,33 +143,39 @@ def admin_card(cfg):
     metrics = db.dashboard_metrics(_week_key(datetime.now(cfg.timezone)))
     pending = metrics["pending_registrations"] + metrics["pending_vacations"] + metrics["pending_sick"] + metrics["pending_pop"]
     return (
-        f"📥 Reviews waiting · {pending}\n"
-        f"📝 Registrations · {metrics['pending_registrations']}\n"
-        f"🌴 Away Notices · {metrics['pending_vacations'] + metrics['pending_sick']}\n"
-        f"📸 POP reviews · {metrics['pending_pop']}\n"
-        f"⚠️ Missing POP · {metrics['missing_pop']}"
+        f"🚨 Admin queue: {pending + metrics.get('participation_flags', 0) + metrics.get('failed_notifications', 0)}\n"
+        f"📝 Registrations: {metrics['pending_registrations']}\n"
+        f"💙 Away Notices: {metrics['pending_vacations'] + metrics['pending_sick']}\n"
+        f"📸 POP reviews: {metrics['pending_pop']}\n"
+        f"🟠 Participation flags: {metrics.get('participation_flags', 0)}\n"
+        f"⚠️ Failed notifications: {metrics.get('failed_notifications', 0)}"
     )
 
 
 def owner_card(cfg):
     metrics = db.dashboard_metrics(_week_key(datetime.now(cfg.timezone)))
+    attention_total = metrics.get("needs_attention", 0)
     return (
-        f"👥 Active creators · {metrics['active_creators']}\n"
-        f"📥 Pending actions · {metrics['pending_registrations'] + metrics['pending_vacations'] + metrics['pending_sick'] + metrics['pending_pop']}\n"
-        f"🌴 Away now · {metrics['away_now']}\n"
-        f"💛 Warnings / strikes · {metrics['active_warnings']} / {metrics['active_strikes']}\n"
-        f"🗃 Archived records · {metrics['deleted_records']}\n"
-        f"🔒 Audit events · {metrics['audit_events']}\n"
-        "🩺 System · Ready"
+        f"🚨 Needs attention: {attention_total}\n"
+        f"👥 Active creators: {metrics['active_creators']}\n"
+        f"💙 Away now: {metrics['away_now']}\n"
+        f"📸 POP reviews: {metrics['pending_pop']}\n"
+        f"🟠 Participation alerts: {metrics.get('participation_flags', 0)}\n"
+        f"⚠️ Warnings / strikes: {metrics['active_warnings']} / {metrics['active_strikes']}\n"
+        f"🗃️ Archived records: {metrics['deleted_records']}\n"
+        f"🔐 Audit events today: {metrics.get('audit_today', 0)}\n"
+        + ("🟢 System healthy" if metrics.get("failed_notifications", 0) == 0 else "🟠 Notification delivery needs review")
     )
 
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    returning = bool(ctx.user_data.get("welcome_seen"))
     ctx.user_data.clear()
-    text = (
+    ctx.user_data["welcome_seen"] = True
+    text = f"Welcome back, {update.effective_user.first_name}! 💛" if returning else (
         f"Welcome, {update.effective_user.first_name}! 💛\n\n"
-        "This space is here to help you check VAD participation, submit Thursday POP, or share an Away Notice.\n\n"
-        "Away Notices keep tracking fair when you need time away—no private details needed."
+        "Your VAD Community Hub is here to help keep participation, Thursday POP, Away Notices, and personal updates together.\n\n"
+        "Away Notices simply keep tracking fair while you take time away. No private details are required."
     )
     if db.get_creator(update.effective_user.id):
         text += "\n\nToday\n" + creator_card(update.effective_user.id,ctx.bot_data["config"])
@@ -156,14 +212,14 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 grid_markup(ctx,[[ ("📝 Register","register") ],[("📖 Resources","resources"),("💬 Get Help","contact")]]))
         return await _show(query, "Your VAD Dashboard\n\n" + creator_card(user_id, cfg), grid_markup(ctx, [
             [("🟢 Available","available"),("⚪ Unavailable","unavailable")],
-            [("🌴 Vacation Notice","vacation_help"),("🤒 Sick-Day Notice","sick_help")],
+            [("💙 Let Us Know You’ll Be Away","away_help")],
             [("📸 POP Help","pop_help"),("💛 Standing","my_warnings")],
             [("📜 Timeline","timeline_0"),("💬 Get Help","contact")],
         ]))
     if action == "admin":
         if role < Role.ADMIN:
             return await _show(query, "Admin access is required.", home_markup(ctx, user_id))
-        rows = []
+        rows = [[("🚨 Admin Queue","admin_queue")]]
         if has_permission(user_id,cfg,"review_registrations"): rows.append([("📝 Registrations","registration_queue")])
         away = []
         if has_permission(user_id,cfg,"review_vacations"): away.append(("🌴 Vacation","vacation_queue"))
@@ -179,21 +235,87 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "owner":
         if role is not Role.OWNER:
             return await _show(query, "Owner access is required.", home_markup(ctx, user_id))
-        return await _show(query, "Owner Dashboard\n\n" + owner_card(cfg), grid_markup(ctx,[
-            [("🔒 Audit","audit"),("🗃 Archive","deleted")],
-            [("👥 Access","roles"),("⚙️ Settings","settings")],
-            [("📈 Reports","reports"),("🩺 Health","health")],
-            [("💾 Export","export_help"),("♻️ Restore","restore_help")],
+        return await _show(query, "👑 Owner Dashboard\n\n" + owner_card(cfg), grid_markup(ctx,[
+            [("🚨 Needs Attention","needs_attention")],
+            [("📊 Reports","reports"),("👥 Access","roles")],
+            [("🔐 Audit","audit"),("🗃️ Archive","deleted")],
+            [("♻️ Restore","restore_help")],
+            [("⚙️ Settings","settings"),("🩺 Health","health")],
+            [("💾 Export","export_help")],
         ]))
     if action == "register":
         db.register_creator(user_id, update.effective_user.username, update.effective_user.full_name)
+        if getattr(cfg,"admin_chat_id",None):
+            try:
+                await ctx.bot.send_message(cfg.admin_chat_id,
+                    f"📝 New registration\n{update.effective_user.full_name} is waiting for review.",
+                    message_thread_id=getattr(cfg,"reports_thread_id",None))
+                db.record_audit(None,"registration_notification_delivered","notification",target_telegram_id=user_id)
+            except Exception:
+                db.record_audit(None,"registration_notification_delivery_failed","notification",target_telegram_id=user_id,result="error")
         return await _show(query, "You’re registered! 💛\n\nYour profile is waiting for a quick community review. We’ll update your dashboard when it’s ready.", menu_markup(ctx, [], "creator"))
+    if action in {"needs_attention", "admin_queue"}:
+        if action == "needs_attention" and role is not Role.OWNER:
+            return await _show(query, "Needs Attention is available only to owners.", home_markup(ctx,user_id))
+        if action == "admin_queue" and role < Role.ADMIN:
+            return await _show(query, "Admin access is required.", home_markup(ctx,user_id))
+        counts = db.needs_attention_counts(_week_key(datetime.now(cfg.timezone)))
+        permitted = []
+        if has_permission(user_id,cfg,"review_registrations"):
+            permitted.append(("📝 Registrations",counts["registrations"],"registration_queue"))
+        if has_permission(user_id,cfg,"review_vacations") or has_permission(user_id,cfg,"review_sick_days"):
+            permitted.append(("💙 Away Notices",counts["away_notices"],"away_queue"))
+        if has_permission(user_id,cfg,"review_pop"):
+            permitted.append(("📸 POP reviews",counts["pop_reviews"],"pop_queue"))
+        if has_permission(user_id,cfg,"view_creator_reports"):
+            permitted.extend([
+                ("🟡 Near two days",counts["near_two_days"],"participation_queue"),
+                ("🔴 Three-day alerts",counts["three_day_alerts"],"participation_queue"),
+            ])
+        if has_permission(user_id,cfg,"adjust_warnings"):
+            permitted.extend([
+                ("⚠️ Unacknowledged",counts["unacknowledged_warnings"],"warnings_help"),
+                ("🔴 Owner review",counts["owner_reviews"],"warnings_help"),
+            ])
+        if role is Role.OWNER:
+            permitted.extend([
+                ("📭 Failed notifications",counts["failed_notifications"],"health"),
+                ("🗃️ Recent archive changes",counts["recent_archive_changes"],"deleted"),
+            ])
+        active = [item for item in permitted if item[1]]
+        title = "🚨 Needs Attention" if action == "needs_attention" else "🚨 Admin Queue"
+        if not active:
+            text = title + "\n\n✅ Nothing needs your attention right now."
+        else:
+            text = title + "\n\n" + "\n".join(f"{label}: {count}" for label,count,_ in active)
+        buttons = [[(f"{label} · {count}",target)] for label,count,target in active]
+        return await _show(query,text,grid_markup(ctx,buttons,"owner" if role is Role.OWNER else "admin"))
+    if action == "away_queue":
+        if not (has_permission(user_id,cfg,"review_vacations") or has_permission(user_id,cfg,"review_sick_days")):
+            return await _show(query,"This review area isn’t included in your access.",home_markup(ctx,user_id))
+        rows = db.list_absence_requests("pending")
+        text = "💙 Away Notices\n\n" + ("\n\n".join(
+            f"#{r['id']} · {r['display_name']}\n{r['start_date']} → {r['end_date']}\n💙 Acknowledge with /absence_queue"
+            for r in rows[:10]) or "💙 No Away Notices need review.")
+        return await _show(query,text[:3900],menu_markup(ctx,[],"admin"))
+    if action == "participation_queue":
+        if not has_permission(user_id,cfg,"view_creator_reports"):
+            return await _show(query,"Participation reports aren’t included in your access.",home_markup(ctx,user_id))
+        rows = db.participation_attention(cfg.warning_hours,cfg.alert_hours)
+        lines = ["🟠 Participation Attention"] + [
+            f"{('🔴' if r['hours'] >= cfg.alert_hours else '🟠')} {r['display_name']} · {int(r['hours'])}h"
+            for r in rows[:20]
+        ]
+        if not rows: lines.append("✅ No participation follow-up is needed.")
+        return await _show(query,"\n\n".join(lines),menu_markup(ctx,[],"admin"))
     if action in {"available", "unavailable"}:
         if not db.set_availability(user_id, action, user_id, "creator self-service"):
             text = "Please register before updating availability."
         else:
             text = f"You’re now marked {action}."
         return await _show(query, text, menu_markup(ctx, [], "creator"))
+    if action == "away_help":
+        return await _show(query, "💙 Let Us Know You’ll Be Away\n\n🌴 Vacation or trip · /vacation_request\n🤒 Not feeling well · /sick_request\n🧠 Mental health or personal day · /personal_day_request\n🚨 Emergency · /emergency_away_request\n💙 Other time away · /other_away_request\n\nUse: command START_DATE END_DATE [optional note]\nPrivate details are never required.", menu_markup(ctx, [], "creator"))
     if action in {"vacation_help", "sick_help"}:
         command = "vacation_request" if action.startswith("vacation") else "sick_request"
         return await _show(query, f"Send /{command} YYYY-MM-DD YYYY-MM-DD followed by an optional note. You will confirm before submission.", menu_markup(ctx, [], "creator"))

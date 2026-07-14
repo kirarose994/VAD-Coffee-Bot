@@ -27,7 +27,7 @@ def _token(ctx, key):
     return token
 
 
-async def absence_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE, absence_type):
+async def absence_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE, absence_type, category=None):
     creator = db.get_creator(update.effective_user.id)
     if not creator or creator["status"] != "active":
         return await update.effective_message.reply_text("Away Notices become available once your creator profile is approved. 💛")
@@ -41,19 +41,25 @@ async def absence_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE, absenc
         return await update.effective_message.reply_text("Those dates don’t look quite right. Use YYYY-MM-DD, with the end date on or after the start date.")
     note = _clean(" ".join(ctx.args[2:]))
     token = _token(ctx, "absence_nonce")
-    ctx.user_data["absence_draft"] = {"type": absence_type, "start": start.isoformat(), "end": end.isoformat(), "note": note}
+    category = category or ("vacation_trip" if absence_type == "vacation" else "not_feeling_well")
+    labels = {"vacation_trip":"🌴 Vacation or trip","not_feeling_well":"🤒 Not feeling well",
+              "personal_day":"🧠 Mental health or personal day","emergency":"🚨 Emergency","other":"💙 Other time away"}
+    ctx.user_data["absence_draft"] = {"type": absence_type, "category":category, "start": start.isoformat(), "end": end.isoformat(), "note": note}
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Confirm", callback_data=f"absence:{token}:confirm"),
         InlineKeyboardButton("❌ Cancel", callback_data=f"absence:{token}:cancel"),
     ]])
     await update.effective_message.reply_text(
-        f"Confirm Away Notice\n\nType · {absence_type.title()}\nDates · {start} → {end}\nNote · {note or 'No note'}",
+        f"Confirm Away Notice\n\n{labels.get(category,'💙 Time away')}\nDates · {start} → {end}\nNote · {note or 'No note'}",
         reply_markup=keyboard,
     )
 
 
 async def vacation_request(update, ctx): return await absence_request(update, ctx, "vacation")
 async def sick_request(update, ctx): return await absence_request(update, ctx, "sick")
+async def personal_day_request(update, ctx): return await absence_request(update, ctx, "sick", "personal_day")
+async def emergency_away_request(update, ctx): return await absence_request(update, ctx, "sick", "emergency")
+async def other_away_request(update, ctx): return await absence_request(update, ctx, "vacation", "other")
 
 
 async def absence_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -66,7 +72,7 @@ async def absence_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if parts[2] != "confirm" or not draft:
         await query.answer()
         return await query.edit_message_text("Away Notice cancelled. Nothing was submitted.")
-    request_id = db.create_absence_request(update.effective_user.id, draft["type"], draft["start"], draft["end"], draft["note"])
+    request_id = db.create_absence_request(update.effective_user.id, draft["type"], draft["start"], draft["end"], draft["note"], category=draft["category"])
     await query.answer("Submitted")
     await query.edit_message_text(f"Away Notice #{request_id} sent for review. 💛\n\nYou’ll receive an update here when it’s reviewed. Use /start to return home.")
     cfg = ctx.bot_data["config"]
@@ -92,9 +98,10 @@ async def absence_queue(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for row in rows[:20]:
         token = _token(ctx, f"review_nonce_{row['id']}")
         buttons = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Approve", callback_data=f"review:{token}:{row['id']}:approved"),
-            InlineKeyboardButton("❌ Deny", callback_data=f"review:{token}:{row['id']}:denied"),
-            InlineKeyboardButton("💬 Clarify", callback_data=f"review:{token}:{row['id']}:clarification"),
+            InlineKeyboardButton("✅ Record as excused", callback_data=f"review:{token}:{row['id']}:approved"),
+            InlineKeyboardButton("🚫 Mark invalid", callback_data=f"review:{token}:{row['id']}:denied"),
+        ],[
+            InlineKeyboardButton("💬 Ask for clarification", callback_data=f"review:{token}:{row['id']}:clarification"),
         ]])
         await update.effective_message.reply_text(
             f"#{row['id']} {row['display_name']} — {row['absence_type']}\n{row['start_date']} to {row['end_date']}\nNote: {row['note'] or 'none'}\nSubmitted: {row['submitted_at']}",
@@ -355,7 +362,7 @@ async def warning_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try: target = int(ctx.args[0])
     except ValueError: return await update.effective_message.reply_text("Telegram ID must be numeric.")
     reason = _clean(" ".join(ctx.args[2:]), 1000)
-    warning_id = db.add_warning(target, ctx.args[1], reason, actor)
+    warning_id = db.add_warning(target, ctx.args[1], reason, actor, template_key=ctx.args[1])
     if not warning_id:
         return await update.effective_message.reply_text("Creator not found or warning was invalid.")
     creator = db.get_creator(target)
@@ -364,6 +371,14 @@ async def warning_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await ctx.bot.send_message(target, _render_template(template["body"],creator["display_name"],reason))
     except Exception:
         db.record_audit(actor,"warning_delivery_failed","creator_warning",warning_id,target,reason="blocked or unavailable",result="error")
+    summary = db.warning_summary(target)
+    if summary["warnings"] >= 2 or summary["strikes"] >= 3:
+        escalation = "🔴 Three strikes — Owner Review Required" if summary["strikes"] >= 3 else "🟠 Second warning requires attention"
+        for owner_id in cfg.owner_user_ids:
+            try:
+                await ctx.bot.send_message(owner_id,f"{escalation}\nMember: {creator['display_name']}\nOpen Owner Dashboard → Needs Attention.")
+            except Exception:
+                db.record_audit(actor,"owner_escalation_delivery_failed","creator_warning",warning_id,target,result="error")
     await update.effective_message.reply_text(f"{ctx.args[1].title()} #{warning_id} documented and audited.")
 
 
@@ -458,7 +473,8 @@ async def template_preview(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     reason = _clean(" ".join(ctx.args[2:])) or "Please contact an admin if you have questions."
     body = _render_template(template["body"],creator["display_name"],reason)
     token = _token(ctx, "template_nonce")
-    ctx.user_data["template_draft"] = {"target":target,"key":template["template_key"],"body":body}
+    ctx.user_data["template_draft"] = {"target":target,"key":template["template_key"],"body":body,
+        "edited": bool(reason and reason != "Please contact an admin if you have questions.")}
     await update.effective_message.reply_text(f"Template Preview\n\n{body}", reply_markup=InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Send",callback_data=f"template:{token}:send"),
         InlineKeyboardButton("❌ Cancel",callback_data=f"template:{token}:cancel"),
@@ -482,14 +498,28 @@ async def template_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception:
         result = "failed"
     db.record_audit(update.effective_user.id,"template_message_sent","message_template",
-                    target_telegram_id=draft["target"],new_value={"template":draft["key"]},result="success" if result == "delivered" else "error")
+                    target_telegram_id=draft["target"],new_value={"template":draft["key"],"edited":draft["edited"],"length":len(draft["body"])},result="success" if result == "delivered" else "error")
     await query.answer()
     await query.edit_message_text(f"Template message {result}. The action was audited.")
+
+
+async def template_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if role_for(update.effective_user.id, ctx.bot_data["config"]) is not Role.OWNER:
+        return await update.effective_message.reply_text("Default message templates are owner-only.")
+    if len(ctx.args) < 2:
+        return await update.effective_message.reply_text("Usage: /template_update TEMPLATE_KEY new default text")
+    key, body = ctx.args[0], _clean(" ".join(ctx.args[1:]), 3500)
+    if not db.update_message_template(key, body, update.effective_user.id):
+        return await update.effective_message.reply_text("Template not found, unchanged, or empty.")
+    await update.effective_message.reply_text("Default template updated. The previous and new text were preserved in owner audit history.")
 
 
 def register_operations(app):
     app.add_handler(CommandHandler("vacation_request", vacation_request))
     app.add_handler(CommandHandler("sick_request", sick_request))
+    app.add_handler(CommandHandler("personal_day_request", personal_day_request))
+    app.add_handler(CommandHandler("emergency_away_request", emergency_away_request))
+    app.add_handler(CommandHandler("other_away_request", other_away_request))
     app.add_handler(CommandHandler("absence_queue", absence_queue))
     app.add_handler(CommandHandler("absence_calendar", absence_calendar))
     app.add_handler(CommandHandler("admin_note", add_note))
@@ -509,6 +539,7 @@ def register_operations(app):
     app.add_handler(CommandHandler("creator_timeline", creator_timeline))
     app.add_handler(CommandHandler("template_list", template_list))
     app.add_handler(CommandHandler("template_preview", template_preview))
+    app.add_handler(CommandHandler("template_update", template_update))
     app.add_handler(CallbackQueryHandler(absence_callback, pattern=r"^absence:"))
     app.add_handler(CallbackQueryHandler(review_callback, pattern=r"^review:"))
     app.add_handler(CallbackQueryHandler(review_confirm_callback, pattern=r"^reviewconfirm:"))

@@ -184,7 +184,10 @@ class CallbackSecurityTests(unittest.IsolatedAsyncioTestCase):
         with patch("navigation.db.dashboard_metrics",return_value=self.metrics()):
             await callback(update,ctx)
         markup = query.edit_message_text.await_args.kwargs["reply_markup"]
-        self.assertLessEqual(len(markup.inline_keyboard),5)
+        labels = [button.text for row in markup.inline_keyboard for button in row]
+        self.assertEqual(labels[0],"🚨 Needs Attention")
+        self.assertNotIn("❌ Cancel",labels)
+        self.assertTrue(all(len(row) <= 2 for row in markup.inline_keyboard))
 
 
 if __name__ == "__main__": unittest.main()

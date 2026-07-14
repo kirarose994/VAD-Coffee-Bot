@@ -1,5 +1,18 @@
 # VAD Operations Bot rollout guide
 
+## Version 1.1 usability upgrade
+
+- Schema version 4 is additive. It adds Away Notice category metadata, template revisions,
+  owner-summary delivery claims, general community-member identities, and future-safe
+  buyer/community warning storage. Existing creator, POP, Away Notice, warning, audit,
+  deletion, template, and timeline records are retained.
+- Owner Dashboard starts with **🚨 Needs Attention** and presents actionable counts only.
+- Admin Dashboard starts with a permission-filtered **🚨 Admin Queue**.
+- Passive screens show Home and Back. Cancel appears only while entering or confirming data.
+- The optional owner summary is disabled by default. To enable it later, set
+  `DAILY_OWNER_SUMMARY_ENABLED=true` and optionally `DAILY_OWNER_SUMMARY_TIME=09:00`.
+  The time uses `America/New_York`, and each owner/date claim is restart-safe.
+
 ## Architecture
 
 - `bot/main.py`: application startup and handler registration

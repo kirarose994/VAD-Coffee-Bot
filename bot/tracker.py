@@ -227,6 +227,14 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         proof_type = "photo" if msg.photo else "document" if msg.document else "media"
         if db.submit_pop(user.id, week_key(local_now), msg.message_id, msg.chat_id, thread_id, proof_type):
             await msg.reply_text("Thursday POP received! 📸 It’s now waiting for review.")
+            if cfg.admin_chat_id:
+                try:
+                    await ctx.bot.send_message(cfg.admin_chat_id,
+                        f"📸 POP awaiting review\n{escape(user.full_name)} submitted Thursday POP.",
+                        message_thread_id=cfg.reports_thread_id)
+                    db.record_audit(None,"pop_notification_delivered","notification",target_telegram_id=user.id)
+                except Exception:
+                    db.record_audit(None,"pop_notification_delivery_failed","notification",target_telegram_id=user.id,result="error")
         return
     if cfg.girls_thread_id is not None and thread_id != cfg.girls_thread_id:
         return
@@ -259,17 +267,49 @@ async def inactivity_job(ctx: ContextTypes.DEFAULT_TYPE):
             if cfg.admin_chat_id:
                 try:
                     await ctx.bot.send_message(cfg.admin_chat_id,
-                        f"3-day inactivity alert: {escape(creator['display_name'])} ({creator['telegram_id']})",
+                        f"🔴 Admin follow-up required\n{escape(creator['display_name'])} has reached the three-day community participation limit.",
                         message_thread_id=cfg.reports_thread_id)
                     db.record_audit(None,"alert_delivered","notification",target_telegram_id=creator["telegram_id"])
                 except Exception:
                     db.record_audit(None,"alert_delivery_failed","notification",target_telegram_id=creator["telegram_id"],result="error")
         elif hours >= cfg.warning_hours and db.claim_notification(creator["telegram_id"], anchor, "warning"):
             try:
-                await ctx.bot.send_message(creator["telegram_id"], "Friendly reminder: no meaningful girls-group engagement has been recorded for two days.")
+                await ctx.bot.send_message(creator["telegram_id"],
+                    "🟠 Participation reminder\n\nIt has been two days since your last meaningful participation. "
+                    "Another day without participation will notify the admin team. Taking time away? You can record an Away Notice.")
                 db.record_audit(None,"warning_delivered","notification",target_telegram_id=creator["telegram_id"])
             except Exception:
                 db.record_audit(None,"warning_delivery_failed","notification",target_telegram_id=creator["telegram_id"],result="error")
+
+
+async def daily_owner_summary_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """Optional and disabled by default; delivery is deduplicated per owner and Eastern date."""
+    cfg = config(ctx)
+    if not cfg.daily_owner_summary_enabled:
+        return
+    now = datetime.now(cfg.timezone)
+    key = week_key(now)
+    metrics = db.dashboard_metrics(key)
+    attention = db.needs_attention_counts(key)
+    body = (
+        "📊 VAD Daily Summary\n\n"
+        f"🚨 Needs attention: {attention['total']}\n"
+        f"👥 Active creators: {metrics['active_creators']}\n"
+        f"💙 Away now: {metrics['away_now']}\n"
+        f"📸 POP awaiting review: {metrics['pending_pop']}\n"
+        f"🟠 Participation alerts: {metrics['participation_flags']}\n"
+        f"⚠️ Warnings / strikes: {metrics['active_warnings']} / {metrics['active_strikes']}\n"
+        + ("🟢 System healthy" if metrics["failed_notifications"] == 0 else "🟠 Delivery failures need review")
+    )
+    for owner_id in cfg.owner_user_ids:
+        cycle = f"owner-summary:{now.date().isoformat()}"
+        if not db.claim_owner_summary(owner_id, cycle):
+            continue
+        try:
+            await ctx.bot.send_message(owner_id, body)
+            db.record_audit(None,"owner_summary_delivered","notification",target_telegram_id=owner_id)
+        except Exception:
+            db.record_audit(None,"owner_summary_delivery_failed","notification",target_telegram_id=owner_id,result="error")
 
 
 def register_handlers(app):
@@ -296,3 +336,10 @@ def register_handlers(app):
     )
     app.add_handler(MessageHandler(pop_media, observe), group=10)
     app.job_queue.run_repeating(inactivity_job, interval=1800, first=60, name="inactivity-monitor")
+    cfg = app.bot_data.get("config")
+    if cfg and getattr(cfg, "daily_owner_summary_enabled", False):
+        try:
+            hour, minute = map(int, getattr(cfg,"daily_owner_summary_time","09:00").split(":", 1))
+            app.job_queue.run_daily(daily_owner_summary_job, time=time(hour,minute,tzinfo=cfg.timezone), name="daily-owner-summary")
+        except (ValueError, TypeError):
+            pass

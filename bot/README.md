@@ -11,8 +11,14 @@ automatic punishment—and creators can acknowledge warnings from their dashboar
 
 Mobile UX uses compact two-column action grids, concise status cards, permission-filtered
 admin tools, consolidated owner navigation, supportive empty states, and consistent
-Home/Back/Cancel controls. Creator-facing copy describes independent community
+Home/Back controls on passive pages, with Cancel reserved for active confirmations.
+Creator-facing copy describes independent community
 participation rather than employment or workplace management.
+
+Version 1.1 adds owner **Needs Attention** and permission-filtered **Admin Queue** screens,
+consistent status icons, time-to-reminder guidance, five privacy-friendly Away Notice
+categories, expanded audited templates, general community-member identity support, and an
+optional deduplicated daily owner summary.
 
 The active application starts with `cd bot && python main.py`. Coffee Date ordering is
 not imported or registered. Its historical implementation remains only in
@@ -51,6 +57,8 @@ Operational:
 - `INACTIVITY_ALERT_HOURS` — defaults to `72`
 - `SETUP_MODE` — temporary ID-discovery mode; normally `false`
 - `LOG_LEVEL` — defaults to `INFO`
+- `DAILY_OWNER_SUMMARY_ENABLED` — defaults to `false`; no summary job is registered unless true
+- `DAILY_OWNER_SUMMARY_TIME` — Eastern Time `HH:MM`, defaults to `09:00`
 
 `OWNER_TELEGRAM_IDS` is accepted as an alias for owner IDs. Do not configure real IDs
 in repository files.
@@ -81,9 +89,13 @@ operational permission set.
   preserving its timeline and audit history.
 - Three active strikes display `Owner review required`; the bot does not automatically
   impose disciplinary action.
+- Second warnings and three-strike cases appear in Needs Attention. Three strikes require a
+  human owner decision and never remove anyone from Telegram automatically.
 - `/template_list` lists reusable messages and `/template_preview` previews and confirms
   delivery. Default templates cover friendly, participation, POP, welcome, community
   check-in, warning, and strike messaging.
+- `/template_update TEMPLATE_KEY new text` is owner-only and preserves both versions in
+  template revisions and the audit trail.
 - `/creator_timeline TELEGRAM_ID` provides authorized, paginated chronological history.
 
 See [OPERATIONS_ROLLOUT.md](../docs/OPERATIONS_ROLLOUT.md) for migration, deployment,

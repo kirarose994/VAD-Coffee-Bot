@@ -48,6 +48,8 @@ class Config:
     warning_hours: int
     alert_hours: int
     setup_mode: bool
+    daily_owner_summary_enabled: bool
+    daily_owner_summary_time: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -82,6 +84,8 @@ class Config:
             warning_hours=int(os.environ.get("INACTIVITY_WARNING_HOURS", "48")),
             alert_hours=int(os.environ.get("INACTIVITY_ALERT_HOURS", "72")),
             setup_mode=os.environ.get("SETUP_MODE", "false").strip().casefold() == "true",
+            daily_owner_summary_enabled=os.environ.get("DAILY_OWNER_SUMMARY_ENABLED", "false").strip().casefold() == "true",
+            daily_owner_summary_time=os.environ.get("DAILY_OWNER_SUMMARY_TIME", "09:00"),
         )
 
     @property
@@ -90,11 +94,12 @@ class Config:
 
 
 RESOURCE_DEFAULTS = {
+    "about": ("About This Bot", "Your VAD Community Hub keeps participation, Thursday POP, Away Notices, and personal updates together. Away Notices keep tracking fair; private details are never required."),
     "rules": ("Community Rules", "Community rules are maintained by the owner team."),
     "creator_guide": ("Creator Guide", "Use the Creator dashboard to manage your operations profile."),
     "engagement": ("How Engagement Is Counted", "Meaningful conversation counts; spam, greetings, repeats, and filler do not."),
-    "vacation": ("Vacation Policy", "Submit dates in advance when possible. Approval pauses applicable expectations."),
-    "sick": ("Sick-Day Policy", "Report only dates and an optional note; medical details are never required."),
+    "vacation": ("Away Notice Policy", "Let the community know when you will be away. Admins record eligible dates as excused so participation and POP tracking remain fair."),
+    "sick": ("Personal-Day Privacy", "Share only dates and an optional note. Medical or other private details are never required."),
     "pop": ("Thursday POP Instructions", "Submit proof in the configured Thursday POP topic."),
     "faq": ("Frequently Asked Questions", "Contact an administrator if your question is not answered here."),
     "contact": ("Contact Admin", "Use Contact Admin from your Creator dashboard."),
