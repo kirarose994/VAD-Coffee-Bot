@@ -29,11 +29,11 @@ class AuditVisibilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_owner_can_view_audit_actor_information(self):
         update = self.update(10)
         row = {
-            "created_at": "2026-07-14T12:00:00+00:00",
+            "occurred_at": "2026-07-14T12:00:00+00:00",
             "actor_id": 20,
-            "target_id": 99,
+            "target_telegram_id": 99,
             "action": "creator_status_changed",
-            "details": '{"status":"active"}',
+            "new_value": '{"status":"active"}',
         }
         with patch("tracker.db.history", return_value=[row]) as history:
             await history_command(update, self.context())
@@ -75,7 +75,8 @@ class AuditVisibilityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_admin_can_approve_pop_submissions(self):
         update = self.update(30)
-        with patch("tracker.db.review_pop", return_value=True) as review_pop:
+        with patch("tracker.db.get_pop_submission", return_value=None), \
+             patch("tracker.db.review_pop", return_value=True) as review_pop:
             await pop_approve(update, self.context(["7", "verified"]))
         review_pop.assert_called_once_with(7, "approved", 30, "verified")
 

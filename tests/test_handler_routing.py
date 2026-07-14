@@ -38,17 +38,13 @@ class HandlerRoutingTests(unittest.TestCase):
             },
         }, self.app.bot)
 
-    def test_creator_report_reaches_tracker_before_coffee_conversation(self):
+    def test_creator_report_reaches_tracker_and_coffee_conversation_is_absent(self):
         update = self.command_update()
         handlers = self.app.handlers[0]
         first_match = next(handler for handler in handlers if handler.check_update(update))
         self.assertIs(first_match.callback, creator_report)
         report_index = handlers.index(first_match)
-        conversation_index = next(
-            index for index, handler in enumerate(handlers)
-            if isinstance(handler, ConversationHandler)
-        )
-        self.assertLess(report_index, conversation_index)
+        self.assertFalse(any(isinstance(handler, ConversationHandler) for handler in handlers))
 
     def test_generic_tracker_observers_do_not_match_slash_commands(self):
         update = self.command_update()

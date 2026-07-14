@@ -56,11 +56,11 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(db.delete_creator(10, 99, self.path))
         db.audit_setting_change(99, "warning_hours", 48, 24, self.path)
         actions = [row["action"] for row in db.history(path=self.path)]
-        self.assertIn("creator_deleted", actions)
+        self.assertIn("creator_soft_deleted", actions)
         self.assertIn("setting_changed", actions)
-        deleted = db.reset_history(99, self.path)
-        self.assertGreaterEqual(deleted, 3)
-        self.assertEqual(db.history(path=self.path)[0]["action"], "history_reset")
+        with self.assertRaises(PermissionError):
+            db.reset_history(99, self.path)
+        self.assertGreaterEqual(len(db.history(path=self.path)), 3)
 
 
 if __name__ == "__main__": unittest.main()

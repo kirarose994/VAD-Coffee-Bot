@@ -3,14 +3,16 @@
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 DATABASE_PATH = Path(__file__).with_name("vad_tracker.db")
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    """Legacy function name; persisted operational timestamps are Eastern Time."""
+    return datetime.now(ZoneInfo("America/New_York")).isoformat()
 
 
 @contextmanager
@@ -57,7 +59,7 @@ def initialize_database(path: Path | None = None):
           id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER NOT NULL,
           week_key TEXT NOT NULL, message_id INTEGER NOT NULL, chat_id INTEGER NOT NULL,
           thread_id INTEGER, proof_type TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','resubmission_requested','excused')),
           submitted_at TEXT NOT NULL, reviewed_at TEXT, reviewed_by INTEGER, review_note TEXT,
           FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id),
           UNIQUE(telegram_id, week_key)
@@ -66,8 +68,63 @@ def initialize_database(path: Path | None = None):
           id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id INTEGER NOT NULL,
           target_id INTEGER, action TEXT NOT NULL, details TEXT, created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS absence_requests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          telegram_id INTEGER NOT NULL,
+          absence_type TEXT NOT NULL CHECK(absence_type IN ('vacation','sick')),
+          start_date TEXT NOT NULL, end_date TEXT NOT NULL, note TEXT,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','denied','cancelled')),
+          submitted_at TEXT NOT NULL, reviewed_at TEXT, reviewed_by INTEGER,
+          review_reason TEXT, clarification_requested_at TEXT,
+          original_snapshot TEXT NOT NULL, deleted_at TEXT, deleted_by INTEGER,
+          deletion_reason TEXT, restored_at TEXT, restored_by INTEGER, restoration_reason TEXT,
+          FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id)
+        );
+        CREATE INDEX IF NOT EXISTS absence_creator_dates ON absence_requests(telegram_id,start_date,end_date,status);
+        CREATE INDEX IF NOT EXISTS absence_queue ON absence_requests(status,absence_type,submitted_at);
+        CREATE TABLE IF NOT EXISTS availability_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER NOT NULL,
+          previous_status TEXT, new_status TEXT NOT NULL, changed_at TEXT NOT NULL,
+          changed_by INTEGER NOT NULL, expires_at TEXT, reason TEXT,
+          FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id)
+        );
+        CREATE TABLE IF NOT EXISTS admin_notes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER NOT NULL,
+          note TEXT NOT NULL, created_at TEXT NOT NULL, created_by INTEGER NOT NULL,
+          updated_at TEXT, updated_by INTEGER, deleted_at TEXT, deleted_by INTEGER,
+          deletion_reason TEXT, FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id)
+        );
+        CREATE TABLE IF NOT EXISTS audit_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL,
+          actor_id INTEGER, actor_name TEXT, actor_role TEXT NOT NULL,
+          action TEXT NOT NULL, target_type TEXT, target_record_id INTEGER,
+          target_telegram_id INTEGER, previous_value TEXT, new_value TEXT,
+          reason TEXT, source_chat_id INTEGER, source_thread_id INTEGER,
+          related_request_id INTEGER, related_submission_id INTEGER,
+          result TEXT NOT NULL DEFAULT 'success', error_reference TEXT
+        );
+        CREATE INDEX IF NOT EXISTS audit_events_time ON audit_events(occurred_at DESC);
+        CREATE INDEX IF NOT EXISTS audit_events_actor ON audit_events(actor_id,occurred_at DESC);
+        CREATE TABLE IF NOT EXISTS announcements (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, audience TEXT NOT NULL, body TEXT NOT NULL,
+          created_at TEXT NOT NULL, created_by INTEGER NOT NULL, sent_at TEXT,
+          delivered_count INTEGER NOT NULL DEFAULT 0, failed_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS pop_excuses (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER NOT NULL,
+          week_key TEXT NOT NULL, absence_request_id INTEGER NOT NULL,
+          created_at TEXT NOT NULL, created_by INTEGER NOT NULL,
+          UNIQUE(telegram_id,week_key),
+          FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id),
+          FOREIGN KEY(absence_request_id) REFERENCES absence_requests(id)
+        );
+        CREATE TABLE IF NOT EXISTS resources (
+          resource_key TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL,
+          updated_at TEXT NOT NULL, updated_by INTEGER
+        );
         """)
         _migrate_legacy_schema(db)
+        db.execute("UPDATE schema_version SET version=2")
 
 
 def _columns(db, table):
@@ -100,8 +157,40 @@ def _migrate_legacy_schema(db):
     })
     db.execute("UPDATE engagement_events SET decision=COALESCE(decision,'accepted'), reason=COALESCE(reason,'legacy')")
     _add_columns(db, "pop_submissions", {
-        "week_key": "TEXT", "reviewed_at": "TEXT",
+        "week_key": "TEXT", "reviewed_at": "TEXT", "deleted_at": "TEXT",
+        "deleted_by": "INTEGER", "deletion_reason": "TEXT",
     })
+    pop_sql = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='pop_submissions'").fetchone()
+    if pop_sql and "resubmission_requested" not in (pop_sql["sql"] or ""):
+        db.execute("DROP INDEX IF EXISTS pop_creator_week_unique")
+        db.execute("ALTER TABLE pop_submissions RENAME TO pop_submissions_v1")
+        db.execute("""CREATE TABLE pop_submissions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER NOT NULL,
+          week_key TEXT NOT NULL, message_id INTEGER NOT NULL, chat_id INTEGER NOT NULL,
+          thread_id INTEGER, proof_type TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','resubmission_requested','excused')),
+          submitted_at TEXT NOT NULL, reviewed_at TEXT, reviewed_by INTEGER, review_note TEXT,
+          deleted_at TEXT, deleted_by INTEGER, deletion_reason TEXT,
+          FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id), UNIQUE(telegram_id,week_key))""")
+        db.execute("""INSERT INTO pop_submissions
+          (id,telegram_id,week_key,message_id,chat_id,thread_id,proof_type,status,submitted_at,
+           reviewed_at,reviewed_by,review_note,deleted_at,deleted_by,deletion_reason)
+          SELECT id,telegram_id,week_key,message_id,chat_id,thread_id,proof_type,status,submitted_at,
+           reviewed_at,reviewed_by,review_note,deleted_at,deleted_by,deletion_reason FROM pop_submissions_v1""")
+        db.execute("DROP TABLE pop_submissions_v1")
+    _add_columns(db, "creators", {
+        "availability": "TEXT NOT NULL DEFAULT 'unavailable'",
+        "availability_since": "TEXT", "availability_changed_by": "INTEGER",
+        "availability_expires_at": "TEXT", "previous_availability": "TEXT",
+        "availability_reason": "TEXT", "deleted_at": "TEXT", "deleted_by": "INTEGER",
+        "deletion_reason": "TEXT", "restored_at": "TEXT", "restored_by": "INTEGER",
+    })
+    _add_columns(db, "audit_events", {"legacy_audit_id": "INTEGER"})
+    db.execute("CREATE UNIQUE INDEX IF NOT EXISTS audit_legacy_unique ON audit_events(legacy_audit_id) WHERE legacy_audit_id IS NOT NULL")
+    if "audit_history" in {r["name"] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
+        db.execute("""INSERT OR IGNORE INTO audit_events
+          (occurred_at,actor_id,actor_role,action,target_type,target_telegram_id,new_value,result,legacy_audit_id)
+          SELECT created_at,actor_id,'legacy',action,'legacy',target_id,details,'success',id FROM audit_history""")
     db.execute("CREATE UNIQUE INDEX IF NOT EXISTS engagement_message_unique ON engagement_events(chat_id,message_id)")
     db.execute("CREATE UNIQUE INDEX IF NOT EXISTS pop_creator_week_unique ON pop_submissions(telegram_id,week_key) WHERE week_key IS NOT NULL")
 
@@ -114,6 +203,8 @@ def register_creator(telegram_id, username, display_name, path=None):
           username=excluded.username, display_name=excluded.display_name""",
           (telegram_id, username, display_name, now))
         _audit(db, telegram_id, telegram_id, "creator_registered", {"username": username, "display_name": display_name}, now)
+        audit_event(db,telegram_id,"creator_registered","creator",telegram_id,telegram_id,
+                    new_value={"username":username,"display_name":display_name})
 
 
 def get_creator(telegram_id, path=None):
@@ -123,30 +214,261 @@ def get_creator(telegram_id, path=None):
 
 def list_creators(path=None):
     with get_connection(path) as db:
-        return db.execute("SELECT * FROM creators ORDER BY display_name COLLATE NOCASE").fetchall()
+        return db.execute("SELECT * FROM creators WHERE deleted_at IS NULL ORDER BY display_name COLLATE NOCASE").fetchall()
+
+
+def set_availability(target_id, new_status, actor_id, reason=None, expires_at=None, path=None):
+    if new_status not in {"available", "unavailable", "vacation", "sick"}:
+        return False
+    now = utc_now()
+    with get_connection(path) as db:
+        row = db.execute("SELECT availability FROM creators WHERE telegram_id=? AND deleted_at IS NULL", (target_id,)).fetchone()
+        if not row:
+            return False
+        previous = row["availability"]
+        db.execute("""UPDATE creators SET previous_availability=availability,availability=?,
+          availability_since=?,availability_changed_by=?,availability_expires_at=?,availability_reason=?
+          WHERE telegram_id=?""", (new_status, now, actor_id, expires_at, reason, target_id))
+        db.execute("INSERT INTO availability_history(telegram_id,previous_status,new_status,changed_at,changed_by,expires_at,reason) VALUES(?,?,?,?,?,?,?)",
+                   (target_id,previous,new_status,now,actor_id,expires_at,reason))
+        audit_event(db, actor_id, "availability_changed", "creator", target_telegram_id=target_id,
+                    previous_value=previous, new_value=new_status, reason=reason)
+        return True
+
+
+def create_absence_request(telegram_id, absence_type, start_date, end_date, note=None, path=None):
+    if absence_type not in {"vacation", "sick"} or date.fromisoformat(start_date) > date.fromisoformat(end_date):
+        raise ValueError("Invalid absence request")
+    snapshot = {"type": absence_type, "start_date": start_date, "end_date": end_date, "note": note or ""}
+    with get_connection(path) as db:
+        cur = db.execute("""INSERT INTO absence_requests
+          (telegram_id,absence_type,start_date,end_date,note,submitted_at,original_snapshot)
+          VALUES(?,?,?,?,?,?,?)""", (telegram_id,absence_type,start_date,end_date,(note or "")[:1000],utc_now(),json.dumps(snapshot,sort_keys=True)))
+        request_id = cur.lastrowid
+        audit_event(db, telegram_id, "absence_requested", "absence_request", request_id,
+                    telegram_id, new_value=snapshot, related_request_id=request_id)
+        return request_id
+
+
+def list_absence_requests(status="pending", absence_type=None, path=None):
+    with get_connection(path) as db:
+        sql = "SELECT a.*,c.display_name FROM absence_requests a JOIN creators c ON c.telegram_id=a.telegram_id WHERE a.deleted_at IS NULL AND a.status=?"
+        params = [status]
+        if absence_type:
+            sql += " AND a.absence_type=?"
+            params.append(absence_type)
+        return db.execute(sql + " ORDER BY a.submitted_at", params).fetchall()
+
+
+def creator_absences(telegram_id, path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM absence_requests WHERE telegram_id=? AND deleted_at IS NULL ORDER BY start_date DESC", (telegram_id,)).fetchall()
+
+
+def get_absence_request(request_id, path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM absence_requests WHERE id=?", (request_id,)).fetchone()
+
+
+def review_absence(request_id, decision, actor_id, reason=None, path=None):
+    if decision not in {"approved", "denied", "clarification"}:
+        return False
+    now = utc_now()
+    with get_connection(path) as db:
+        row = db.execute("SELECT * FROM absence_requests WHERE id=? AND status='pending' AND deleted_at IS NULL", (request_id,)).fetchone()
+        if not row:
+            return False
+        if decision == "clarification":
+            db.execute("UPDATE absence_requests SET clarification_requested_at=?,review_reason=? WHERE id=?", (now,(reason or "")[:1000],request_id))
+        else:
+            db.execute("UPDATE absence_requests SET status=?,reviewed_at=?,reviewed_by=?,review_reason=? WHERE id=?",
+                       (decision,now,actor_id,(reason or "")[:1000],request_id))
+            if decision == "approved":
+                availability = "vacation" if row["absence_type"] == "vacation" else "sick"
+                eastern_today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+                if row["start_date"] <= eastern_today <= row["end_date"]:
+                    db.execute("""UPDATE creators SET previous_availability=availability,availability=?,availability_since=?,
+                      availability_changed_by=?,availability_expires_at=?,availability_reason=? WHERE telegram_id=?""",
+                      (availability,now,actor_id,row["end_date"],f"approved absence #{request_id}",row["telegram_id"]))
+                start_day, end_day = date.fromisoformat(row["start_date"]), date.fromisoformat(row["end_date"])
+                cursor = start_day
+                while cursor <= end_day:
+                    if cursor.weekday() == 3:
+                        iso_year, iso_week, _ = cursor.isocalendar()
+                        key = f"{iso_year}-W{iso_week:02d}"
+                        db.execute("INSERT OR IGNORE INTO pop_excuses(telegram_id,week_key,absence_request_id,created_at,created_by) VALUES(?,?,?,?,?)",
+                                   (row["telegram_id"],key,request_id,now,actor_id))
+                        audit_event(db,actor_id,"pop_excused","pop_requirement",target_telegram_id=row["telegram_id"],
+                                    new_value={"week_key":key},related_request_id=request_id)
+                    cursor += date.resolution
+        audit_event(db, actor_id, f"absence_{decision}", "absence_request", request_id,
+                    row["telegram_id"], previous_value="pending", new_value=decision,
+                    reason=reason, related_request_id=request_id)
+        return True
+
+
+def approved_absence_on(telegram_id, day, path=None):
+    day = day.isoformat() if hasattr(day, "isoformat") else str(day)
+    with get_connection(path) as db:
+        return db.execute("""SELECT * FROM absence_requests WHERE telegram_id=? AND status='approved'
+          AND deleted_at IS NULL AND start_date<=? AND end_date>=? ORDER BY id DESC LIMIT 1""",
+          (telegram_id,day,day)).fetchone()
+
+
+def sync_absence_availability(day, path=None):
+    """Idempotently apply active absences and restore status after they end."""
+    day = day.isoformat() if hasattr(day, "isoformat") else str(day)
+    now = utc_now()
+    with get_connection(path) as db:
+        active = db.execute("""SELECT a.*,c.availability FROM absence_requests a JOIN creators c
+          ON c.telegram_id=a.telegram_id WHERE a.status='approved' AND a.deleted_at IS NULL
+          AND a.start_date<=? AND a.end_date>=?""", (day,day)).fetchall()
+        active_ids = set()
+        for row in active:
+            active_ids.add(row["telegram_id"])
+            expected = "vacation" if row["absence_type"] == "vacation" else "sick"
+            if row["availability"] != expected:
+                db.execute("""UPDATE creators SET previous_availability=availability,availability=?,availability_since=?,
+                  availability_changed_by=0,availability_expires_at=?,availability_reason=? WHERE telegram_id=?""",
+                  (expected,now,row["end_date"],f"approved absence #{row['id']}",row["telegram_id"]))
+                audit_event(db,0,"availability_changed_automatically","creator",row["telegram_id"],row["telegram_id"],
+                            previous_value=row["availability"],new_value=expected,reason=f"approved absence #{row['id']}")
+        expired = db.execute("""SELECT telegram_id,availability,previous_availability FROM creators
+          WHERE availability IN ('vacation','sick') AND availability_expires_at<?""", (day,)).fetchall()
+        for row in expired:
+            if row["telegram_id"] in active_ids:
+                continue
+            restored = row["previous_availability"] if row["previous_availability"] in {"available","unavailable"} else "unavailable"
+            db.execute("""UPDATE creators SET availability=?,availability_since=?,availability_changed_by=0,
+              availability_expires_at=NULL,availability_reason='absence ended' WHERE telegram_id=?""",
+              (restored,now,row["telegram_id"]))
+            audit_event(db,0,"availability_restored_automatically","creator",row["telegram_id"],row["telegram_id"],
+                        previous_value=row["availability"],new_value=restored,reason="approved absence ended")
+
+
+def creator_history(telegram_id, path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM audit_events WHERE target_telegram_id=? ORDER BY id DESC", (telegram_id,)).fetchall()
+
+
+def add_admin_note(telegram_id, note, actor_id, path=None):
+    with get_connection(path) as db:
+        cur = db.execute("INSERT INTO admin_notes(telegram_id,note,created_at,created_by) VALUES(?,?,?,?)",
+                         (telegram_id,note[:2000],utc_now(),actor_id))
+        audit_event(db,actor_id,"admin_note_created","admin_note",cur.lastrowid,telegram_id,
+                    new_value={"note_length":len(note)})
+        return cur.lastrowid
+
+
+def list_admin_notes(telegram_id, path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM admin_notes WHERE telegram_id=? AND deleted_at IS NULL ORDER BY id DESC", (telegram_id,)).fetchall()
+
+
+def create_announcement(audience, body, actor_id, path=None):
+    with get_connection(path) as db:
+        cur = db.execute("INSERT INTO announcements(audience,body,created_at,created_by) VALUES(?,?,?,?)",
+                         (audience,body[:3500],utc_now(),actor_id))
+        audit_event(db,actor_id,"announcement_created","announcement",cur.lastrowid,new_value={"audience":audience})
+        return cur.lastrowid
+
+
+def mark_announcement_sent(announcement_id, actor_id, delivered, failed, path=None):
+    with get_connection(path) as db:
+        cur = db.execute("UPDATE announcements SET sent_at=?,delivered_count=?,failed_count=? WHERE id=? AND sent_at IS NULL",
+                         (utc_now(),delivered,failed,announcement_id))
+        if cur.rowcount:
+            audit_event(db,actor_id,"announcement_delivered","announcement",announcement_id,
+                        new_value={"delivered":delivered,"failed":failed})
+        return bool(cur.rowcount)
+
+
+def announcement(announcement_id, path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM announcements WHERE id=?", (announcement_id,)).fetchone()
+
+
+def announcement_recipients(audience, owner_ids=(), admin_ids=(), path=None):
+    if audience == "owners":
+        return list(owner_ids)
+    if audience == "admins":
+        return list(set(admin_ids) | set(owner_ids))
+    with get_connection(path) as db:
+        condition = "status='active' AND deleted_at IS NULL"
+        if audience == "available": condition += " AND availability='available'"
+        if audience == "away": condition += " AND availability IN ('vacation','sick')"
+        return [r[0] for r in db.execute(f"SELECT telegram_id FROM creators WHERE {condition}").fetchall()]
+
+
+def calendar_absences(start_date, end_date, path=None):
+    with get_connection(path) as db:
+        return db.execute("""SELECT a.*,c.display_name FROM absence_requests a JOIN creators c ON c.telegram_id=a.telegram_id
+          WHERE a.status='approved' AND a.deleted_at IS NULL AND a.start_date<=? AND a.end_date>=?
+          ORDER BY a.start_date,c.display_name""", (end_date,start_date)).fetchall()
+
+
+def record_audit(actor_id, action, target_type=None, target_record_id=None,
+                 target_telegram_id=None, previous_value=None, new_value=None,
+                 reason=None, result="success", path=None):
+    with get_connection(path) as connection:
+        audit_event(connection,actor_id,action,target_type,target_record_id,target_telegram_id,
+                    previous_value,new_value,reason,result=result)
+
+
+def export_snapshot(path=None):
+    """Return owner export data without private message bodies."""
+    with get_connection(path) as db:
+        return {
+            "creators": [dict(r) for r in db.execute("SELECT * FROM creators").fetchall()],
+            "absences": [dict(r) for r in db.execute("SELECT * FROM absence_requests").fetchall()],
+            "pop": [dict(r) for r in db.execute("SELECT * FROM pop_submissions").fetchall()],
+            "notifications": [dict(r) for r in db.execute("SELECT * FROM notifications").fetchall()],
+            "audit": [dict(r) for r in db.execute("SELECT * FROM audit_events").fetchall()],
+        }
 
 
 def set_status(target_id, status, actor_id, path=None):
     now = utc_now()
     with get_connection(path) as db:
+        previous = db.execute("SELECT status FROM creators WHERE telegram_id=?", (target_id,)).fetchone()
         cur = db.execute("UPDATE creators SET status=?, approved_at=CASE WHEN ?='active' THEN ? ELSE approved_at END, approved_by=CASE WHEN ?='active' THEN ? ELSE approved_by END WHERE telegram_id=?",
                          (status, status, now, status, actor_id, target_id))
         if not cur.rowcount:
             return False
         _audit(db, actor_id, target_id, "creator_status_changed", {"status": status}, now)
+        audit_event(db,actor_id,"creator_status_changed","creator",target_id,target_id,
+                    previous_value=previous["status"] if previous else None,new_value=status)
         return True
 
 
 def delete_creator(target_id, actor_id, path=None):
     with get_connection(path) as db:
-        creator = db.execute("SELECT username,display_name,status FROM creators WHERE telegram_id=?", (target_id,)).fetchone()
+        creator = db.execute("SELECT * FROM creators WHERE telegram_id=? AND deleted_at IS NULL", (target_id,)).fetchone()
         if not creator:
             return False
-        db.execute("DELETE FROM engagement_events WHERE telegram_id=?", (target_id,))
-        db.execute("DELETE FROM notifications WHERE telegram_id=?", (target_id,))
-        db.execute("DELETE FROM pop_submissions WHERE telegram_id=?", (target_id,))
-        db.execute("DELETE FROM creators WHERE telegram_id=?", (target_id,))
-        _audit(db, actor_id, target_id, "creator_deleted", dict(creator))
+        now = utc_now()
+        db.execute("UPDATE creators SET deleted_at=?,deleted_by=?,deletion_reason=? WHERE telegram_id=?",
+                   (now,actor_id,"operational removal",target_id))
+        audit_event(db, actor_id, "creator_soft_deleted", "creator", target_id,
+                    target_id, previous_value=dict(creator), new_value={"deleted_at": now})
+        return True
+
+
+def deleted_records(path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM creators WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC").fetchall()
+
+
+def restore_creator(target_id, actor_id, reason, path=None):
+    with get_connection(path) as db:
+        row = db.execute("SELECT * FROM creators WHERE telegram_id=? AND deleted_at IS NOT NULL", (target_id,)).fetchone()
+        if not row:
+            return False
+        now = utc_now()
+        db.execute("UPDATE creators SET deleted_at=NULL,deleted_by=NULL,deletion_reason=NULL,restored_at=?,restored_by=? WHERE telegram_id=?",
+                   (now,actor_id,target_id))
+        audit_event(db, actor_id, "creator_restored", "creator", target_id, target_id,
+                    previous_value={"deleted_at": row["deleted_at"]}, new_value={"restored_at": now}, reason=reason)
         return True
 
 
@@ -155,6 +477,7 @@ def set_vacation(target_id, until, actor_id, path=None):
         cur = db.execute("UPDATE creators SET vacation_until=? WHERE telegram_id=?", (until, target_id))
         if cur.rowcount:
             _audit(db, actor_id, target_id, "vacation", {"until": until})
+            audit_event(db,actor_id,"legacy_vacation_changed","creator",target_id,target_id,new_value={"until":until})
         return bool(cur.rowcount)
 
 
@@ -168,6 +491,9 @@ def record_engagement(telegram_id, message_id, chat_id, thread_id, normalized_ha
             return False
         if decision == "accepted":
             db.execute("UPDATE creators SET last_meaningful_at=? WHERE telegram_id=?", (now,telegram_id))
+        audit_event(db, telegram_id, "engagement_counted" if decision == "accepted" else "engagement_ignored",
+                    "engagement", target_telegram_id=telegram_id, new_value=decision,
+                    reason=reason, source_chat_id=chat_id, source_thread_id=thread_id)
         return True
 
 
@@ -186,6 +512,7 @@ def claim_notification(telegram_id, cycle_at, kind, path=None):
     with get_connection(path) as db:
         try:
             db.execute("INSERT INTO notifications(telegram_id,cycle_at,kind,sent_at) VALUES(?,?,?,?)", (telegram_id,cycle_at,kind,utc_now()))
+            audit_event(db,None,f"{kind}_created","notification",target_telegram_id=telegram_id,new_value={"cycle_at":cycle_at})
             return True
         except sqlite3.IntegrityError:
             return False
@@ -196,43 +523,72 @@ def submit_pop(telegram_id, week_key, message_id, chat_id, thread_id, proof_type
         try:
             db.execute("INSERT INTO pop_submissions(telegram_id,week_key,message_id,chat_id,thread_id,proof_type,submitted_at) VALUES(?,?,?,?,?,?,?)",
                        (telegram_id,week_key,message_id,chat_id,thread_id,proof_type,utc_now()))
+            submission_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            audit_event(db, telegram_id, "pop_submitted", "pop_submission", submission_id,
+                        telegram_id, related_submission_id=submission_id,
+                        source_chat_id=chat_id, source_thread_id=thread_id)
             return True
         except sqlite3.IntegrityError:
             return False
 
 
+def get_pop_submission(submission_id, path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM pop_submissions WHERE id=?", (submission_id,)).fetchone()
+
+
 def review_pop(submission_id, status, actor_id, note="", path=None):
+    if status not in {"approved", "rejected", "resubmission_requested"}:
+        return False
     with get_connection(path) as db:
         cur=db.execute("UPDATE pop_submissions SET status=?,reviewed_at=?,reviewed_by=?,review_note=? WHERE id=? AND status='pending'",
                        (status,utc_now(),actor_id,note,submission_id))
         if cur.rowcount:
-            _audit(db,actor_id,None,"pop_reviewed",{"submission_id":submission_id,"status":status,"note":note})
+            row = db.execute("SELECT telegram_id FROM pop_submissions WHERE id=?", (submission_id,)).fetchone()
+            audit_event(db,actor_id,f"pop_{status}","pop_submission",submission_id,
+                        row["telegram_id"],previous_value="pending",new_value=status,
+                        reason=note,related_submission_id=submission_id)
         return bool(cur.rowcount)
 
 
 def pop_report(week_key, path=None):
     with get_connection(path) as db:
-        return db.execute("""SELECT c.telegram_id,c.display_name,p.id,p.status,p.submitted_at
+        return db.execute("""SELECT c.telegram_id,c.display_name,p.id,
+          CASE WHEN x.id IS NOT NULL THEN 'excused' ELSE p.status END AS status,p.submitted_at
           FROM creators c LEFT JOIN pop_submissions p ON p.telegram_id=c.telegram_id AND p.week_key=?
-          WHERE c.status='active' ORDER BY c.display_name COLLATE NOCASE""", (week_key,)).fetchall()
+          LEFT JOIN pop_excuses x ON x.telegram_id=c.telegram_id AND x.week_key=?
+          WHERE c.status='active' AND c.deleted_at IS NULL ORDER BY c.display_name COLLATE NOCASE""", (week_key,week_key)).fetchall()
 
 
 def history(limit=50, path=None):
     with get_connection(path) as db:
-        return db.execute("SELECT * FROM audit_history ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return db.execute("SELECT * FROM audit_events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
 
 
 def reset_history(actor_id, path=None):
-    with get_connection(path) as db:
-        deleted = db.execute("SELECT COUNT(*) AS count FROM audit_history").fetchone()["count"]
-        db.execute("DELETE FROM audit_history")
-        _audit(db, actor_id, None, "history_reset", {"deleted_records": deleted})
-        return deleted
+    raise PermissionError("The audit trail is append-only and cannot be reset.")
 
 
 def audit_setting_change(actor_id, key, old_value, new_value, path=None):
     with get_connection(path) as db:
-        _audit(db, actor_id, None, "setting_changed", {"key": key, "old": old_value, "new": new_value})
+        audit_event(db, actor_id, "setting_changed", "setting", previous_value={key: old_value}, new_value={key: new_value})
+
+
+def audit_event(db, actor_id, action, target_type=None, target_record_id=None,
+                target_telegram_id=None, previous_value=None, new_value=None, reason=None,
+                source_chat_id=None, source_thread_id=None, related_request_id=None,
+                related_submission_id=None, result="success", error_reference=None,
+                actor_name=None, actor_role="unknown"):
+    def encoded(value):
+        return None if value is None else json.dumps(value, sort_keys=True, default=str)
+    db.execute("""INSERT INTO audit_events
+      (occurred_at,actor_id,actor_name,actor_role,action,target_type,target_record_id,
+       target_telegram_id,previous_value,new_value,reason,source_chat_id,source_thread_id,
+       related_request_id,related_submission_id,result,error_reference)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+      (utc_now(),actor_id,actor_name,actor_role,action,target_type,target_record_id,
+       target_telegram_id,encoded(previous_value),encoded(new_value),reason,
+       source_chat_id,source_thread_id,related_request_id,related_submission_id,result,error_reference))
 
 
 def _audit(db, actor_id, target_id, action, details, now=None):

@@ -29,5 +29,13 @@ class EngagementTests(unittest.TestCase):
         second = classify(text, is_repeat=lambda digest, since: digest == first.digest)
         self.assertEqual(second.reason, "repeated_text")
 
+    def test_punctuation_changes_do_not_bypass_repeat_filter(self):
+        first = classify("This is a genuinely useful contribution to our discussion")
+        second = classify(
+            "This is a genuinely useful contribution to our discussion!!!",
+            is_repeat=lambda digest, since: digest == first.digest,
+        )
+        self.assertEqual(second.reason, "repeated_text")
+
 
 if __name__ == "__main__": unittest.main()

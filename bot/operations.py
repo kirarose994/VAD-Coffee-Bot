@@ -1,0 +1,357 @@
+"""Operational workflows for absences, notes, announcements, and owner tools."""
+
+import io
+import json
+import secrets
+import time
+from datetime import date, datetime, timedelta
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
+
+import database as db
+from permissions import Role, has_permission, role_for
+
+
+def _clean(text, limit=1000):
+    return " ".join((text or "").replace("<", "").replace(">", "").split())[:limit]
+
+
+def _token(ctx, key):
+    token = secrets.token_urlsafe(8)
+    ctx.user_data[key] = token
+    return token
+
+
+async def absence_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE, absence_type):
+    creator = db.get_creator(update.effective_user.id)
+    if not creator or creator["status"] != "active":
+        return await update.effective_message.reply_text("Only approved registered creators can submit absence requests.")
+    if len(ctx.args) < 2:
+        return await update.effective_message.reply_text(f"Usage: /{absence_type}_request START_DATE END_DATE [optional note]")
+    try:
+        start, end = date.fromisoformat(ctx.args[0]), date.fromisoformat(ctx.args[1])
+        if end < start or (end - start).days > 366:
+            raise ValueError
+    except ValueError:
+        return await update.effective_message.reply_text("Enter valid YYYY-MM-DD dates with the end on or after the start.")
+    note = _clean(" ".join(ctx.args[2:]))
+    token = _token(ctx, "absence_nonce")
+    ctx.user_data["absence_draft"] = {"type": absence_type, "start": start.isoformat(), "end": end.isoformat(), "note": note}
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Confirm", callback_data=f"absence:{token}:confirm"),
+        InlineKeyboardButton("❌ Cancel", callback_data=f"absence:{token}:cancel"),
+    ]])
+    await update.effective_message.reply_text(
+        f"Confirm {absence_type} request\nStart: {start}\nEnd: {end}\nNote: {note or 'none'}",
+        reply_markup=keyboard,
+    )
+
+
+async def vacation_request(update, ctx): return await absence_request(update, ctx, "vacation")
+async def sick_request(update, ctx): return await absence_request(update, ctx, "sick")
+
+
+async def absence_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    parts = (query.data or "").split(":")
+    if len(parts) != 3 or parts[1] != ctx.user_data.pop("absence_nonce", None):
+        await query.answer("This confirmation expired or was already used.", show_alert=True)
+        return await query.edit_message_text("Request not submitted. Return to /start.")
+    draft = ctx.user_data.pop("absence_draft", None)
+    if parts[2] != "confirm" or not draft:
+        await query.answer()
+        return await query.edit_message_text("Request cancelled. Use /start to return home.")
+    request_id = db.create_absence_request(update.effective_user.id, draft["type"], draft["start"], draft["end"], draft["note"])
+    await query.answer("Submitted")
+    await query.edit_message_text(f"Request #{request_id} submitted for administrator review. Use /start to return home.")
+    cfg = ctx.bot_data["config"]
+    if cfg.admin_chat_id:
+        try:
+            await ctx.bot.send_message(cfg.admin_chat_id,
+                f"Pending {draft['type']} request #{request_id}\nCreator: {update.effective_user.full_name} ({update.effective_user.id})\n"
+                f"Dates: {draft['start']} to {draft['end']}\nNote: {draft['note'] or 'none'}\nUse /absence_queue {draft['type']} to review.",
+                message_thread_id=cfg.reports_thread_id)
+        except Exception:
+            pass
+
+
+async def absence_queue(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id, cfg = update.effective_user.id, ctx.bot_data["config"]
+    requested_type = ctx.args[0] if ctx.args and ctx.args[0] in {"vacation", "sick"} else None
+    permission = "review_sick_days" if requested_type == "sick" else "review_vacations"
+    if not has_permission(user_id, cfg, permission):
+        return await update.effective_message.reply_text("You do not have permission to review these requests.")
+    rows = db.list_absence_requests("pending", requested_type)
+    if not rows:
+        return await update.effective_message.reply_text("No pending absence requests.")
+    for row in rows[:20]:
+        token = _token(ctx, f"review_nonce_{row['id']}")
+        buttons = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Approve", callback_data=f"review:{token}:{row['id']}:approved"),
+            InlineKeyboardButton("❌ Deny", callback_data=f"review:{token}:{row['id']}:denied"),
+            InlineKeyboardButton("💬 Clarify", callback_data=f"review:{token}:{row['id']}:clarification"),
+        ]])
+        await update.effective_message.reply_text(
+            f"#{row['id']} {row['display_name']} — {row['absence_type']}\n{row['start_date']} to {row['end_date']}\nNote: {row['note'] or 'none'}\nSubmitted: {row['submitted_at']}",
+            reply_markup=buttons)
+
+
+async def review_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    parts = (query.data or "").split(":")
+    if len(parts) != 4:
+        return await query.answer("Invalid action.", show_alert=True)
+    _, token, raw_id, decision = parts
+    try: request_id = int(raw_id)
+    except ValueError: return await query.answer("Invalid request.", show_alert=True)
+    if token != ctx.user_data.pop(f"review_nonce_{request_id}", None):
+        await query.answer("This review button expired or was already used.", show_alert=True)
+        return await query.edit_message_text("Review not recorded. Refresh the queue.")
+    cfg, user_id = ctx.bot_data["config"], update.effective_user.id
+    if not (has_permission(user_id, cfg, "review_vacations") or has_permission(user_id, cfg, "review_sick_days")):
+        return await query.answer("You are not authorized.", show_alert=True)
+    confirm = _token(ctx, "review_confirm_nonce")
+    ctx.user_data["review_draft"] = (request_id, decision)
+    await query.answer()
+    await query.edit_message_text(f"Confirm {decision} for request #{request_id}?",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Record Decision", callback_data=f"reviewconfirm:{confirm}:yes"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"reviewconfirm:{confirm}:no"),
+        ]]))
+
+
+async def review_confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    parts = (query.data or "").split(":")
+    if len(parts) != 3 or parts[1] != ctx.user_data.pop("review_confirm_nonce", None):
+        await query.answer("This confirmation expired or was already used.", show_alert=True)
+        return await query.edit_message_text("Decision not recorded. Refresh the queue.")
+    draft = ctx.user_data.pop("review_draft", None)
+    if parts[2] != "yes" or not draft:
+        await query.answer()
+        return await query.edit_message_text("Review cancelled.")
+    request_id, decision = draft
+    request_row = db.get_absence_request(request_id)
+    if not db.review_absence(request_id, decision, update.effective_user.id):
+        await query.answer("Already reviewed or unavailable.", show_alert=True)
+        return await query.edit_message_text("No change was recorded.")
+    await query.answer("Recorded")
+    await query.edit_message_text(f"Request #{request_id}: {decision}. The action was audited.")
+    if request_row:
+        try:
+            await ctx.bot.send_message(request_row["telegram_id"],
+                f"Your {request_row['absence_type']} request #{request_id} was {decision}.")
+        except Exception:
+            pass
+
+
+async def absence_calendar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if role_for(update.effective_user.id, ctx.bot_data["config"]) < Role.ADMIN:
+        return await update.effective_message.reply_text("The operational calendar is for administrators.")
+    today = datetime.now(ctx.bot_data["config"].timezone).date()
+    view = (ctx.args[0].casefold() if ctx.args else "week")
+    days = 0 if view == "today" else 30 if view in {"30", "month"} else 7
+    rows = db.calendar_absences(today.isoformat(), (today + timedelta(days=days)).isoformat())
+    lines = [f"Absence calendar: {view}"] + [f"{r['start_date']}–{r['end_date']} {r['display_name']} ({r['absence_type']})" for r in rows]
+    await update.effective_message.reply_text("\n".join(lines)[:3900])
+
+
+async def add_note(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not has_permission(update.effective_user.id, ctx.bot_data["config"], "add_admin_notes"):
+        return await update.effective_message.reply_text("You do not have permission to add admin notes.")
+    if len(ctx.args) < 2:
+        return await update.effective_message.reply_text("Usage: /admin_note TELEGRAM_ID note")
+    try: target = int(ctx.args[0])
+    except ValueError: return await update.effective_message.reply_text("Telegram ID must be numeric.")
+    note = _clean(" ".join(ctx.args[1:]), 2000)
+    note_id = db.add_admin_note(target, note, update.effective_user.id)
+    await update.effective_message.reply_text(f"Private admin note #{note_id} saved and audited.")
+
+
+async def view_notes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not has_permission(update.effective_user.id, ctx.bot_data["config"], "add_admin_notes"):
+        return await update.effective_message.reply_text("You do not have permission to view private admin notes.")
+    if len(ctx.args) != 1:
+        return await update.effective_message.reply_text("Usage: /admin_notes TELEGRAM_ID")
+    try: target = int(ctx.args[0])
+    except ValueError: return await update.effective_message.reply_text("Telegram ID must be numeric.")
+    rows = db.list_admin_notes(target)
+    lines = [f"Private notes for {target}"] + [f"#{r['id']} {r['created_at']}: {r['note']}" for r in rows]
+    await update.effective_message.reply_text(("\n".join(lines) if rows else "No private admin notes.")[:3900])
+
+
+async def restore_creator(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if role_for(update.effective_user.id, ctx.bot_data["config"]) is not Role.OWNER:
+        return await update.effective_message.reply_text("Restore tools are owner-only.")
+    if len(ctx.args) < 2:
+        return await update.effective_message.reply_text("Usage: /creator_restore TELEGRAM_ID reason")
+    try: target = int(ctx.args[0])
+    except ValueError: return await update.effective_message.reply_text("Telegram ID must be numeric.")
+    if not db.restore_creator(target, update.effective_user.id, _clean(" ".join(ctx.args[1:]))):
+        return await update.effective_message.reply_text("Deleted creator record not found.")
+    await update.effective_message.reply_text("Creator record restored and audited.")
+
+
+async def system_health(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if role_for(update.effective_user.id, ctx.bot_data["config"]) is not Role.OWNER:
+        return await update.effective_message.reply_text("System health is owner-only.")
+    await update.effective_message.reply_text("System health: database reachable; polling process active; no secrets displayed.")
+
+
+async def registration_queue(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not has_permission(update.effective_user.id, ctx.bot_data["config"], "review_registrations"):
+        return await update.effective_message.reply_text("You do not have permission to review registrations.")
+    rows = [r for r in db.list_creators() if r["status"] == "pending"]
+    lines = ["Registration queue"] + [f"{r['display_name']} @{r['username'] or '-'} — {r['telegram_id']}" for r in rows]
+    await update.effective_message.reply_text("\n".join(lines) if rows else "No pending registrations.")
+
+
+async def creator_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not has_permission(update.effective_user.id, ctx.bot_data["config"], "view_creator_reports"):
+        return await update.effective_message.reply_text("You do not have permission to search creator records.")
+    if not ctx.args:
+        return await update.effective_message.reply_text("Usage: /creator_search TELEGRAM_ID or username")
+    needle = ctx.args[0].lstrip("@").casefold()
+    rows = [r for r in db.list_creators() if str(r["telegram_id"]) == needle or (r["username"] or "").casefold() == needle]
+    if not rows:
+        return await update.effective_message.reply_text("Creator not found.")
+    r = rows[0]
+    await update.effective_message.reply_text(
+        f"{r['display_name']} ({r['telegram_id']})\nRegistration: {r['status']}\nAvailability: {r['availability']}\nLast meaningful: {r['last_meaningful_at'] or 'none'}")
+
+
+async def contact_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    now = time.monotonic()
+    if now - ctx.user_data.get("last_contact_admin", 0) < 60:
+        return await update.effective_message.reply_text("Please wait before sending another support message.")
+    body = _clean(" ".join(ctx.args), 1500)
+    if not body:
+        return await update.effective_message.reply_text("Usage: /contact_admin message")
+    cfg = ctx.bot_data["config"]
+    if not cfg.admin_chat_id:
+        return await update.effective_message.reply_text("Admin messaging is not configured. Please try again later.")
+    ctx.user_data["last_contact_admin"] = now
+    try:
+        await ctx.bot.send_message(cfg.admin_chat_id,
+            f"Creator support message from {update.effective_user.full_name} ({update.effective_user.id}):\n{body}",
+            message_thread_id=cfg.reports_thread_id)
+        await update.effective_message.reply_text("Your message was sent to the admin team.")
+    except Exception:
+        await update.effective_message.reply_text("The message could not be delivered. Please try again later.")
+
+
+async def announce(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    cfg, user_id = ctx.bot_data["config"], update.effective_user.id
+    if not has_permission(user_id, cfg, "send_announcements"):
+        return await update.effective_message.reply_text("You do not have permission to send announcements.")
+    if len(ctx.args) < 2 or ctx.args[0] not in {"all", "available", "away", "admins", "owners"}:
+        return await update.effective_message.reply_text("Usage: /announce all|available|away|admins|owners message")
+    audience, body = ctx.args[0], _clean(" ".join(ctx.args[1:]), 3500)
+    announcement_id = db.create_announcement(audience, body, user_id)
+    token = _token(ctx, "announcement_nonce")
+    ctx.user_data["announcement_id"] = announcement_id
+    await update.effective_message.reply_text(f"Announcement preview for {audience}:\n\n{body}",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Send", callback_data=f"announce:{token}:send"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"announce:{token}:cancel"),
+        ]]))
+
+
+async def announcement_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    parts = (query.data or "").split(":")
+    if len(parts) != 3 or parts[1] != ctx.user_data.pop("announcement_nonce", None):
+        await query.answer("This preview expired or was already used.", show_alert=True)
+        return await query.edit_message_text("Announcement not sent.")
+    announcement_id = ctx.user_data.pop("announcement_id", None)
+    if parts[2] != "send" or not announcement_id:
+        await query.answer()
+        return await query.edit_message_text("Announcement cancelled.")
+    cfg, user_id = ctx.bot_data["config"], update.effective_user.id
+    if not has_permission(user_id, cfg, "send_announcements"):
+        return await query.answer("You are not authorized.", show_alert=True)
+    row = db.announcement(announcement_id)
+    recipients = db.announcement_recipients(row["audience"], cfg.owner_user_ids,
+        cfg.admin_user_ids | cfg.lead_admin_user_ids)
+    delivered = failed = 0
+    for recipient in recipients:
+        try:
+            await ctx.bot.send_message(recipient, f"VAD Announcement\n\n{row['body']}")
+            delivered += 1
+        except Exception:
+            failed += 1
+    if not db.mark_announcement_sent(announcement_id, user_id, delivered, failed):
+        return await query.answer("Already sent.", show_alert=True)
+    await query.answer("Sent")
+    await query.edit_message_text(f"Announcement sent. Delivered: {delivered}; failed: {failed}.")
+
+
+async def export_records(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if role_for(update.effective_user.id, ctx.bot_data["config"]) is not Role.OWNER:
+        return await update.effective_message.reply_text("Full record exports are owner-only.")
+    data = json.dumps(db.export_snapshot(), indent=2, default=str).encode()
+    db.record_audit(update.effective_user.id,"records_exported","system",new_value={"bytes":len(data)})
+    await update.effective_message.reply_document(io.BytesIO(data), filename="vad-operations-export.json",
+        caption="Owner export created. This action was audited.")
+
+
+async def role_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    cfg, actor = ctx.bot_data["config"], update.effective_user.id
+    if role_for(actor, cfg) is not Role.OWNER:
+        return await update.effective_message.reply_text("Role management is owner-only.")
+    if len(ctx.args) != 2 or ctx.args[1] not in {"admin", "lead", "none"}:
+        return await update.effective_message.reply_text("Usage: /role_set TELEGRAM_ID admin|lead|none")
+    try: target = int(ctx.args[0])
+    except ValueError: return await update.effective_message.reply_text("Telegram ID must be numeric.")
+    if target in cfg.owner_user_ids:
+        return await update.effective_message.reply_text("Owner membership is protected by secure environment configuration.")
+    previous = role_for(target, cfg).name.lower()
+    admins, leads = set(cfg.admin_user_ids), set(cfg.lead_admin_user_ids)
+    admins.discard(target); leads.discard(target)
+    if ctx.args[1] == "admin": admins.add(target)
+    if ctx.args[1] == "lead": leads.add(target)
+    cfg.admin_user_ids, cfg.lead_admin_user_ids = frozenset(admins), frozenset(leads)
+    db.record_audit(actor,"role_changed","admin_role",target,target,previous,ctx.args[1])
+    await update.effective_message.reply_text("Role updated for this running process and audited. Update Replit Secrets to persist it after restart.")
+
+
+async def permission_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    cfg, actor = ctx.bot_data["config"], update.effective_user.id
+    if role_for(actor, cfg) is not Role.OWNER:
+        return await update.effective_message.reply_text("Permission management is owner-only.")
+    if len(ctx.args) != 3 or ctx.args[2] not in {"on", "off"}:
+        return await update.effective_message.reply_text("Usage: /permission_set TELEGRAM_ID PERMISSION on|off")
+    try: target = int(ctx.args[0])
+    except ValueError: return await update.effective_message.reply_text("Telegram ID must be numeric.")
+    if role_for(target, cfg) is Role.OWNER:
+        return await update.effective_message.reply_text("Owner permissions cannot be reduced through this command.")
+    current = set(cfg.admin_permissions.get(target, frozenset()))
+    previous = sorted(current)
+    if ctx.args[2] == "on": current.add(ctx.args[1])
+    else: current.discard(ctx.args[1])
+    cfg.admin_permissions[target] = frozenset(current)
+    db.record_audit(actor,"permission_changed","admin_permission",target,target,previous,sorted(current))
+    await update.effective_message.reply_text("Permission updated for this running process and audited. Update ADMIN_PERMISSIONS_JSON to persist it.")
+
+
+def register_operations(app):
+    app.add_handler(CommandHandler("vacation_request", vacation_request))
+    app.add_handler(CommandHandler("sick_request", sick_request))
+    app.add_handler(CommandHandler("absence_queue", absence_queue))
+    app.add_handler(CommandHandler("absence_calendar", absence_calendar))
+    app.add_handler(CommandHandler("admin_note", add_note))
+    app.add_handler(CommandHandler("admin_notes", view_notes))
+    app.add_handler(CommandHandler("creator_restore", restore_creator))
+    app.add_handler(CommandHandler("system_health", system_health))
+    app.add_handler(CommandHandler("registration_queue", registration_queue))
+    app.add_handler(CommandHandler("creator_search", creator_search))
+    app.add_handler(CommandHandler("contact_admin", contact_admin))
+    app.add_handler(CommandHandler("announce", announce))
+    app.add_handler(CommandHandler("export_records", export_records))
+    app.add_handler(CommandHandler("role_set", role_set))
+    app.add_handler(CommandHandler("permission_set", permission_set))
+    app.add_handler(CallbackQueryHandler(absence_callback, pattern=r"^absence:"))
+    app.add_handler(CallbackQueryHandler(review_callback, pattern=r"^review:"))
+    app.add_handler(CallbackQueryHandler(review_confirm_callback, pattern=r"^reviewconfirm:"))
+    app.add_handler(CallbackQueryHandler(announcement_callback, pattern=r"^announce:"))
