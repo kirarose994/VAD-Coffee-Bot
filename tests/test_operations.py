@@ -89,8 +89,8 @@ class OperationsDatabaseTests(unittest.TestCase):
 class MenuAndPermissionTests(unittest.TestCase):
     def config(self):
         return SimpleNamespace(
-            owner_user_ids=frozenset({1, 2}), lead_admin_user_ids=frozenset({3}),
-            admin_user_ids=frozenset({4}), admin_permissions={},
+            owner_user_ids=frozenset({1, 2}), lead_admin_user_ids=frozenset(),
+            admin_user_ids=frozenset({3,4}), admin_permissions={},
         )
 
     def labels(self, user_id):

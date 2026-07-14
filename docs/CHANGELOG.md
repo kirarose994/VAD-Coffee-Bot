@@ -22,7 +22,7 @@
 - Kept Community Status separate from protected System Health diagnostics.
 - Added additive SQLite schema version 7 for Daily Admin Brief delivery claims.
 
-- Enforced distinct Owner, Lead Admin, Admin, Creator, and Buyer interfaces.
+- Enforced distinct Owner, Admin, Creator, and Buyer interfaces.
 - Added persistent audited Owner Setup for chat/topic routing and participation rules.
 - Added bot-permission and configuration-problem reporting to chat/topic verification.
 - Fixed owner/admin creator enrollment and archived-identity resolution.

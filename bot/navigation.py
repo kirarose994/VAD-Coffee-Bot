@@ -32,13 +32,29 @@ def _button(label, nonce, action):
 
 def _nav(nonce, back="home"):
     """Passive screens need Home and Back; Cancel belongs to active workflows only."""
-    return [_button("🏠 Home", nonce, "home"), _button("◀️ Back", nonce, back)]
+    buttons = [_button("🏠 Home", nonce, "home")]
+    if back != "home": buttons.append(_button("◀️ Back", nonce, back))
+    return buttons
+
+
+def _unique_actions(actions, seen=None):
+    """Deduplicate inherited menu entries by stable callback action, preserving order."""
+    seen = seen if seen is not None else set()
+    unique=[]
+    for label,action in actions:
+        if ("action",action) in seen or ("label",label) in seen: continue
+        seen.update({("action",action),("label",label)});unique.append((label,action))
+    return unique
 
 
 def grid_markup(ctx, rows, back="home"):
     nonce = _nonce(ctx)
-    keyboard = [[_button(label,nonce,action) for label,action in row] for row in rows if row]
-    keyboard.append(_nav(nonce,back))
+    seen=set();keyboard=[]
+    for row in rows:
+        unique=_unique_actions(row,seen)
+        if unique: keyboard.append([_button(label,nonce,action) for label,action in unique])
+    nav=_unique_actions([("🏠 Home","home")]+([("◀️ Back",back)] if back != "home" else []),seen)
+    if nav: keyboard.append([_button(label,nonce,action) for label,action in nav])
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -66,13 +82,22 @@ def home_markup(ctx, user_id):
         rows.append([_button("🛍️ Buyer Home", nonce, "buyer")])
     rows.append([_button("📚 Help Center", nonce, "resources")])
     if role is Role.NONE: rows.append([_button("💬 Contact an Admin",nonce,"support")])
-    return InlineKeyboardMarkup(rows)
+    unique=[];seen=set()
+    for row in rows:
+        kept=[]
+        for button in row:
+            action=button.callback_data.rsplit(":",1)[-1]
+            if ("action",action) in seen or ("label",button.text) in seen: continue
+            seen.update({("action",action),("label",button.text)});kept.append(button)
+        if kept: unique.append(kept)
+    return InlineKeyboardMarkup(unique)
 
 
 def menu_markup(ctx, actions, back="home"):
     nonce = _nonce(ctx)
-    rows = [[_button(label, nonce, action)] for label, action in actions]
-    rows.append(_nav(nonce, back))
+    seen=set();rows = [[_button(label, nonce, action)] for label, action in _unique_actions(actions,seen)]
+    nav=_unique_actions([("🏠 Home","home")]+([("◀️ Back",back)] if back != "home" else []),seen)
+    if nav: rows.append([_button(label,nonce,action) for label,action in nav])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1350,15 +1375,15 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         back="setup_meaningful" if key in {"words","chars","repeat"} else "setup_timezone" if key == "timezone" else "settings"
         return await _show(query,"✅ Setting updated and audited. This setting will remain active after restart.",menu_markup(ctx,[],back))
     if action == "roles" and role is Role.OWNER:
-        return await _show(query,f"👥 People & Roles\n\nRoles are additive: Admins include Creator access, and Owners include both Admin and Creator access.\n\n👑 Owners: {len(cfg.owner_user_ids)}\n🛡️ Lead Admins: {len(cfg.lead_admin_user_ids)}\n👥 Admins: {len(cfg.admin_user_ids)}",
-            menu_markup(ctx,[("👑 Owners","access_owners"),("🛡️ Lead Admins","access_leads"),("👥 Admins","access_admins"),
+        return await _show(query,f"👥 People & Roles\n\nRoles are additive: Admins include Creator access, and Owners include both Admin and Creator access.\n\n👑 Owners: {len(cfg.owner_user_ids)}\n👥 Admins: {len(cfg.admin_user_ids)}",
+            menu_markup(ctx,[("👑 Owners","access_owners"),("👥 Admins","access_admins"),
                 ("➕ Add Admin","access_add"),("✏️ Edit Admin Permissions","access_edit"),("➖ Remove Admin","access_remove"),
                 ("⏳ Pending Bot Users","pending_bot_users"),("📝 Creator Registrations","registration_queue"),("🔄 Dual-Role Members","dual_roles"),
                 ("📜 Role History","audit_filter_roles"),("📋 Copy Admin Instructions","copy_admin_instructions"),
                 ("📋 Copy Creator Invite Instructions","copy_creator_instructions"),("📋 Copy Alex Owner Instructions","copy_alex_instructions")],"owner"))
-    if action in {"access_owners","access_leads","access_admins"}:
+    if action in {"access_owners","access_admins"}:
         if role is not Role.OWNER: return await _show(query,"Access management is owner-only.",home_markup(ctx,user_id))
-        ids = cfg.owner_user_ids if action.endswith("owners") else cfg.lead_admin_user_ids if action.endswith("leads") else cfg.admin_user_ids
+        ids = cfg.owner_user_ids if action.endswith("owners") else cfg.admin_user_ids
         names = []
         for member_id in ids:
             member = db.get_creator(member_id)
@@ -1366,9 +1391,9 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await _show(query,"\n".join(names) or "No accounts are configured in this role.",menu_markup(ctx,[],"roles"))
     if action == "access_add":
         if role is not Role.OWNER: return await _show(query,"Access management is owner-only.",home_markup(ctx,user_id))
-        assigned=set(cfg.owner_user_ids)|set(cfg.admin_user_ids)|set(cfg.lead_admin_user_ids)
+        assigned=set(cfg.owner_user_ids)|set(cfg.admin_user_ids)
         creators=[r for r in db.list_creators() if r["telegram_id"] not in assigned and r["status"]=="active"]
-        pending=db.pending_bot_users(cfg.owner_user_ids,cfg.admin_user_ids,cfg.lead_admin_user_ids)
+        pending=db.pending_bot_users(cfg.owner_user_ids,cfg.admin_user_ids)
         candidates={r["telegram_id"]:r["display_name"] for r in pending}
         candidates.update({r["telegram_id"]:r["display_name"] for r in creators})
         buttons=[(name[:45],f"access_candidate_{target}") for target,name in list(candidates.items())[:20]]
@@ -1376,23 +1401,23 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action.startswith("access_candidate_"):
         if role is not Role.OWNER:return await _show(query,"People & Roles is owner-only.",home_markup(ctx,user_id))
         target=int(action.removeprefix("access_candidate_"));creator=db.get_creator(target)
-        pending=next((r for r in db.pending_bot_users(cfg.owner_user_ids,cfg.admin_user_ids,cfg.lead_admin_user_ids) if r["telegram_id"]==target),None)
+        pending=next((r for r in db.pending_bot_users(cfg.owner_user_ids,cfg.admin_user_ids) if r["telegram_id"]==target),None)
         if not creator and not pending:return await _show(query,"That account is no longer eligible for assignment.",menu_markup(ctx,[],"roles"))
         name=creator["display_name"] if creator else pending["display_name"]
         return await _show(query,f"{name}\n\nChoose an additive role. The existing Telegram identity and creator history will be preserved.",menu_markup(ctx,[
-            ("Make Admin",f"access_confirm_admin_{target}"),("Make Lead Admin",f"access_confirm_lead_{target}"),("Make Owner",f"access_confirm_owner_{target}")],"roles"))
+            ("Make Admin",f"access_confirm_admin_{target}"),("Make Owner",f"access_confirm_owner_{target}")],"roles"))
     if action == "pending_bot_users":
         if role is not Role.OWNER:return await _show(query,"People & Roles is owner-only.",home_markup(ctx,user_id))
-        rows=db.pending_bot_users(cfg.owner_user_ids,cfg.admin_user_ids,cfg.lead_admin_user_ids)
+        rows=db.pending_bot_users(cfg.owner_user_ids,cfg.admin_user_ids)
         buttons=[(r["display_name"][:45],f"pending_user_{r['telegram_id']}") for r in rows[:20]]
         return await _show(query,"⏳ Pending Bot Users\n\nThese people privately started the bot but have not been assigned a role or registered as a community member. No role is inferred automatically.",menu_markup(ctx,buttons,"roles"))
     if action.startswith("pending_user_"):
         if role is not Role.OWNER:return await _show(query,"People & Roles is owner-only.",home_markup(ctx,user_id))
-        target=int(action.removeprefix("pending_user_"));rows=db.pending_bot_users(cfg.owner_user_ids,cfg.admin_user_ids,cfg.lead_admin_user_ids)
+        target=int(action.removeprefix("pending_user_"));rows=db.pending_bot_users(cfg.owner_user_ids,cfg.admin_user_ids)
         row=next((r for r in rows if r["telegram_id"]==target),None)
         if not row:return await _show(query,"That user is no longer unassigned.",menu_markup(ctx,[],"roles"))
         return await _show(query,f"{row['display_name']}\n\nChoose an explicit next step. Nothing changes until you confirm.",menu_markup(ctx,[
-            ("Make Admin",f"access_confirm_admin_{target}"),("Make Lead Admin",f"access_confirm_lead_{target}"),("Make Owner",f"access_confirm_owner_{target}"),
+            ("Make Admin",f"access_confirm_admin_{target}"),("Make Owner",f"access_confirm_owner_{target}"),
             ("Invite to Register as Creator",f"invite_creator_{target}"),("Leave Unassigned","roles")],"pending_bot_users"))
     if action.startswith("invite_creator_"):
         if role is not Role.OWNER:return await _show(query,"People & Roles is owner-only.",home_markup(ctx,user_id))
@@ -1406,7 +1431,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await _show(query,text,menu_markup(ctx,[],"roles"))
     if action == "dual_roles":
         if role is not Role.OWNER:return await _show(query,"People & Roles is owner-only.",home_markup(ctx,user_id))
-        ids=set(cfg.admin_user_ids)|set(cfg.lead_admin_user_ids);rows=[db.get_creator(i) for i in ids];rows=[r for r in rows if r]
+        ids=set(cfg.admin_user_ids)|set(cfg.owner_user_ids);rows=[db.get_creator(i) for i in ids];rows=[r for r in rows if r]
         return await _show(query,"🔄 Multi-Role Members\n\nEvery Admin includes Creator access. Every Owner includes Admin and Creator access. Each person still has only one creator profile.\n\n"+("\n".join(r["display_name"] for r in rows) or "No multi-role members."),menu_markup(ctx,[],"roles"))
     if action in {"copy_creator_instructions","copy_admin_instructions","copy_alex_instructions"}:
         if role is not Role.OWNER:return await _show(query,"Owner access is required.",home_markup(ctx,user_id))
@@ -1417,30 +1442,28 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await _show(query,texts[action]+"\n\nPress and hold this message to copy it.",menu_markup(ctx,[],"roles"))
     if action in {"access_edit","access_remove"}:
         if role is not Role.OWNER: return await _show(query,"Access management is owner-only.",home_markup(ctx,user_id))
-        ids = sorted(set(cfg.admin_user_ids)|set(cfg.lead_admin_user_ids)|set(cfg.owner_user_ids))
+        ids = sorted(set(cfg.admin_user_ids)|set(cfg.owner_user_ids))
         buttons = [[((db.get_creator(i)["display_name"] if db.get_creator(i) else f"Admin •••{str(i)[-4:]}")[:40],f"access_member_{i}")] for i in ids]
         return await _show(query,"Select an administrator.",grid_markup(ctx,buttons,"roles"))
     if action.startswith("access_member_"):
         if role is not Role.OWNER: return await _show(query,"Access management is owner-only.",home_markup(ctx,user_id))
         target = int(action.removeprefix("access_member_"))
         return await _show(query,"Choose the change to review.",menu_markup(ctx,[("👥 Make Admin",f"access_confirm_admin_{target}"),
-            ("🛡️ Make Lead Admin",f"access_confirm_lead_{target}"),("👑 Make Owner",f"access_confirm_owner_{target}"),
+            ("👑 Make Owner",f"access_confirm_owner_{target}"),
             ("➖ Remove Highest Role",f"access_confirm_none_{target}")],"roles"))
     if action.startswith("access_confirm_"):
         if role is not Role.OWNER: return await _show(query,"Access management is owner-only.",home_markup(ctx,user_id))
         _,_,new_role,target_raw = action.split("_",3); target = int(target_raw)
-        previous = role_for(target,cfg).name.lower(); admins,leads,owners=set(cfg.admin_user_ids),set(cfg.lead_admin_user_ids),set(cfg.owner_user_ids)
-        admins.discard(target); leads.discard(target)
+        previous = role_for(target,cfg).name.lower(); admins,owners=set(cfg.admin_user_ids),set(cfg.owner_user_ids)
+        admins.discard(target)
         if new_role == "none" and target in owners:
             if target == user_id:return await _show(query,"You cannot remove your own Owner access.",menu_markup(ctx,[],"roles"))
             if len(owners) <= 1:return await _show(query,"At least one Owner must remain configured.",menu_markup(ctx,[],"roles"))
             owners.discard(target);admins.add(target)
         if new_role == "admin": admins.add(target)
-        if new_role == "lead": leads.add(target)
         if new_role == "owner":owners.add(target)
-        cfg.admin_user_ids,cfg.lead_admin_user_ids,cfg.owner_user_ids=frozenset(admins),frozenset(leads),frozenset(owners)
+        cfg.admin_user_ids,cfg.owner_user_ids=frozenset(admins),frozenset(owners)
         persist_setting(cfg,"admin_user_ids",cfg.admin_user_ids,user_id)
-        persist_setting(cfg,"lead_admin_user_ids",cfg.lead_admin_user_ids,user_id)
         persist_setting(cfg,"owner_user_ids",cfg.owner_user_ids,user_id)
         db.record_audit(user_id,"role_changed","admin_role",target,target,previous,new_role)
         return await _show(query,"✅ Access changed, persisted, and audited. The account retains one creator profile.",menu_markup(ctx,[],"roles"))
