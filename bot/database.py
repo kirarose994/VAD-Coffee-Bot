@@ -364,13 +364,14 @@ def register_creator(telegram_id, username, display_name, path=None):
 
 
 def get_creator(telegram_id, path=None, include_deleted=False):
-    """Resolve the visible creator identity; archived rows are owner-history only."""
+    """Return creator data with the canonical Telegram-ID identity applied."""
     with get_connection(path) as db:
         try:
             sql = "SELECT * FROM creators WHERE telegram_id=?"
             if not include_deleted:
                 sql += " AND deleted_at IS NULL"
-            return db.execute(sql,(telegram_id,)).fetchone()
+            row=db.execute(sql,(telegram_id,)).fetchone()
+            return _resolved_person_row(db,row) if row else None
         except sqlite3.OperationalError as exc:
             if "no such table" not in str(exc):
                 raise
@@ -516,7 +517,9 @@ def _person_identity(db, telegram_id):
 
 
 def _resolved_person_row(db, row):
-    resolved=dict(row);resolved.update(_person_identity(db,row["telegram_id"]))
+    resolved = dict(row)
+    if row["telegram_id"] is not None:
+        resolved.update(_person_identity(db, row["telegram_id"]))
     return resolved
 
 
@@ -588,7 +591,8 @@ def list_absence_requests(status="pending", absence_type=None, path=None):
         if absence_type:
             sql += " AND a.absence_type=?"
             params.append(absence_type)
-        return db.execute(sql + " ORDER BY a.submitted_at", params).fetchall()
+        rows=db.execute(sql + " ORDER BY a.submitted_at", params).fetchall()
+        return [_resolved_person_row(db,row) for row in rows]
 
 
 def creator_absences(telegram_id, path=None):
@@ -834,7 +838,7 @@ def pop_status_report(now=None, due_weekday=3, cutoff_time="23:59", timezone_nam
           (period.week_key,period.week_key)).fetchall()
         result = []
         for row in rows:
-            item = dict(row)
+            item = _resolved_person_row(db,row)
             item["week_key"] = period.week_key
             item["due_at"] = period.due_at
             item["effective_status"] = calculate_status(now,submission_status=row["submission_status"],
@@ -961,9 +965,10 @@ def announcement_recipients(audience, owner_ids=(), admin_ids=(), path=None):
 
 def calendar_absences(start_date, end_date, path=None):
     with get_connection(path) as db:
-        return db.execute("""SELECT a.*,c.display_name FROM absence_requests a JOIN creators c ON c.telegram_id=a.telegram_id
+        rows=db.execute("""SELECT a.*,c.display_name FROM absence_requests a JOIN creators c ON c.telegram_id=a.telegram_id
           WHERE a.status='approved' AND a.deleted_at IS NULL AND a.start_date<=? AND a.end_date>=?
           ORDER BY a.start_date,c.display_name""", (end_date,start_date)).fetchall()
+        return [_resolved_person_row(db,row) for row in rows]
 
 
 def record_audit(actor_id, action, target_type=None, target_record_id=None,
@@ -1158,11 +1163,12 @@ def review_pop(submission_id, status, actor_id, note="", path=None):
 
 def pop_report(week_key, path=None):
     with get_connection(path) as db:
-        return db.execute("""SELECT c.telegram_id,c.display_name,p.id,
+        rows=db.execute("""SELECT c.telegram_id,c.display_name,p.id,
           CASE WHEN x.id IS NOT NULL THEN 'excused' ELSE p.status END AS status,p.submitted_at
           FROM creators c LEFT JOIN pop_submissions p ON p.telegram_id=c.telegram_id AND p.week_key=?
           LEFT JOIN pop_excuses x ON x.telegram_id=c.telegram_id AND x.week_key=?
           WHERE c.status='active' AND c.deleted_at IS NULL ORDER BY c.display_name COLLATE NOCASE""", (week_key,week_key)).fetchall()
+        return [_resolved_person_row(db,row) for row in rows]
 
 
 def history(limit=50, path=None):
@@ -1249,9 +1255,10 @@ def get_support_request(request_id,path=None):
 
 def support_queue(path=None):
     with get_connection(path) as db:
-        return db.execute("""SELECT s.*,c.display_name,c.username FROM support_requests s
+        rows=db.execute("""SELECT s.*,c.display_name,c.username FROM support_requests s
           JOIN creators c ON c.telegram_id=s.telegram_id
           WHERE s.status!='resolved' ORDER BY s.created_at""").fetchall()
+        return [_resolved_person_row(db,row) for row in rows]
 
 
 def update_support_request(request_id, action, actor_id, note=None, path=None):
@@ -1312,16 +1319,17 @@ def participation_monitor(path=None):
 
 def participation_events(limit=30,path=None):
     with get_connection(path) as db:
-        return db.execute("""SELECT e.created_at,e.decision,e.reason,e.telegram_id,c.display_name
+        rows=db.execute("""SELECT e.created_at,e.decision,e.reason,e.telegram_id,c.display_name
           FROM engagement_events e LEFT JOIN creators c ON c.telegram_id=e.telegram_id
           ORDER BY e.id DESC LIMIT ?""",(limit,)).fetchall()
+        return [_resolved_person_row(db,row) for row in rows]
 
 
 def creator_participation_diagnostics(path=None):
     """Return active creators and their latest sanitized observer outcome."""
     with get_connection(path) as db:
-        creators=db.execute("""SELECT telegram_id,display_name,username FROM creators
-          WHERE status='active' AND deleted_at IS NULL ORDER BY display_name COLLATE NOCASE""").fetchall()
+        creators=[_resolved_person_row(db,row) for row in db.execute("""SELECT telegram_id,display_name,username FROM creators
+          WHERE status='active' AND deleted_at IS NULL ORDER BY display_name COLLATE NOCASE""").fetchall()]
         states={row["state_key"].rsplit(":",1)[-1]:row for row in db.execute("""SELECT state_key,state_value,updated_at
           FROM system_state WHERE state_key LIKE 'participation:last_creator:%'""").fetchall()}
     results=[]
