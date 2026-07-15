@@ -1,5 +1,7 @@
 # Changelog
 
+- Added operation-specific Telegram polling incident grouping, quiet-window recovery, and thresholded Owner escalation in schema version 10.
+
 ## Multi-role permission upgrade
 
 - Added additive Creator, Admin, and Owner memberships in schema version 9.

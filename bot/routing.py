@@ -32,7 +32,9 @@ def _record_transient_incident(error,event_type):
     reference="ERR-"+secrets.token_hex(4).upper();details={"exception_type":type(error).__name__,
         "message":str(error)[:2000],"traceback":"".join(traceback.format_exception(type(error),error,error.__traceback__))[-12000:],
         "source":f"routed_send:{event_type}"}
-    incident,created=db.record_system_incident("transient_network:telegram",reference,"transient_network",details["source"],details)
+    operation=f"send_message:{event_type}";details["operation"]=operation
+    incident,created=db.record_system_incident(f"{details['source']}:{operation}:{type(error).__name__}",reference,
+        "transient_network",details["source"],details,operation=operation)
     if created:
         db.record_audit(None,"system_error","system",target_record_id=incident["id"],result="error",
             reason="Transient Telegram/network read failure",new_value={**details,"incident_id":incident["id"]},
@@ -73,7 +75,7 @@ async def send_routed(bot,config,event_type,text,*,reply_markup=None,payload_sum
         else:
             await _notify_owners_once(bot,config,error_ref,event_type)
         return False,error_ref
-    try:db.resolve_transient_incidents()
+    try:db.resolve_transient_incidents(operation=f"send_message:{event_type}",source=f"routed_send:{event_type}")
     except sqlite3.OperationalError:pass  # Legacy/test databases may predate incident migration.
     db.set_system_state("last_admin_notification",event_type)
     db.set_system_state(f"last_route_success:{event_type}",db.utc_now())
