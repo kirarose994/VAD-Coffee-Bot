@@ -3,6 +3,7 @@
 import io
 import json
 import secrets
+import sqlite3
 from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -20,13 +21,23 @@ from community_snapshot import PARTICIPATION_POLICY, build_snapshot, section_lin
 from briefing import deliver_daily_brief
 from away_calendar import calendar_window, friendly_range, render_default, render_view
 from participation_summary import (REMINDER_LABELS, build_participation_summary,
-    creator_detail as participation_creator_detail, render_today, render_week)
+    creator_detail as participation_creator_detail, render_today, render_today_group, render_week)
+from community_pulse import build_community_pulse, render_community_pulse
+from weekly_encouragement import render_weekly_encouragement
 
 
 def _nonce(ctx):
     value = secrets.token_urlsafe(6)
     ctx.user_data["menu_nonce"] = value
     return value
+
+
+def _owner_setup_incomplete(config):
+    """Keep setup visible when needed without making Owner Home depend on an uninitialized DB."""
+    try:return any(item["state"] in {"setup","problem"} for item in readiness_items(config))
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc).casefold():raise
+        return True
 
 
 def _button(label, nonce, action):
@@ -390,25 +401,59 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "owner":
         if role is not Role.OWNER:
             return await _show(query, "Owner access is required.", home_markup(ctx, user_id))
-        return await _show(query, "👑 Owner Home\n\nReview community operations, anything needing attention, and protected Owner tools.\n\n" + owner_card(cfg), grid_markup(ctx,[
-            [("🚨 Needs Attention","needs_attention"),("📊 Community Snapshot","community_snapshot")],
+        setup_incomplete=_owner_setup_incomplete(cfg)
+        rows=[
+            [("🚨 Needs Attention","needs_attention"),("💚 Community Pulse","community_pulse")],
             [("📥 Operations Inbox","admin_queue"),("📊 Participation","participation_summary")],
             [("👥 Creators","creator_report"),("📅 Who’s Away","whos_away")],
             [("📸 Thursday POP","pop_queue"),("💙 Away Notices","away_queue")],
             [("📬 Support","support_queue"),("📅 Community Calendar","calendar")],
             [("📊 Reports","reports"),("🔐 Owner Tools","owner_tools")],
-        ]))
+        ]
+        if setup_incomplete:rows.insert(1,[("⚠️ Complete Setup","readiness")])
+        return await _show(query, "👑 Owner Home\n\nIs the community healthy today? Review follow-up needs and protected Owner tools.\n\n" + owner_card(cfg), grid_markup(ctx,rows))
     if action == "owner_tools":
         if role is not Role.OWNER:return await _show(query,"Owner Tools are available only to owners.",home_markup(ctx,user_id))
-        return await _show(query,"🔐 Owner Tools\n\nOpen protected setup, accountability, recovery, and system tools.",grid_markup(ctx,[
-            [("✅ Setup & Readiness","readiness"),("🧪 Test Center","test_center")],
-            [("🧭 Complete Initial Setup","setup_wizard"),("📍 Telegram Locations","telegram_locations")],
-            [("📈 Participation Monitor","participation_monitor"),("👥 People & Roles","roles")],
-            [("🔐 Audit Log","audit")],
-            [("🗃️ Archive","deleted"),("♻️ Restore","restore_help")],
-            [("🧭 Setup","setup"),("🩺 Health","health")],
-            [("💾 Export","export_help"),("📚 Help Center","resources")],
+        return await _show(query,"🔐 Owner Tools\n\nChoose daily operations, system tools, recovery, or configuration.",grid_markup(ctx,[
+            [("📊 Daily Operations","owner_daily_tools"),("🛠 System","owner_system_tools")],
+            [("♻️ Recovery","owner_recovery_tools"),("⚙️ System Setup","owner_setup_tools")],
+            [("📚 Help Center","resources")],
         ],"owner"))
+    if action in {"owner_daily_tools","owner_system_tools","owner_recovery_tools","owner_setup_tools"}:
+        if role is not Role.OWNER:return await _show(query,"Owner Tools are available only to owners.",home_markup(ctx,user_id))
+        screens={
+            "owner_daily_tools":("📊 Daily Operations","Review community health, participation, team access, and accountability.",[
+                ("💚 Community Pulse","community_pulse"),("📈 Participation Health","participation_monitor"),
+                ("👥 Team & Roles","roles"),("🔐 Audit Log","audit")]),
+            "owner_system_tools":("🛠 System","Run safe checks and review protected system tools.",[
+                ("🧪 Test Center","test_center"),("🩺 System Health","health"),("💾 Export","export_help"),
+                ("🌸 Weekly Update Preview","weekly_preview")]),
+            "owner_recovery_tools":("♻️ Recovery","Review archived records and restore them through protected workflows.",[
+                ("📦 Archive Records","deleted"),("♻️ Restore Records","restore_help")]),
+            "owner_setup_tools":("⚙️ System Setup","Configure and verify the bot without crowding daily operations.",[
+                ("✅ Setup & Readiness","readiness"),("🧭 Complete Initial Setup","setup_wizard"),
+                ("📍 Telegram Locations","telegram_locations"),("⚙️ Configuration","setup")]),
+        }
+        title,description,buttons=screens[action]
+        return await _show(query,f"{title}\n\n{description}",menu_markup(ctx,buttons,"owner_tools"))
+    if action == "community_pulse":
+        if role is not Role.OWNER:return await _show(query,"Community Pulse is available only to owners.",home_markup(ctx,user_id))
+        pulse=build_community_pulse(cfg)
+        buttons=[(f"🟢 {pulse['active_today']} Active Today","participation_today_participated"),
+            (f"🌴 {pulse['away_today']} Away Today","participation_today_away"),
+            (f"🌼 {pulse['still']} Still to Check In","participation_today_still"),
+            ("📸 Thursday POP","pop_queue"),("📥 Operations Inbox","admin_queue")]
+        return await _show(query,render_community_pulse(pulse),menu_markup(ctx,buttons,"owner"))
+    if action == "weekly_preview" or action.startswith("weekly_preview_"):
+        if role is not Role.OWNER:return await _show(query,"Weekly Update previews are owner-only.",home_markup(ctx,user_id))
+        summary=build_participation_summary(cfg)
+        if action.startswith("weekly_preview_"):
+            raw=action.removeprefix("weekly_preview_");row=next((r for r in summary["creators"] if str(r["telegram_id"])==raw),None)
+            if not row:return await _show(query,"That creator is no longer available.",menu_markup(ctx,[],"weekly_preview"))
+            row=dict(row);row["away_used"]=row["away"]
+            return await _show(query,render_weekly_encouragement(row),menu_markup(ctx,[],"weekly_preview"))
+        return await _show(query,"🌸 Weekly Update Preview\n\nPreview a private, non-competitive creator update. Nothing is sent or scheduled.",
+            menu_markup(ctx,[(r["display_name"][:40],f"weekly_preview_{r['telegram_id']}") for r in summary["creators"]],"owner_system_tools"))
     if action == "community_snapshot":
         if role < Role.ADMIN:return await _show(query,"Community Snapshot is available only to authorized Admins and Owners.",home_markup(ctx,user_id))
         sections=_snapshot_sections(user_id,cfg)
@@ -429,7 +474,8 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if "system" in sections:buttons.append(("🩺 System Health","health"))
         buttons.append(("ℹ️ Participation Policy","snapshot_policy"))
         return await _show(query,snapshot_text(user_id,cfg),menu_markup(ctx,buttons,"owner" if role is Role.OWNER else "admin"))
-    if action == "participation_summary" or action.startswith("participation_summary_") or action.startswith("participation_creator_"):
+    if (action == "participation_summary" or action.startswith("participation_summary_")
+            or action.startswith("participation_creator_") or action.startswith("participation_today_")):
         if role < Role.ADMIN or not has_permission(user_id,cfg,"view_creator_reports"):
             return await _show(query,"Participation Summary is available only to authorized Admins and Owners.",home_markup(ctx,user_id))
         summary=build_participation_summary(cfg);timezone_name=getattr(cfg,"timezone_name","America/New_York")
@@ -438,6 +484,10 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             row=next((item for item in summary["creators"] if str(item["telegram_id"])==raw),None)
             if not row:return await _show(query,"That creator is no longer available in this summary.",menu_markup(ctx,[],"participation_summary_creators"))
             return await _show(query,participation_creator_detail(row,timezone_name),menu_markup(ctx,[],"participation_summary_creators"))
+        if action.startswith("participation_today_"):
+            group=action.removeprefix("participation_today_")
+            if group not in {"participated","away","still"}:return await _show(query,"That participation view is unavailable.",menu_markup(ctx,[],"participation_summary"))
+            return await _show(query,render_today_group(summary,group),menu_markup(ctx,[],"participation_summary_today"))
         view=action.removeprefix("participation_summary_") if action != "participation_summary" else "today"
         buttons=[("Today","participation_summary_today"),("This Week","participation_summary_week"),
             ("Needs Attention","participation_summary_attention"),("By Creator","participation_summary_creators"),
@@ -451,7 +501,10 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif view=="creators":
             text="📊 Participation · By Creator\n\nChoose a creator to see participation, Away, reminder, and POP status together."
             buttons += [(row["display_name"][:40],f"participation_creator_{row['telegram_id']}") for row in summary["creators"]]
-        else:text=render_today(summary)
+        else:
+            text=render_today(summary)
+            buttons += [("🟢 Participated Today","participation_today_participated"),("🌴 Away Today","participation_today_away"),
+                ("🌼 Still to Check In","participation_today_still")]
         return await _show(query,text[:3900],menu_markup(ctx,buttons,"owner" if role is Role.OWNER else "admin"))
     if action.startswith("snapshot_list_"):
         if role < Role.ADMIN:return await _show(query,"Admin access is required.",home_markup(ctx,user_id))
@@ -666,7 +719,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 db.record_delivery_failure("SUP-"+secrets.token_hex(4).upper(),"support_resolution",request["telegram_id"],None,f"Support request #{request_id}")
         return await _show(query,"✅ Support request updated and audited." if changed else "That request was already resolved.",menu_markup(ctx,[],"support_queue"))
     if action == "resources":
-        help_actions = [("⭐ Getting Started","resource_about"),("📜 Community Rules","resource_rules"),
+        help_actions = [("⭐ Getting Started","resource_about"),("🆕 What’s New","resource_whats_new"),("📜 Community Rules","resource_rules"),
             ("📈 Participation Guide","resource_engagement"),("📸 Thursday POP Guide","resource_pop"),
             ("💙 Away Notice Guide","resource_vacation"),("❓ Frequently Asked Questions","resource_faq"),
             ("💬 Contact Admin","contact")]
@@ -675,7 +728,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 ("🛡️ Review Away Notices","resource_admin_away"),("🛡️ Participation Alerts","resource_admin_alerts"),
                 ("🛡️ Support Requests","resource_admin_support")])
         if role is Role.OWNER:
-            help_actions.extend([("👑 Telegram Locations","resource_owner_locations"),("👑 Participation Monitor","resource_owner_monitor"),
+            help_actions.extend([("👑 Telegram Locations","resource_owner_locations"),("👑 Participation Health","resource_owner_monitor"),
                 ("👑 Audit and Recovery","resource_owner_audit")])
         return await _show(query, "📚 Help Center\n\nChoose a topic below.", menu_markup(ctx, help_actions))
     if action.startswith("resource_"):
