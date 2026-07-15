@@ -1,5 +1,13 @@
 # Changelog
 
+## Version 1.0 UX polish
+
+- Added a compact Owner-only Community Pulse with privacy-safe drill-downs.
+- Grouped Owner Tools into daily operations, system, recovery, and setup screens.
+- Reworded Participation Today around “Not counted” and “Still to Check In.”
+- Added a private, preview-only weekly encouragement and a role-safe What’s New page.
+- Kept production scheduling, core status rules, routing, and database schema unchanged.
+
 - Added operation-specific Telegram polling incident grouping, quiet-window recovery, and thresholded Owner escalation in schema version 10.
 
 ## Multi-role permission upgrade

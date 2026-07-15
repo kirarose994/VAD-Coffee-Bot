@@ -51,8 +51,27 @@ def render_today(summary):
     today=summary["today"]
     return ("📊 Participation · Today\n\nSee today’s meaningful participation without ranking creators.\n\n"
         f"👥 Participated today: {today['creators']}\n💬 Meaningful events: {today['events']}\n"
-        f"⚪ Ignored events: {today['ignored']}\n💙 Away today: {today['away']}\n"
-        f"🌙 No participation today: {today['not_participated']}")
+        f"⚪ Not counted: {today['ignored']}\n🌴 Away today: {today['away']}\n"
+        f"🌼 Still to check in today: {today['not_participated']}")
+
+
+def today_groups(summary):
+    """Return privacy-safe Today drill-down groups without Away Notice notes."""
+    participated=[row for row in summary["creators"] if row["today_count"]]
+    away=[row for row in summary["creators"] if row["away"]]
+    still=[row for row in summary["creators"] if not row["today_count"] and not row["away"]]
+    return {"participated":participated,"away":away,"still":still}
+
+
+def render_today_group(summary,group):
+    groups=today_groups(summary);rows=groups[group]
+    titles={"participated":"🟢 Participated Today","away":"🌴 Away Today","still":"🌼 Still to Check In"}
+    if group=="participated":
+        lines=[f"• {row['display_name']} — {row['today_count']} meaningful event{'s' if row['today_count'] != 1 else ''}" for row in rows]
+    elif group=="away":
+        lines=[f"• {row['display_name']} — expectations paused" for row in rows]
+    else:lines=[f"• {row['display_name']}" for row in rows]
+    return f"{titles[group]}\n\n"+("\n".join(lines) if lines else "✅ No creators in this view.")
 
 
 def render_week(summary, timezone_name="America/New_York"):

@@ -9,6 +9,8 @@ and backup automation.
 
 Add richer owner analytics, configurable Help Center editing, protected member-wide warning
 workflows, export retention controls, and health diagnostics without weakening privacy.
+Optionally explore branded visual cards as a separate opt-in enhancement; routine reminders
+and operational messages should remain lightweight text unless mobile testing proves a clear benefit.
 
 All roadmap work must remain additive, audited, migration-safe, mobile-friendly, and covered
 by role-isolation and idempotency tests.

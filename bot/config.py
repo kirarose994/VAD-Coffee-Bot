@@ -169,6 +169,7 @@ RESOURCE_DEFAULTS = {
     "admin_alerts": ("Participation Alerts", "Use alerts for supportive follow-up. The bot never removes a member automatically."),
     "admin_support": ("Support Requests", "Assign creator questions, respond, escalate when needed, and resolve them without exposing private details."),
     "owner_locations": ("Telegram Locations", "Verify groups and topics from inside Telegram, preview the match, and confirm before saving routing changes."),
-    "owner_monitor": ("Participation Monitor", "Confirm that the approved participation area is connected and review concise counted, ignored, and failure totals."),
+    "owner_monitor": ("Participation Health", "Confirm that the approved participation area is connected and review concise counted, not-counted, and needs-attention totals."),
     "owner_audit": ("Audit and Recovery", "The append-oriented audit trail records protected actions. Only owners can view full actor identities, archives, and restoration tools."),
+    "whats_new": ("🆕 What’s New", "Away Notices now keep participation optional while you’re away, and applicable Thursday POP requirements remain excused. Admins can use Participation Summary and Who’s Away for calm, privacy-safe follow-up. Reminder wording is friendlier and focused on keeping the community lively."),
 }
