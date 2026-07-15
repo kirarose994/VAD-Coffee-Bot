@@ -166,6 +166,7 @@ def creator_card(user_id, cfg):
     pop = db.creator_current_pop_status(user_id,datetime.now(cfg.timezone),*_pop_args(cfg)) if creator["status"] == "active" else "not_due"
     absence = db.latest_absence(user_id)
     away = "None" if not absence else f"{absence['start_date']}–{absence['end_date']} · {absence['status'].title()}"
+    active_away = bool(db.approved_absence_on(user_id, datetime.now(cfg.timezone).date()))
     participation = "Active" if creator["status"] == "active" else creator["status"].title()
     timing = ""
     next_step = ""
@@ -194,6 +195,8 @@ def creator_card(user_id, cfg):
         f"{AVAILABILITY_LABELS.get(creator['availability'], '⚪ Unavailable')}\n"
         f"🕒 Last meaningful participation: {_friendly_time(creator['last_meaningful_at'], cfg)}"
         f"{timing}{next_step}"
+        + ("\n\nParticipation is optional while you’re away. Meaningful messages will still count, "
+           "but you will not be penalized for inactivity during your away period." if active_away else "")
     )
 
 
@@ -1116,11 +1119,14 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         chat_match="Not yet observed" if observed_chat=="None yet" else ("Yes" if str(observed_chat)==str(configured_chat) else "No")
         observed_topic_value=None if observed_topic=="general:none" else observed_topic
         topic_match="Not yet observed" if observed_topic=="None yet" else ("Yes" if ((not configured_topics and observed_topic_value is None) or str(observed_topic_value) in {str(v) for v in configured_topics}) else "No")
-        reason_labels={"accepted":"Counted as meaningful participation","wrong_chat":"Rejected: wrong chat","wrong_topic":"Rejected: wrong topic",
+        reason_labels={"accepted":"Counted as meaningful participation","accepted_during_away_notice":"Counted during active Away Notice",
+            "accepted_voice_message_during_away_notice":"Counted: qualifying voice message during active Away Notice",
+            "accepted_audio_message_during_away_notice":"Counted: qualifying audio message during active Away Notice",
+            "wrong_chat":"Rejected: wrong chat","wrong_topic":"Rejected: wrong topic",
             "accepted_voice_message":"Counted: qualifying voice message","accepted_audio_message":"Counted: qualifying audio message",
             "creator_not_approved":"Rejected: creator not approved","audio_too_short":"Ignored: audio too short",
             "duplicate_audio":"Ignored: duplicate audio","audio_missing_file_identity":"Ignored: audio identity unavailable",
-            "active_away_notice":"Not counted: active Away Notice","legacy_vacation_active":"Not counted: active legacy vacation",
+            "legacy_vacation_active":"Not counted: active legacy vacation",
             "pop_workflow_message":"Not counted: POP workflow message","duplicate_telegram_update":"Ignored: duplicate Telegram update",
             "greeting_only":"Ignored: greeting only","emoji_only":"Ignored: emoji only","too_short":"Ignored: too short",
             "promotional_spam":"Ignored: promotional content","link_only":"Ignored: link only","repeated_text":"Ignored: repeated text",

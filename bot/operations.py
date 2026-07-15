@@ -97,7 +97,7 @@ async def absence_queue(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for row in rows[:20]:
         token = _token(ctx, f"review_nonce_{row['id']}")
         buttons = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Record as excused", callback_data=f"review:{token}:{row['id']}:approved"),
+            InlineKeyboardButton("✅ Acknowledge & Update Status", callback_data=f"review:{token}:{row['id']}:approved"),
             InlineKeyboardButton("🚫 Mark invalid", callback_data=f"review:{token}:{row['id']}:denied"),
         ],[
             InlineKeyboardButton("💬 Ask for clarification", callback_data=f"review:{token}:{row['id']}:clarification"),
@@ -147,12 +147,14 @@ async def review_confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         await query.answer("Already reviewed or unavailable.", show_alert=True)
         return await query.edit_message_text("No change was recorded.")
     await query.answer("Recorded")
-    friendly = {"approved":"approved","denied":"not approved","clarification":"waiting for clarification"}[decision]
+    friendly = {"approved":"acknowledged and its status updated","denied":"not approved","clarification":"waiting for clarification"}[decision]
     await query.edit_message_text(f"Away Notice #{request_id} is now {friendly}. The update was saved to its history.")
     if request_row:
         try:
-            await ctx.bot.send_message(request_row["telegram_id"],
+            creator_message = ("Your away notice has been acknowledged. Your community status and any applicable "
+                "Thursday POP requirements have been updated." if decision == "approved" else
                 f"Your {request_row['absence_type']} request #{request_id} was {decision}.")
+            await ctx.bot.send_message(request_row["telegram_id"], creator_message)
         except Exception:
             pass
 

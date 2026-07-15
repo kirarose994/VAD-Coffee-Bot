@@ -35,8 +35,29 @@ class OperationsDatabaseTests(unittest.TestCase):
         db.sync_absence_availability(date(2026, 7, 18), self.path)
         self.assertEqual(db.get_creator(10, self.path)["availability"], "unavailable")
 
+    def test_participation_during_away_updates_timestamp_without_rewriting_absence_or_history(self):
+        request_id = db.create_absence_request(10, "vacation", "2026-07-15", "2026-07-17", "Away", self.path)
+        self.assertTrue(db.review_absence(request_id, "approved", 20, path=self.path))
+        absence_before = dict(db.get_absence_request(request_id, self.path))
+        history_before = [dict(row) for row in db.creator_history(10, self.path)]
+        creator_before = dict(db.get_creator(10, self.path))
+
+        self.assertTrue(db.record_engagement(10, 501, -1003543892255, None, "away-message-hash",
+            "accepted", "meaningful_text", self.path))
+
+        creator_after = dict(db.get_creator(10, self.path))
+        self.assertNotEqual(creator_after["last_meaningful_at"], creator_before["last_meaningful_at"])
+        self.assertEqual(dict(db.get_absence_request(request_id, self.path)), absence_before)
+        self.assertEqual(db.approved_absence_on(10, date(2026, 7, 16), self.path)["id"], request_id)
+        self.assertEqual(db.creator_pop_status(10, "2026-W29", self.path), "excused")
+        history_after = [dict(row) for row in db.creator_history(10, self.path)]
+        self.assertEqual(history_after[1:], history_before)
+        self.assertEqual(history_after[0]["action"], "engagement_counted")
+        self.assertEqual(len(db.list_creators(self.path)), 1)
+
     def test_sick_day_approval_uses_extensible_absence_model(self):
-        request_id = db.create_absence_request(10, "sick", "2026-07-14", "2026-07-14", None, self.path)
+        today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        request_id = db.create_absence_request(10, "sick", today, today, None, self.path)
         self.assertTrue(db.review_absence(request_id, "approved", 20, path=self.path))
         self.assertEqual(db.get_creator(10, self.path)["availability"], "sick")
 

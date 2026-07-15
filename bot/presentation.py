@@ -17,7 +17,7 @@ ACTION_LABELS = {
     "pop_approved": "✅ Thursday POP approved",
     "pop_rejected": "🔴 Thursday POP needs follow-up",
     "absence_requested": "💙 Away Notice submitted",
-    "absence_approved": "💙 Away Notice recorded as excused",
+    "absence_approved": "💙 Away Notice acknowledged",
     "absence_clarification": "💬 Away Notice clarification requested",
     "warning_issued": "💛 Warning issued",
     "strike_issued": "🔴 Strike issued",
