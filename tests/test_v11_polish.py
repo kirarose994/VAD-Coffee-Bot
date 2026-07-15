@@ -122,7 +122,7 @@ class V11NavigationTests(unittest.IsolatedAsyncioTestCase):
              patch("tracker.db.claim_notification",side_effect=[True,False]),patch("tracker.db.record_audit"):
             await inactivity_job(ctx); await inactivity_job(ctx)
         self.assertEqual(bot.send_message.await_count,2)  # creator reminder plus one admin flag
-        self.assertTrue(any("Another full day" in call.args[1] for call in bot.send_message.await_args_list))
+        self.assertTrue(any("There’s no pressure if life is busy" in call.args[1] for call in bot.send_message.await_args_list))
 
     async def test_three_day_alert_goes_to_admin_topic(self):
         anchor = (datetime.now(timezone.utc)-timedelta(hours=73)).isoformat()
@@ -134,11 +134,14 @@ class V11NavigationTests(unittest.IsolatedAsyncioTestCase):
         ctx = SimpleNamespace(bot=bot,bot_data={"config":cfg})
         with patch("tracker.db.sync_absence_availability"),patch("tracker.db.set_system_state"),patch("tracker.db.due_creators",return_value=[creator]), \
              patch("tracker.db.approved_absence_on",return_value=None),patch("tracker.db.calendar_absences",return_value=[]), \
-             patch("tracker.db.claim_notification",return_value=True),patch("tracker.db.record_audit"):
-            await inactivity_job(ctx)
+             patch("tracker.db.claim_notification",side_effect=[True,False]),patch("tracker.db.record_audit"):
+            await inactivity_job(ctx);await inactivity_job(ctx)
+        self.assertEqual(bot.send_message.await_count,2)  # one creator check-in and one Admin alert
         self.assertEqual(bot.send_message.await_args.args[0],-100)
         self.assertEqual(bot.send_message.await_args.kwargs["message_thread_id"],7)
-        self.assertIn("Admin follow-up required",bot.send_message.await_args.args[1])
+        self.assertIn("three-day participation threshold",bot.send_message.await_args.args[1])
+        self.assertTrue(any(call.args[0]==10 and "Just checking in again" in call.args[1]
+            for call in bot.send_message.await_args_list))
 
 
 class V11ConfigTests(unittest.TestCase):

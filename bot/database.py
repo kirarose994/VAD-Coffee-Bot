@@ -3,7 +3,7 @@
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -230,8 +230,8 @@ def initialize_database(path: Path | None = None):
 DEFAULT_MESSAGE_TEMPLATES = {
     "friendly_reminder": ("Friendly Reminder", "Hi {name}! Just a friendly check-in from the VAD team. 💛", "community"),
     "participation_reminder": ("Participation Reminder", "Hi {name}! Meaningful participation helps keep the community lively and gives members a reason to come back. Join a discussion, respond thoughtfully, or ask a genuine question when you can. Taking time away? Record an Away Notice so tracking stays fair.", "participation"),
-    "two_day_reminder": ("Two-Day Participation Reminder", "Hi {name}. Two full days have passed since your last meaningful participation. Meaningful participation means adding value to a genuine conversation—not simply checking in. Another full day without participation will notify the Admin team. Taking time away? You can record an Away Notice.", "participation"),
-    "three_day_followup": ("Three-Day Admin Follow-Up", "Hi {name}. Three full days have passed without meaningful participation and no approved Away Notice is active. The Admin team has been notified for supportive follow-up.", "participation"),
+    "two_day_reminder": ("Friendly Participation Check-In", "Hi {name}. We haven’t seen a meaningful message from you in a couple of days. Regular conversation helps keep the community lively and welcoming. There’s no pressure if life is busy—an Away Notice pauses participation expectations while you take time away.", "participation"),
+    "three_day_followup": ("Three-Day Supportive Check-In", "Hi {name}. We still haven’t seen recent meaningful participation from you. Staying involved helps keep the community active and interesting. If you’re taking time away, use an Away Notice so reminders pause and your standing stays protected.", "participation"),
     "pop_reminder": ("POP Reminder", "Hi {name}! This is your friendly Thursday POP reminder. Please submit in the designated topic, or make sure an Away Notice is on file.", "pop"),
     "welcome": ("Welcome", "Welcome, {name}! The VAD Operations Bot is here to help you stay informed and keep participation tracking fair.", "welcome"),
     "community_checkin": ("Community Check-In", "Hi {name}! The team is checking in. Let us know if you need support or time away.", "community"),
@@ -802,8 +802,13 @@ def dashboard_metrics(week_key, path=None):
     """Compact operational counts for mobile dashboards."""
     with get_connection(path) as db:
         scalar = lambda sql, params=(): db.execute(sql,params).fetchone()[0]
+        eastern_now=datetime.now(ZoneInfo("America/New_York"));eastern_start=datetime.combine(eastern_now.date(),time.min,ZoneInfo("America/New_York"))
+        utc_start=eastern_start.astimezone(timezone.utc).isoformat();utc_end=(eastern_start+timedelta(days=1)).astimezone(timezone.utc).isoformat()
+        attention_rows=_participation_attention_rows(db,48,72)
         metrics = {
             "active_creators": scalar("SELECT COUNT(*) FROM creators WHERE status='active' AND deleted_at IS NULL"),
+            "participated_today": scalar("""SELECT COUNT(DISTINCT telegram_id) FROM engagement_events
+              WHERE decision='accepted' AND datetime(created_at)>=datetime(?) AND datetime(created_at)<datetime(?)""",(utc_start,utc_end)),
             "pending_registrations": scalar("SELECT COUNT(*) FROM creators WHERE status='pending' AND deleted_at IS NULL"),
             "pending_vacations": scalar("SELECT COUNT(*) FROM absence_requests WHERE status='pending' AND absence_type='vacation' AND deleted_at IS NULL"),
             "pending_sick": scalar("SELECT COUNT(*) FROM absence_requests WHERE status='pending' AND absence_type='sick' AND deleted_at IS NULL"),
@@ -815,10 +820,11 @@ def dashboard_metrics(week_key, path=None):
             "deleted_records": scalar("SELECT COUNT(*) FROM creators WHERE deleted_at IS NOT NULL"),
             "audit_events": scalar("SELECT COUNT(*) FROM audit_events"),
             "audit_today": scalar("SELECT COUNT(*) FROM audit_events WHERE substr(occurred_at,1,10)=?", (datetime.now(ZoneInfo("America/New_York")).date().isoformat(),)),
-            "failed_notifications": scalar("SELECT COUNT(*) FROM audit_events WHERE result='error' AND action LIKE '%delivery_failed%'"),
+            "failed_notifications": scalar("SELECT COUNT(*) FROM delivery_failures WHERE resolved_at IS NULL"),
             "support_requests": scalar("SELECT COUNT(*) FROM support_requests WHERE status!='resolved'"),
+            "three_day_alerts": sum(row["hours"]>=72 for row in attention_rows),
         }
-        metrics["participation_flags"] = len(_participation_attention_rows(db, 48, 72))
+        metrics["participation_flags"] = len(attention_rows)
         metrics["needs_attention"] = (
             metrics["pending_registrations"] + metrics["pending_vacations"] + metrics["pending_sick"]
             + metrics["pending_pop"] + metrics["participation_flags"] + metrics["failed_notifications"]
@@ -908,10 +914,11 @@ def needs_attention_counts(week_key, path=None, now=None, due_weekday=3, cutoff_
             "owner_reviews": scalar("""SELECT COUNT(*) FROM (
               SELECT telegram_id FROM creator_warnings WHERE status!='removed' AND warning_type='strike'
               GROUP BY telegram_id HAVING COUNT(*)>=3)"""),
-            "failed_notifications": scalar("SELECT COUNT(*) FROM audit_events WHERE result='error' AND action LIKE '%delivery_failed%'"),
+            "failed_notifications": scalar("SELECT COUNT(*) FROM delivery_failures WHERE resolved_at IS NULL"),
             "recent_archive_changes": scalar("""SELECT COUNT(*) FROM audit_events
               WHERE action IN ('creator_soft_deleted','creator_restored')
               AND occurred_at>=?""", ((datetime.now(ZoneInfo("America/New_York")) - timedelta(days=7)).isoformat(),)),
+            "support_requests": scalar("SELECT COUNT(*) FROM support_requests WHERE status!='resolved'"),
         }
         counts["total"] = sum(counts.values())
         return counts
@@ -1376,6 +1383,19 @@ def participation_events(limit=30,path=None):
           FROM engagement_events e LEFT JOIN creators c ON c.telegram_id=e.telegram_id
           ORDER BY e.id DESC LIMIT ?""",(limit,)).fetchall()
         return [_resolved_person_row(db,row) for row in rows]
+
+
+def participation_activity(start_utc, end_utc, path=None):
+    """Aggregate existing participation events inside one half-open UTC window."""
+    with get_connection(path) as db:
+        rows=db.execute("""SELECT e.telegram_id,COUNT(*) AS count,MAX(e.created_at) AS last_event,
+          c.display_name,c.username FROM engagement_events e JOIN creators c ON c.telegram_id=e.telegram_id
+          WHERE e.decision='accepted' AND datetime(e.created_at)>=datetime(?) AND datetime(e.created_at)<datetime(?)
+          AND c.status='active' AND c.deleted_at IS NULL GROUP BY e.telegram_id
+          ORDER BY c.display_name COLLATE NOCASE""",(start_utc,end_utc)).fetchall()
+        ignored=db.execute("""SELECT COUNT(*) FROM engagement_events
+          WHERE decision!='accepted' AND datetime(created_at)>=datetime(?) AND datetime(created_at)<datetime(?)""",(start_utc,end_utc)).fetchone()[0]
+        return {"accepted":[_resolved_person_row(db,row) for row in rows],"ignored":ignored}
 
 
 def creator_participation_diagnostics(path=None):

@@ -402,20 +402,35 @@ async def inactivity_job(ctx: ContextTypes.DEFAULT_TYPE):
             if grace_start > started:
                 started = grace_start
         hours = (now - started.astimezone(timezone.utc)).total_seconds() / 3600
-        if hours >= cfg.alert_hours and db.claim_notification(creator["telegram_id"], anchor, "alert"):
-            full_creator=db.get_creator(creator["telegram_id"])
-            username=f"@{full_creator['username']}" if full_creator and full_creator["username"] else "No username"
-            await send_routed(ctx.bot,cfg,"participation_alert",
-                f"🔴 Admin follow-up required\n{escape(creator['display_name'])} · {username}\nTelegram ID: {creator['telegram_id']}\n"
-                f"Last meaningful participation: {anchor}\nElapsed: {hours:.1f} hours\nAway Notice: None active\nOpen Admin Home → Participation Alerts.",
-                target_telegram_id=creator["telegram_id"])
-            db.set_system_state("last_admin_notification",datetime.now(cfg.timezone).isoformat())
-        elif hours >= cfg.warning_hours and db.claim_notification(creator["telegram_id"], anchor, "warning"):
+        if hours >= cfg.alert_hours:
+            if db.claim_notification(creator["telegram_id"], anchor, "alert"):
+                full_creator=db.get_creator(creator["telegram_id"])
+                username=f"@{full_creator['username']}" if full_creator and full_creator["username"] else "No username"
+                try:
+                    await ctx.bot.send_message(creator["telegram_id"],
+                        "💙 Just checking in again\n\nWe still haven’t seen recent meaningful participation from you.\n\n"
+                        "Staying involved helps maintain momentum in the chat and keeps the community active and interesting "
+                        "for creators and clients alike.\n\nIf you’re taking some time away, please use the Away Notice option "
+                        "so the bot can pause reminders and protect your standing.")
+                    db.record_audit(None,"three_day_checkin_delivered","notification",target_telegram_id=creator["telegram_id"])
+                except Exception:
+                    db.record_audit(None,"three_day_checkin_delivery_failed","notification",target_telegram_id=creator["telegram_id"],result="error")
+                await send_routed(ctx.bot,cfg,"participation_alert",
+                    f"🔴 Friendly Admin follow-up\n{escape(creator['display_name'])} · {username}\nTelegram ID: {creator['telegram_id']}\n"
+                    "Creator has reached the three-day participation threshold and may need a friendly check-in.\n"
+                    f"Last meaningful participation: {anchor}\nElapsed: {hours:.1f} hours\nAway Notice: None active\nOpen Admin Home → Participation Alerts.",
+                    target_telegram_id=creator["telegram_id"])
+                db.set_system_state("last_admin_notification",datetime.now(cfg.timezone).isoformat())
+            # Never fall back to a two-day reminder after the three-day cycle was
+            # already claimed on an earlier scheduler run.
+            continue
+        if hours >= cfg.warning_hours and db.claim_notification(creator["telegram_id"], anchor, "warning"):
             try:
                 await ctx.bot.send_message(creator["telegram_id"],
-                    "🟠 Participation reminder\n\nIt has been two days since your last meaningful participation. "
-                    "Meaningful participation means adding value to a genuine conversation—not simply checking in. "
-                    "Another full day without participation will notify the Admin team. Taking time away? You can record an Away Notice.")
+                    "💛 Friendly check-in\n\nWe haven’t seen a meaningful message from you in a couple of days.\n\n"
+                    "Regular conversation helps keep the community lively, welcoming, and engaging for everyone, "
+                    "including the clients who enjoy getting to know the creators.\n\nThere’s no pressure if life is busy. "
+                    "If you’ll be away for a while, you can submit an Away Notice and participation expectations will pause during that time.")
                 db.record_audit(None,"warning_delivered","notification",target_telegram_id=creator["telegram_id"])
             except Exception:
                 db.record_audit(None,"warning_delivery_failed","notification",target_telegram_id=creator["telegram_id"],result="error")
