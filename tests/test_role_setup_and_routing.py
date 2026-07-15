@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "bot"))
 
@@ -60,7 +61,7 @@ class SetupMenuTests(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(owner_user_ids=frozenset({1}) if owner else frozenset(),lead_admin_user_ids=frozenset(),
             admin_user_ids=frozenset({2}),admin_permissions={},participation_chat_id=-100,participation_topic_ids=frozenset({10,11}),
             girls_chat_id=-200,pop_chat_id=-300,pop_thread_id=11,admin_chat_id=-400,creator_group_id=-500,
-            buyer_group_id=-600,timezone_name="America/New_York",warning_hours=48,alert_hours=72)
+            buyer_group_id=-600,timezone_name="America/New_York",timezone=ZoneInfo("America/New_York"),warning_hours=48,alert_hours=72)
 
     async def screen(self, action, user_id=1, chat_id=-100, thread_id=10, is_forum=True):
         chat = SimpleNamespace(id=chat_id,title="VAD Main Group",is_forum=is_forum)
@@ -105,6 +106,16 @@ class SetupMenuTests(unittest.IsolatedAsyncioTestCase):
             result=await self.screen("creator_list_all")
         directory.assert_called_once()
         self.assertEqual(labels(result.kwargs["reply_markup"]).count("Eve"),1)
+
+    async def test_creator_profile_header_uses_canonical_creator_lookup(self):
+        eve={"telegram_id":8129455408,"display_name":"Eve Goddess","username":"OMyEve","status":"active",
+            "availability":"available","last_meaningful_at":None,"registered_at":"2026-07-14T12:00:00+00:00"}
+        with patch("navigation.db.get_creator",return_value=eve), \
+             patch("navigation.db.creator_current_pop_status",return_value="not_due"), \
+             patch("navigation.db.warning_summary",return_value={"warnings":0,"strikes":0}):
+            result=await self.screen("creator_select_8129455408")
+        self.assertIn("Eve Goddess",result.args[0])
+        self.assertNotIn("Telegram user 8129455408",result.args[0])
 
     async def test_add_admin_picker_deduplicates_creator_and_bot_user_by_id(self):
         creator={"telegram_id":50,"display_name":"Bambolawife","status":"active"}
