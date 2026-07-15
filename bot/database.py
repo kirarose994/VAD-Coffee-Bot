@@ -236,7 +236,7 @@ DEFAULT_MESSAGE_TEMPLATES = {
     "welcome": ("Welcome", "Welcome, {name}! The VAD Operations Bot is here to help you stay informed and keep participation tracking fair.", "welcome"),
     "community_checkin": ("Community Check-In", "Hi {name}! The team is checking in. Let us know if you need support or time away.", "community"),
     "missing_pop": ("Missing POP", "Hi {name}. Thursday POP has not been received for this week. Please submit in the designated topic or contact an admin if an Away Notice applies.", "pop"),
-    "away_acknowledgement": ("Away Notice Acknowledgement", "Hi {name}. Your Away Notice has been recorded as excused. We hope your time away is restorative. 💙", "away"),
+    "away_acknowledgement": ("Away Notice Acknowledgement", "Hi {name}. Your away notice has been acknowledged. Your community status and any applicable Thursday POP requirements have been updated. 💙", "away"),
     "clarification_request": ("Clarification Request", "Hi {name}. An admin needs a little more information about your Away Notice: {reason}", "away"),
     "good_standing": ("Good Standing", "Hi {name}! Your community status is in good standing. Thank you for participating. 💚", "community"),
     "owner_review_outcome": ("Owner Review Outcome", "Hi {name}. The owner review is complete: {reason}", "warning"),

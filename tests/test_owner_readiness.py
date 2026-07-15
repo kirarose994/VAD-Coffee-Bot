@@ -14,7 +14,7 @@ import database as db
 from main import startup_readiness_notice
 from navigation import callback
 from readiness import EXPECTED_MAIN_CHAT_ID,readiness_items,system_check_summary
-from tracker import observe
+from tracker import inactivity_job, observe
 
 
 def config(**changes):
@@ -111,6 +111,46 @@ class SafeTestIsolationTests(unittest.IsolatedAsyncioTestCase):
         keys=[call.args[0] for call in state.call_args_list]
         self.assertIn("last_participation_message_detected",keys);self.assertIn("last_meaningful_participation_counted",keys)
         self.assertIn("readiness:meaningful_test",keys)
+
+    async def test_meaningful_message_during_approved_away_notice_is_counted(self):
+        cfg=config(participation_topic_ids=frozenset({10}))
+        msg=SimpleNamespace(text="I appreciate this thoughtful community discussion today.",chat_id=EXPECTED_MAIN_CHAT_ID,
+            message_thread_id=10,message_id=188,photo=None,sticker=None,animation=None,video=None,voice=None,document=None,caption=None)
+        update=SimpleNamespace(effective_message=msg,effective_user=SimpleNamespace(id=20));ctx=SimpleNamespace(bot_data={"config":cfg})
+        creator={"telegram_id":20,"status":"active","vacation_until":None}
+        with patch("tracker.db.system_state",return_value={}),patch("tracker.db.get_creator",return_value=creator), \
+             patch("tracker.db.approved_absence_on",return_value={"id":7,"status":"approved"}), \
+             patch("tracker.db.recent_hash_exists",return_value=False),patch("tracker.db.record_engagement",return_value=True) as record, \
+             patch("tracker.db.set_system_state") as state:
+            await observe(update,ctx)
+        self.assertEqual(record.call_args.args[5],"accepted")
+        diagnostic=next(call for call in state.call_args_list if call.args[0]=="participation:last_creator:20")
+        self.assertEqual(json.loads(diagnostic.args[1])["reason"],"accepted_during_away_notice")
+
+    async def test_nonmeaningful_message_during_approved_away_notice_still_does_not_count(self):
+        cfg=config(participation_topic_ids=frozenset({10}))
+        msg=SimpleNamespace(text="hi",chat_id=EXPECTED_MAIN_CHAT_ID,message_thread_id=10,message_id=189,
+            photo=None,sticker=None,animation=None,video=None,voice=None,document=None,caption=None)
+        update=SimpleNamespace(effective_message=msg,effective_user=SimpleNamespace(id=20));ctx=SimpleNamespace(bot_data={"config":cfg})
+        creator={"telegram_id":20,"status":"active","vacation_until":None}
+        with patch("tracker.db.system_state",return_value={}),patch("tracker.db.get_creator",return_value=creator), \
+             patch("tracker.db.approved_absence_on",return_value={"id":7,"status":"approved"}), \
+             patch("tracker.db.recent_hash_exists",return_value=False),patch("tracker.db.record_engagement",return_value=True) as record, \
+             patch("tracker.db.set_system_state"):
+            await observe(update,ctx)
+        self.assertEqual(record.call_args.args[5],"rejected")
+
+    async def test_inactivity_job_remains_paused_during_approved_away_notice(self):
+        cfg=config(participation_topic_ids=frozenset({10}))
+        creator={"telegram_id":20,"last_meaningful_at":"2026-07-01T00:00:00+00:00","approved_at":None,
+            "registered_at":"2026-07-01T00:00:00+00:00","vacation_until":None}
+        ctx=SimpleNamespace(bot_data={"config":cfg},bot=SimpleNamespace(send_message=AsyncMock()))
+        with patch("tracker.db.sync_absence_availability"),patch("tracker.db.set_system_state"), \
+             patch("tracker.db.due_creators",return_value=[creator]), \
+             patch("tracker.db.approved_absence_on",return_value={"id":7,"status":"approved"}), \
+             patch("tracker.db.claim_notification") as claim,patch("tracker.db.pop_status_report",return_value=[]):
+            await inactivity_job(ctx)
+        claim.assert_not_called()
 
     async def test_wrong_chat_records_exact_creator_diagnostic(self):
         cfg=config(participation_topic_ids=frozenset({10}))

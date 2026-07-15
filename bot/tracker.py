@@ -309,9 +309,9 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             db.record_audit(None,"engagement_ignored","participation_event",target_telegram_id=user.id,new_value={"reason":"unregistered_user"})
         return
     local_now = datetime.now(cfg.timezone)
-    if db.approved_absence_on(user.id, local_now.date()):
-        _record_creator_participation_diagnostic(cfg,creator,msg,"active_away_notice")
-        return
+    # An approved Away Notice pauses participation expectations, but it does not
+    # prevent a creator from receiving credit when they choose to participate.
+    active_away_notice = bool(db.approved_absence_on(user.id, local_now.date()))
     if creator["vacation_until"] and date.fromisoformat(creator["vacation_until"]) >= local_now.date():
         _record_creator_participation_diagnostic(cfg,creator,msg,"legacy_vacation_active")
         return
@@ -349,7 +349,8 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         stored=db.record_engagement(user.id,msg.message_id,msg.chat_id,thread_id,digest,
             "accepted" if accepted else "rejected",decision_reason,event_type=event_type)
         if stored and accepted:
-            diagnostic_reason=f"accepted_{event_type}"
+            diagnostic_reason=(f"accepted_{event_type}_during_away_notice"
+                if active_away_notice else f"accepted_{event_type}")
             _record_creator_participation_diagnostic(cfg,creator,msg,diagnostic_reason)
             counted_at=datetime.now(cfg.timezone).isoformat()
             db.set_system_state("last_meaningful_participation_counted",counted_at)
@@ -368,7 +369,8 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     stored=db.record_engagement(user.id,msg.message_id,msg.chat_id,thread_id,decision.digest or None,
                          "accepted" if decision.accepted else "rejected",decision.reason)
     if stored and decision.accepted:
-        _record_creator_participation_diagnostic(cfg,creator,msg,"accepted")
+        diagnostic_reason = "accepted_during_away_notice" if active_away_notice else "accepted"
+        _record_creator_participation_diagnostic(cfg,creator,msg,diagnostic_reason)
         counted_at=datetime.now(cfg.timezone).isoformat()
         db.set_system_state("last_meaningful_participation_counted",counted_at)
         # A real accepted event is stronger evidence than the isolated safe test.

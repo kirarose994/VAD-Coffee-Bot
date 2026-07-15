@@ -20,8 +20,12 @@ come back.
 Simple check-ins, greetings, emojis, stickers, photos without meaningful context, repeated
 messages, promotional posts, and similar filler do not satisfy the participation requirement.
 
+An approved Away Notice pauses inactivity expectations without blocking participation credit.
+If a creator chooses to contribute a meaningful message while away, the event is recorded and
+`last_meaningful_at` is updated; warning and alert timers remain paused for the covered dates.
+
 Telegram voice messages and uploaded audio of at least five seconds may count without
-speech-to-text when the creator, location, Away Notice, duplicate-file, and promotional-caption
+speech-to-text when the creator, location, duplicate-file, and promotional-caption
 checks pass. Shorter audio is recorded as `audio_too_short` and does not count.
 
 Approved creators should not go more than two full days without meaningful participation in
@@ -39,7 +43,8 @@ Owners can explicitly select **Use General for Participation** from Telegram Loc
 Participation Monitor. This audited action replaces any incorrect numbered participation topics
 with General-only; it does not broaden tracking to every forum topic.
 
-The sender must have an approved, unarchived creator record and no active approved absence.
+The sender must have an approved, unarchived creator record. An active approved Away Notice does
+not block optional participation from being counted.
 Buyer identities and administrators without approved creator profiles never count. POP-topic
 media returns through the POP workflow and never reaches participation classification.
 

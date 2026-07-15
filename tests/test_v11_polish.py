@@ -70,7 +70,8 @@ class V11DatabaseTests(unittest.TestCase):
         with patch("navigation.db.get_creator",return_value=db.get_creator(10,self.path)), \
              patch("navigation.db.warning_summary",return_value={"warnings":0,"strikes":0}), \
              patch("navigation.db.creator_current_pop_status",return_value="not_due"), \
-             patch("navigation.db.latest_absence",return_value=None):
+             patch("navigation.db.latest_absence",return_value=None), \
+             patch("navigation.db.approved_absence_on",return_value=None):
             card = creator_card(10,cfg)
         self.assertIn("⚪ Unavailable",card)
         self.assertNotIn("🟢 Availability",card)

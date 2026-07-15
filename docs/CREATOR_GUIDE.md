@@ -9,6 +9,7 @@ The goal is to add value through discussion, thoughtful responses, questions, or
 simply to post every two days. This keeps the community lively and gives members a reason to
 come back.
 Use an Away Notice when time away should pause expectations; private details are optional.
+Participation is optional while you’re away. Meaningful messages will still count, but you will not be penalized for inactivity during your away period.
 Submit POP only through the configured Sellers Group POP workflow.
 
 Contact an Admin creates a private support request after preview and confirmation. My Support
