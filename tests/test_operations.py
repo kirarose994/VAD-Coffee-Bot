@@ -185,9 +185,10 @@ class CallbackSecurityTests(unittest.IsolatedAsyncioTestCase):
             await callback(update,ctx)
         markup = query.edit_message_text.await_args.kwargs["reply_markup"]
         labels = [button.text for row in markup.inline_keyboard for button in row]
-        self.assertIn("📸 POP Reviews",labels)
+        self.assertIn("📸 Thursday POP",labels)
         self.assertNotIn("📝 Registrations",labels)
         self.assertNotIn("💬 Messages",labels)
+        self.assertNotIn("📊 Participation",labels)
 
     async def test_hidden_admin_tool_still_rechecks_permission(self):
         cfg = SimpleNamespace(owner_user_ids=frozenset(),lead_admin_user_ids=frozenset(),admin_user_ids=frozenset({4}),admin_permissions={4:frozenset({"review_pop"})},timezone=ZoneInfo("America/New_York"))

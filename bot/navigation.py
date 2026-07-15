@@ -19,6 +19,8 @@ from readiness import readiness_items, status_icon, system_check_summary
 from community_snapshot import PARTICIPATION_POLICY, build_snapshot, section_lines
 from briefing import deliver_daily_brief
 from away_calendar import calendar_window, friendly_range, render_default, render_view
+from participation_summary import (REMINDER_LABELS, build_participation_summary,
+    creator_detail as participation_creator_detail, render_today, render_week)
 
 
 def _nonce(ctx):
@@ -201,16 +203,22 @@ def creator_card(user_id, cfg):
     )
 
 
-def admin_card(cfg):
+def admin_card(cfg, user_id=None):
     metrics = _metrics(cfg)
-    pending = metrics["pending_registrations"] + metrics["pending_vacations"] + metrics["pending_sick"] + metrics["pending_pop"]
+    permitted=(metrics.get("needs_attention",0) if user_id is None else
+        (metrics["pending_registrations"] if has_permission(user_id,cfg,"review_registrations") else 0)+
+        (metrics["pending_vacations"]+metrics["pending_sick"] if has_permission(user_id,cfg,"review_vacations") or has_permission(user_id,cfg,"review_sick_days") else 0)+
+        (metrics["pending_pop"]+metrics.get("missing_pop",0) if has_permission(user_id,cfg,"review_pop") else 0)+
+        (metrics.get("three_day_alerts",0) if has_permission(user_id,cfg,"view_creator_reports") else 0)+
+        (metrics.get("support_requests",0) if has_permission(user_id,cfg,"manage_support") else 0)+
+        (metrics.get("active_warnings",0)+metrics.get("active_strikes",0) if has_permission(user_id,cfg,"adjust_warnings") else 0)+
+        (metrics.get("failed_notifications",0) if role_for(user_id,cfg) is Role.OWNER else 0))
     return (
-        f"🚨 Admin queue: {pending + metrics.get('participation_flags', 0) + metrics.get('failed_notifications', 0)}\n"
-        f"📝 New creators: {metrics['pending_registrations']}\n"
-        f"💙 Away Notices: {metrics['pending_vacations'] + metrics['pending_sick']}\n"
-        f"📸 POP reviews: {metrics['pending_pop']}\n"
-        f"🟠 Participation flags: {metrics.get('participation_flags', 0)}\n"
-        f"⚠️ Failed notifications: {metrics.get('failed_notifications', 0)}"
+        f"👥 Active Creators: {metrics['active_creators']}\n"
+        f"💬 Participated Today: {metrics.get('participated_today',0)}\n"
+        f"🌴 Away Today: {metrics['away_now']}\n"
+        f"📸 POP Needs Review: {metrics['pending_pop']}\n"
+        f"📥 Needs Attention: {permitted}"
     )
 
 
@@ -353,42 +361,54 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "admin":
         if role < Role.ADMIN:
             return await _show(query, "Admin access is required.", home_markup(ctx, user_id))
-        rows = [[("📊 Community Snapshot","community_snapshot")],[ ("🚨 Admin Queue","admin_queue")]]
-        if has_permission(user_id,cfg,"review_registrations"): rows.append([("📝 Review New Creators","registration_queue")])
-        if has_permission(user_id,cfg,"review_vacations") or has_permission(user_id,cfg,"review_sick_days"):
-            rows.append([("💙 Away Notices","away_queue")])
-        if has_permission(user_id,cfg,"review_pop"): rows.append([("📸 POP Reviews","pop_queue")])
-        if has_permission(user_id,cfg,"view_creator_reports"): rows.append([("👥 Active Creators","creator_report"),("📅 Community Calendar","calendar")])
-        rows.append([("📅 Who’s Away","whos_away")])
-        tools = []
-        if has_permission(user_id,cfg,"adjust_warnings"): tools.append(("💛 Creator Standing","warnings_help"))
-        if has_permission(user_id,cfg,"send_announcements"): tools.append(("💬 Message Center","templates_help"))
-        if tools: rows.append(tools)
-        if has_permission(user_id,cfg,"manage_support"):rows.append([("📨 Support Requests","support_queue")])
-        rows.append([("📚 Help Center","resources")])
-        return await _show(query, "🛡️ Admin Home\n\nYou are signed in as an Admin. Review requests, alerts, and tools assigned to your role.\n\n" + admin_card(cfg), grid_markup(ctx,rows))
+        rows=[]
+        first=[("📥 Operations Inbox","admin_queue")]
+        if has_permission(user_id,cfg,"view_creator_reports"):first.append(("📊 Participation","participation_summary"))
+        rows.append(first)
+        community=[]
+        if has_permission(user_id,cfg,"view_creator_reports"):community.append(("👥 Creators","creator_report"))
+        community.append(("📅 Who’s Away","whos_away"));rows.append(community)
+        reviews=[]
+        if has_permission(user_id,cfg,"review_pop"):reviews.append(("📸 Thursday POP","pop_queue"))
+        if has_permission(user_id,cfg,"review_vacations") or has_permission(user_id,cfg,"review_sick_days"):reviews.append(("💙 Away Notices","away_queue"))
+        if reviews:rows.append(reviews)
+        final=[]
+        if has_permission(user_id,cfg,"manage_support"):final.append(("📬 Support","support_queue"))
+        final.append(("📚 Help Center","resources"));rows.append(final)
+        if (has_permission(user_id,cfg,"adjust_warnings") or has_permission(user_id,cfg,"send_announcements")
+                or has_permission(user_id,cfg,"view_creator_reports")):
+            rows.append([("🧰 More Admin Tools","admin_tools")])
+        return await _show(query, "🛡️ Admin Home\n\nReview community operations and open only the area that needs your attention.\n\n" + admin_card(cfg,user_id), grid_markup(ctx,rows))
+    if action == "admin_tools":
+        if role < Role.ADMIN:return await _show(query,"Admin access is required.",home_markup(ctx,user_id))
+        tools=[]
+        if has_permission(user_id,cfg,"view_creator_reports"):tools.extend([("📊 Community Snapshot","community_snapshot"),("📅 Community Calendar","calendar")])
+        if has_permission(user_id,cfg,"adjust_warnings"):tools.append(("💛 Creator Standing","warnings_help"))
+        if has_permission(user_id,cfg,"send_announcements"):tools.append(("💬 Message Center","templates_help"))
+        tools.append(("📚 Help Center","resources"))
+        return await _show(query,"🧰 More Admin Tools\n\nOpen occasional reports, communication, standing, or reference tools.",menu_markup(ctx,tools,"admin"))
     if action == "owner":
         if role is not Role.OWNER:
             return await _show(query, "Owner access is required.", home_markup(ctx, user_id))
-        return await _show(query, "👑 Owner Home\n\nYou are signed in as an Owner. Review anything needing attention, manage community operations, and access protected Owner tools.\n\n" + owner_card(cfg), grid_markup(ctx,[
-            [("🚨 Needs Attention","needs_attention")],
-            [("📊 Community Snapshot","community_snapshot")],
-            [("📋 My Status","my_account_status"),("📸 My POP","pop_help")],
-            [("💙 My Away Notices","my_away_notices"),("📜 My Timeline","timeline_0")],
-            [("👥 Creator Directory","creator_report"),("📸 Review POP Submissions","pop_queue")],
-            [("💙 Review Away Notices","away_queue"),("🟠 Participation Alerts","participation_queue")],
-            [("⚠️ Warnings and Strikes","warnings_help"),("💬 Message Center","templates_help")],
-            [("📨 Support Requests","support_queue"),("📅 Calendar","calendar")],
-            [("📅 Who’s Away","whos_away")],
-            [("📊 Reports","reports")],
-            [("📍 Telegram Locations","telegram_locations"),("📈 Participation Monitor","participation_monitor")],
+        return await _show(query, "👑 Owner Home\n\nReview community operations, anything needing attention, and protected Owner tools.\n\n" + owner_card(cfg), grid_markup(ctx,[
+            [("🚨 Needs Attention","needs_attention"),("📊 Community Snapshot","community_snapshot")],
+            [("📥 Operations Inbox","admin_queue"),("📊 Participation","participation_summary")],
+            [("👥 Creators","creator_report"),("📅 Who’s Away","whos_away")],
+            [("📸 Thursday POP","pop_queue"),("💙 Away Notices","away_queue")],
+            [("📬 Support","support_queue"),("📅 Community Calendar","calendar")],
+            [("📊 Reports","reports"),("🔐 Owner Tools","owner_tools")],
+        ]))
+    if action == "owner_tools":
+        if role is not Role.OWNER:return await _show(query,"Owner Tools are available only to owners.",home_markup(ctx,user_id))
+        return await _show(query,"🔐 Owner Tools\n\nOpen protected setup, accountability, recovery, and system tools.",grid_markup(ctx,[
             [("✅ Setup & Readiness","readiness"),("🧪 Test Center","test_center")],
-            [("🧭 Complete Initial Setup","setup_wizard"),("👥 People & Roles","roles")],
-            [("🧾 Participation Event Log","participation_events"),("🔐 Audit Log","audit")],
+            [("🧭 Complete Initial Setup","setup_wizard"),("📍 Telegram Locations","telegram_locations")],
+            [("📈 Participation Monitor","participation_monitor"),("👥 People & Roles","roles")],
+            [("🔐 Audit Log","audit")],
             [("🗃️ Archive","deleted"),("♻️ Restore","restore_help")],
             [("🧭 Setup","setup"),("🩺 Health","health")],
             [("💾 Export","export_help"),("📚 Help Center","resources")],
-        ]))
+        ],"owner"))
     if action == "community_snapshot":
         if role < Role.ADMIN:return await _show(query,"Community Snapshot is available only to authorized Admins and Owners.",home_markup(ctx,user_id))
         sections=_snapshot_sections(user_id,cfg)
@@ -409,6 +429,30 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if "system" in sections:buttons.append(("🩺 System Health","health"))
         buttons.append(("ℹ️ Participation Policy","snapshot_policy"))
         return await _show(query,snapshot_text(user_id,cfg),menu_markup(ctx,buttons,"owner" if role is Role.OWNER else "admin"))
+    if action == "participation_summary" or action.startswith("participation_summary_") or action.startswith("participation_creator_"):
+        if role < Role.ADMIN or not has_permission(user_id,cfg,"view_creator_reports"):
+            return await _show(query,"Participation Summary is available only to authorized Admins and Owners.",home_markup(ctx,user_id))
+        summary=build_participation_summary(cfg);timezone_name=getattr(cfg,"timezone_name","America/New_York")
+        if action.startswith("participation_creator_"):
+            raw=action.removeprefix("participation_creator_")
+            row=next((item for item in summary["creators"] if str(item["telegram_id"])==raw),None)
+            if not row:return await _show(query,"That creator is no longer available in this summary.",menu_markup(ctx,[],"participation_summary_creators"))
+            return await _show(query,participation_creator_detail(row,timezone_name),menu_markup(ctx,[],"participation_summary_creators"))
+        view=action.removeprefix("participation_summary_") if action != "participation_summary" else "today"
+        buttons=[("Today","participation_summary_today"),("This Week","participation_summary_week"),
+            ("Needs Attention","participation_summary_attention"),("By Creator","participation_summary_creators"),
+            ("Technical Log","participation_events")]
+        if view=="week":text=render_week(summary,timezone_name)
+        elif view=="attention":
+            attention=summary["status"]["approaching"]+summary["status"]["reminder_due"]+summary["status"]["follow_up"]
+            text="📊 Participation · Needs Attention\n\nCreators approaching or at a reminder or Admin follow-up threshold.\n\n"+(
+                "\n".join(f"• {row['display_name']} · {REMINDER_LABELS['follow_up' if row in summary['status']['follow_up'] else 'reminder_due' if row in summary['status']['reminder_due'] else 'approaching']}" for row in attention)
+                or "✅ No participation follow-up is needed right now.")
+        elif view=="creators":
+            text="📊 Participation · By Creator\n\nChoose a creator to see participation, Away, reminder, and POP status together."
+            buttons += [(row["display_name"][:40],f"participation_creator_{row['telegram_id']}") for row in summary["creators"]]
+        else:text=render_today(summary)
+        return await _show(query,text[:3900],menu_markup(ctx,buttons,"owner" if role is Role.OWNER else "admin"))
     if action.startswith("snapshot_list_"):
         if role < Role.ADMIN:return await _show(query,"Admin access is required.",home_markup(ctx,user_id))
         key=action.removeprefix("snapshot_list_");section=key.split("_",1)[0]
@@ -457,11 +501,9 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if has_permission(user_id,cfg,"review_pop"):
             permitted.append(("📸 POP reviews",counts["pop_reviews"],"pop_queue"))
         if has_permission(user_id,cfg,"view_creator_reports"):
-            permitted.extend([
-                ("🟡 Near two days",counts["near_two_days"],"participation_queue"),
-                ("🔴 Three-day alerts",counts["three_day_alerts"],"participation_queue"),
-                ("🔴 Missing POP",counts.get("missing_pop",0),"pop_queue"),
-            ])
+            if action=="needs_attention":permitted.append(("🟡 Near two days",counts["near_two_days"],"participation_queue"))
+            permitted.extend([("🔴 Three-day follow-ups",counts["three_day_alerts"],"participation_queue"),
+                ("🔴 Missing POP",counts.get("missing_pop",0),"pop_queue")])
         if has_permission(user_id,cfg,"adjust_warnings"):
             permitted.extend([
                 ("⚠️ Unacknowledged",counts["unacknowledged_warnings"],"warnings_help"),
@@ -475,7 +517,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 ("🗃️ Recent archive changes",counts["recent_archive_changes"],"deleted"),
             ])
         active = [item for item in permitted if item[1]]
-        title = "🚨 Needs Attention" if action == "needs_attention" else "🚨 Admin Queue"
+        title = "🚨 Needs Attention" if action == "needs_attention" else "📥 Operations Inbox"
         if not active:
             text = title + "\n\n✅ Nothing needs your attention right now."
         else:
@@ -1184,9 +1226,10 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             monitor_actions.insert(0,("Use General for Participation","setup_prepare_participation_general"))
         return await _show(query,text,menu_markup(ctx,monitor_actions,"owner"))
     if action == "participation_events":
-        if role is not Role.OWNER:return await _show(query,"Participation Event Log is owner-only.",home_markup(ctx,user_id))
+        if role < Role.ADMIN or not has_permission(user_id,cfg,"view_creator_reports"):
+            return await _show(query,"Participation Event Log is available only to authorized Admins and Owners.",home_markup(ctx,user_id))
         rows=db.participation_events();lines=[f"{'✅ Counted' if r['decision']=='accepted' else '⚪ Ignored'} · {r['display_name'] or 'Unregistered user'} · {r['reason']}\n{friendly_timestamp(r['created_at'],timezone_name=cfg.timezone_name)}" for r in rows]
-        return await _show(query,"🧾 Participation Event Log\n\nReview concise processing outcomes without storing full message text.\n\n"+("\n\n".join(lines) or "No participation events yet."),menu_markup(ctx,[],"participation_monitor"))
+        return await _show(query,"🧾 Technical Participation Log\n\nReview concise processing outcomes without storing full message text.\n\n"+("\n\n".join(lines) or "No participation events yet."),menu_markup(ctx,[],"participation_summary"))
     if action == "setup":
         if role is not Role.OWNER:
             return await _show(query,"Setup is available only to owners.",home_markup(ctx,user_id))
