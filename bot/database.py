@@ -971,6 +971,16 @@ def calendar_absences(start_date, end_date, path=None):
         return [_resolved_person_row(db,row) for row in rows]
 
 
+def approved_absence_detail(request_id, path=None):
+    """Return one visible approved notice for an authorized detail screen."""
+    with get_connection(path) as db:
+        row=db.execute("""SELECT a.*,c.display_name,c.username FROM absence_requests a
+          JOIN creators c ON c.telegram_id=a.telegram_id
+          WHERE a.id=? AND a.status='approved' AND a.deleted_at IS NULL
+          AND c.deleted_at IS NULL""",(request_id,)).fetchone()
+        return _resolved_person_row(db,row) if row else None
+
+
 def record_audit(actor_id, action, target_type=None, target_record_id=None,
                  target_telegram_id=None, previous_value=None, new_value=None,
                  reason=None, result="success", path=None, error_reference=None,

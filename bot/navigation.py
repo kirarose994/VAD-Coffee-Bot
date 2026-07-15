@@ -18,6 +18,7 @@ from routing import ROUTES, routing_summary, send_routed
 from readiness import readiness_items, status_icon, system_check_summary
 from community_snapshot import PARTICIPATION_POLICY, build_snapshot, section_lines
 from briefing import deliver_daily_brief
+from away_calendar import calendar_window, friendly_range, render_default, render_view
 
 
 def _nonce(ctx):
@@ -355,6 +356,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             rows.append([("💙 Away Notices","away_queue")])
         if has_permission(user_id,cfg,"review_pop"): rows.append([("📸 POP Reviews","pop_queue")])
         if has_permission(user_id,cfg,"view_creator_reports"): rows.append([("👥 Active Creators","creator_report"),("📅 Community Calendar","calendar")])
+        rows.append([("📅 Who’s Away","whos_away")])
         tools = []
         if has_permission(user_id,cfg,"adjust_warnings"): tools.append(("💛 Creator Standing","warnings_help"))
         if has_permission(user_id,cfg,"send_announcements"): tools.append(("💬 Message Center","templates_help"))
@@ -374,6 +376,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [("💙 Review Away Notices","away_queue"),("🟠 Participation Alerts","participation_queue")],
             [("⚠️ Warnings and Strikes","warnings_help"),("💬 Message Center","templates_help")],
             [("📨 Support Requests","support_queue"),("📅 Calendar","calendar")],
+            [("📅 Who’s Away","whos_away")],
             [("📊 Reports","reports")],
             [("📍 Telegram Locations","telegram_locations"),("📈 Participation Monitor","participation_monitor")],
             [("✅ Setup & Readiness","readiness"),("🧪 Test Center","test_center")],
@@ -828,6 +831,31 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines = ["Away Calendar · Next 30 Days"] + [f"{r['start_date']} → {r['end_date']}\n{r['display_name']} · {r['absence_type'].title()}" for r in rows[:15]]
         if not rows: lines.append("No approved Away Notices in the next 30 days.")
         return await _show(query,"\n\n".join(lines)[:3900],menu_markup(ctx,[],"admin"))
+    if action == "whos_away" or action.startswith("whos_away_"):
+        if role < Role.ADMIN:
+            return await _show(query,"Who’s Away is available only to Admins and Owners.",home_markup(ctx,user_id))
+        if action.startswith("whos_away_notice_"):
+            raw_id=action.removeprefix("whos_away_notice_")
+            notice=db.approved_absence_detail(int(raw_id)) if raw_id.isdigit() else None
+            if not notice:
+                return await _show(query,"That approved Away Notice is no longer available.",menu_markup(ctx,[],"whos_away"))
+            category=(notice["category"] or notice["absence_type"] or "Other time away").replace("_"," ").title()
+            text=(f"💙 Away Notice Details\n\n{notice['display_name']}\n"
+                f"Dates: {friendly_range(notice)}\nCategory: {category}\n"
+                f"Note: {notice['note'] or 'No note provided.'}")
+            return await _show(query,text[:3900],menu_markup(ctx,[],"whos_away"))
+        view=action.removeprefix("whos_away_") if action != "whos_away" else "default"
+        today=datetime.now(cfg.timezone).date()
+        start,end=calendar_window("30" if view=="default" else view,today)
+        rows=db.calendar_absences(start.isoformat(),end.isoformat())
+        text=render_default(rows,today) if view=="default" else render_view(rows,view)
+        buttons=[("Today","whos_away_today"),("This Week","whos_away_week"),
+            ("Next 30 Days","whos_away_30"),("Month View","whos_away_month")]
+        seen=set()
+        for row in rows:
+            if row["id"] in seen: continue
+            seen.add(row["id"]);buttons.append((f"💙 {row['display_name'][:32]}",f"whos_away_notice_{row['id']}"))
+        return await _show(query,text[:3900],menu_markup(ctx,buttons,"admin"))
     if action == "reports" and role >= Role.ADMIN:
         text = ("Community Overview\n\n" + owner_card(cfg)) if role is Role.OWNER else ("Operations Overview\n\n" + admin_card(cfg))
         return await _show(query,text,menu_markup(ctx,[],"owner" if role is Role.OWNER else "admin"))

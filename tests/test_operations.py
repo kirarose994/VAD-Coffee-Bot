@@ -36,7 +36,8 @@ class OperationsDatabaseTests(unittest.TestCase):
         self.assertEqual(db.get_creator(10, self.path)["availability"], "unavailable")
 
     def test_sick_day_approval_uses_extensible_absence_model(self):
-        request_id = db.create_absence_request(10, "sick", "2026-07-14", "2026-07-14", None, self.path)
+        today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        request_id = db.create_absence_request(10, "sick", today, today, None, self.path)
         self.assertTrue(db.review_absence(request_id, "approved", 20, path=self.path))
         self.assertEqual(db.get_creator(10, self.path)["availability"], "sick")
 
