@@ -27,6 +27,14 @@ means another workflow or deployment uses the same token.
 Verify creator status is active, no Away Notice is active, and current chat/topic exactly
 matches Setup. Check meaningful-message rejection rules.
 
+## Telegram still suggests commands from the retired bot
+
+Open Owner Home → Setup & Readiness → Telegram Command Menus and confirm that Private Chats,
+Groups, and Group Administrators are all Ready. Telegram clients may temporarily cache command
+suggestions for another bot that remains in the group. After the new bot’s three scopes are Ready,
+remove the retired bot from the group to eliminate its command suggestions. Active registration
+uses the username returned by Telegram and has no hard-coded old-bot username dependency.
+
 ## Registration looks wrong
 
 Open Registration Status. Telegram ID prevents duplicates. Check approval state, archive

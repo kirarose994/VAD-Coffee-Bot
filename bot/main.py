@@ -22,6 +22,7 @@ from runtime_config import apply_persisted_settings
 from readiness import critical_fingerprint
 from tracker import register_handlers
 from telegram_io import retry_telegram
+from command_menus import register_command_scopes, register_scoped_command_handlers
 
 
 async def groupid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -55,6 +56,7 @@ def setup_logging(level: str) -> None:
 
 def register_application_handlers(app: Application) -> None:
     register_navigation(app)
+    register_scoped_command_handlers(app)
     register_operations(app)
     register_handlers(app)
     app.add_handler(CommandHandler("groupid", groupid_command))
@@ -66,12 +68,14 @@ async def startup_readiness_notice(app: Application) -> None:
     """Privately notify Owners once per distinct critical setup state."""
     try:
         identity=await retry_telegram(lambda: app.bot.get_me(),attempts=2)
+        app.bot_data["bot_username"]=getattr(identity,"username",None)
         set_system_state("telegram_can_read_all_group_messages",
             "true" if bool(getattr(identity,"can_read_all_group_messages",False)) else "false")
         set_system_state("telegram_bot_identity_checked_at",datetime.now(ZoneInfo("America/New_York")).isoformat())
     except Exception:
         # The transient-network incident system owns connectivity failures.
         pass
+    await register_command_scopes(app)
     cfg=app.bot_data["config"];fingerprint,incomplete=critical_fingerprint(cfg)
     if not incomplete:return
     from database import system_state

@@ -269,9 +269,11 @@ def snapshot_text(user_id,cfg):
 
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if getattr(getattr(update,"effective_chat",None),"type","private")=="private":
-        db.record_bot_user(update.effective_user.id,getattr(update.effective_user,"username",None),
-            getattr(update.effective_user,"full_name",None) or getattr(update.effective_user,"first_name","Telegram User"))
+    if getattr(getattr(update,"effective_chat",None),"type","private")!="private":
+        from command_menus import group_private_redirect
+        return await group_private_redirect(update,ctx)
+    db.record_bot_user(update.effective_user.id,getattr(update.effective_user,"username",None),
+        getattr(update.effective_user,"full_name",None) or getattr(update.effective_user,"first_name","Telegram User"))
     returning = bool(ctx.user_data.get("welcome_seen"))
     ctx.user_data.clear()
     ctx.user_data["welcome_seen"] = True
@@ -1046,6 +1048,13 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         buttons=[(i["label"][:55],f"readiness_item_{i['key']}") for i in items if i["state"]!="ready"]
         buttons=[("🩺 Run Full System Check","full_system_check"),("🧭 Complete Initial Setup","setup_wizard"),("🧪 Test Center","test_center")]+buttons
         return await _show(query,"✅ Setup & Readiness\n\nCheck whether every part of the VAD Operations Bot is configured and working before relying on it.\n\n"+"\n".join(lines),menu_markup(ctx,buttons,"owner"))
+    if action == "command_scope_status":
+        if role is not Role.OWNER:return await _show(query,"Command Menu status is owner-only.",home_markup(ctx,user_id))
+        from command_menus import command_scope_status
+        states=command_scope_status();labels={"private":"Private chats","group":"Groups","admin":"Group administrators"}
+        lines=[f"{'🟢 Ready' if value=='ready' else '🔴 Needs attention'} · {labels[name]}" for name,value in states.items()]
+        return await _show(query,"📋 Telegram Command Menus\n\nConfirm that Telegram received each scoped command list. Command visibility never replaces server-side authorization.\n\n"+"\n".join(lines)+
+            "\n\nTelegram may cache commands from an older bot while it remains in the group. After these three scopes are ready, remove the retired bot to eliminate its suggestions.",menu_markup(ctx,[],"readiness"))
     if action.startswith("readiness_item_"):
         if role is not Role.OWNER:return await _show(query,"Readiness details are owner-only.",home_markup(ctx,user_id))
         key=action.removeprefix("readiness_item_");item=next((i for i in readiness_items(cfg) if i["key"]==key),None)

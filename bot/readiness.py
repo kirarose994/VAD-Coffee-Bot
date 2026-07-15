@@ -73,6 +73,9 @@ def readiness_items(config,path=None,now=None):
     registration_verified=verified("last_route_success:registration") or verified("readiness:registration_route_test")
     away_route_verified=verified("last_route_success:away_notice") or verified("readiness:away_route_test")
     items.extend([
+        _item("commands_private","Private command menu registered","ready" if state.get("command_scope:private",{}).get("value")=="ready" else "unverified","Telegram has not confirmed the private-chat command menu for this process.","command_scope_status"),
+        _item("commands_group","Group command menu registered","ready" if state.get("command_scope:group",{}).get("value")=="ready" else "unverified","Telegram has not confirmed the group command menu for this process.","command_scope_status"),
+        _item("commands_admin","Administrator command menu registered","ready" if state.get("command_scope:admin",{}).get("value")=="ready" else "unverified","Telegram has not confirmed the group-administrator command menu for this process.","command_scope_status"),
         _item("registration_queue","Registration queue working","ready" if registration_verified else "unverified",
             "Verified by a successful real registration delivery." if verified("last_route_success:registration") else "Run the safe registration routing test after configuring its topic.","test_route_registration"),
         _item("identity","Creator identity isolation working","ready","Self-service lookups use immutable Telegram IDs and have automated coverage.","test_privacy"),
