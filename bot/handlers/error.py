@@ -10,7 +10,7 @@ from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 import database as db
-from telegram_io import is_transient_network_error, retry_telegram
+from telegram_io import is_transient_network_error, retry_telegram, transient_root_type
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     if isinstance(context.error,BadRequest) and "message is not modified" in str(context.error).casefold():
         logger.info("Ignored harmless duplicate callback edit")
         return
-    reference = uuid.uuid4().hex[:8].upper()
+    reference = uuid.uuid4().hex[:8].upper();claimed=False
     logger.exception("Unhandled bot error reference=%s", reference, exc_info=context.error)
     actor_id = None
     if isinstance(update, Update) and update.effective_user:
@@ -38,21 +38,32 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         details=safe_error_details(context.error)
         transient=is_transient_network_error(context.error)
         job=getattr(context,"job",None);source=getattr(job,"name",None) or ("telegram_polling" if update is None else "telegram_handler")
-        fingerprint="transient_network:telegram" if transient else f"non_network:{reference}"
+        polling_read=transient and update is None and transient_root_type(context.error)=="ReadError"
+        operation="get_updates" if polling_read else "telegram_handler" if update is not None else "telegram_polling"
+        fingerprint=(f"{source}:{operation}:{transient_root_type(context.error)}" if transient
+            else f"non_network:{reference}")
         details["source"]=source
+        details["operation"]=operation
         incident,created=db.record_system_incident(fingerprint,f"ERR-{reference}",
-            "transient_network" if transient else "application_error",source,details)
+            "transient_network" if transient else "application_error",source,details,operation=operation)
         reference=incident["error_reference"].removeprefix("ERR-")
-        if created:
+        should_escalate=(not polling_read) or incident["occurrence_count"]>=3
+        claimed=(db.claim_polling_escalation(incident["id"]) if polling_read and should_escalate
+            else created if not polling_read else False)
+        if polling_read and claimed:
+            db.record_audit(actor_id,"system_error","system",target_record_id=incident["id"],result="error",
+                reason="Repeated Telegram polling read failures",new_value={**details,"incident_id":incident["id"]},
+                error_reference=incident["error_reference"])
+        if created and not polling_read:
             audit_details={**details,"incident_id":incident["id"]}
             db.record_audit(actor_id,"system_error","system",target_record_id=incident["id"],result="error",
                 reason="Transient Telegram/network read failure" if transient else "An unhandled bot operation failed",
                 new_value=audit_details,error_reference=incident["error_reference"])
     except Exception:
         logger.exception("Could not persist error reference=%s", reference)
-        transient=False;created=True
+        transient=False;created=True;claimed=True
     cfg = getattr(context,"bot_data",{}).get("config") if getattr(context,"bot_data",None) else None
-    if cfg and created:
+    if cfg and claimed:
         notice=(f"⚠️ {'Temporary Telegram connection issue' if transient else 'System issue'}\n"
             f"Reference: ERR-{reference}\nOccurrences are grouped until communication recovers.\nAn owner review is recommended.")
         destinations=list(cfg.owner_user_ids)

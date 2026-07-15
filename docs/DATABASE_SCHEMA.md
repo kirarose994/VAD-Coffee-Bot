@@ -1,6 +1,9 @@
 # Database Schema
 
-SQLite schema version 9 is initialized and migrated by `database.initialize_database()`.
+SQLite schema version 10 is initialized and migrated by `database.initialize_database()`.
+
+Version 10 adds operation-specific transport incident metadata (`operation`, `escalated_at`, and
+`resolution_reason`) without rewriting existing incidents or operational history.
 
 | Table | Purpose |
 |---|---|

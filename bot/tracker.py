@@ -462,13 +462,24 @@ async def daily_owner_summary_job(ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def telegram_recovery_job(ctx: ContextTypes.DEFAULT_TYPE):
-    """Confirm transport recovery without creating another failure incident."""
-    try:
-        await retry_telegram(lambda: ctx.bot.get_me(),attempts=2)
-        db.resolve_transient_incidents()
-    except Exception:
-        # Polling/send failures are recorded by their normal paths. This probe stays quiet.
-        return
+    """Maintain polling incidents without making a competing Telegram probe."""
+    db.resolve_quiet_polling_incidents()
+    cfg=config(ctx)
+    for incident in db.polling_incidents_due_escalation():
+        if not db.claim_polling_escalation(incident["id"]):continue
+        db.record_audit(None,"system_error","system",target_record_id=incident["id"],result="error",
+            reason="Sustained Telegram polling read failures",new_value={"incident_id":incident["id"],
+            "operation":"get_updates","occurrence_count":incident["occurrence_count"]},
+            error_reference=incident["error_reference"])
+        notice=(f"⚠️ Temporary Telegram connection issue\nReference: {incident['error_reference']}\n"
+            "Repeated getUpdates read failures need review. Occurrences remain grouped until polling is stable.")
+        for owner_id in cfg.owner_user_ids:
+            try:await retry_telegram(lambda owner_id=owner_id:ctx.bot.send_message(owner_id,notice),attempts=2)
+            except Exception:pass
+        if cfg.admin_chat_id and getattr(cfg,"health_thread_id",None):
+            try:await retry_telegram(lambda:ctx.bot.send_message(cfg.admin_chat_id,notice,
+                message_thread_id=cfg.health_thread_id),attempts=2)
+            except Exception:pass
 
 
 def register_handlers(app):
@@ -497,7 +508,7 @@ def register_handlers(app):
     app.job_queue.run_repeating(inactivity_job, interval=1800, first=60, name="inactivity-monitor")
     # A repeating check allows Owner settings to take effect without rescheduling jobs.
     app.job_queue.run_repeating(daily_admin_brief_job, interval=900, first=90, name="daily-admin-brief")
-    app.job_queue.run_repeating(telegram_recovery_job,interval=120,first=30,name="telegram-recovery-check")
+    app.job_queue.run_repeating(telegram_recovery_job,interval=60,first=60,name="telegram-polling-incident-maintenance")
     cfg = app.bot_data.get("config")
     if cfg and getattr(cfg, "daily_owner_summary_enabled", False):
         try:

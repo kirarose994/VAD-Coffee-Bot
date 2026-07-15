@@ -217,14 +217,14 @@ def initialize_database(path: Path | None = None):
           traceback TEXT, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
           occurrence_count INTEGER NOT NULL DEFAULT 1,
           status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved')),
-          resolved_at TEXT
+          resolved_at TEXT, operation TEXT, escalated_at TEXT, resolution_reason TEXT
         );
         CREATE UNIQUE INDEX IF NOT EXISTS system_incidents_one_open
           ON system_incidents(fingerprint) WHERE status='open';
         """)
         _migrate_legacy_schema(db)
         _seed_message_templates(db)
-        db.execute("UPDATE schema_version SET version=9")
+        db.execute("UPDATE schema_version SET version=10")
 
 
 DEFAULT_MESSAGE_TEMPLATES = {
@@ -312,6 +312,9 @@ def _migrate_legacy_schema(db):
     })
     _add_columns(db, "audit_events", {"legacy_audit_id": "INTEGER"})
     _add_columns(db, "absence_requests", {"absence_category": "TEXT"})
+    _add_columns(db, "system_incidents", {
+        "operation": "TEXT", "escalated_at": "TEXT", "resolution_reason": "TEXT",
+    })
     _add_columns(db, "creator_warnings", {
         "template_key": "TEXT", "notes": "TEXT", "updated_at": "TEXT",
         "updated_by": "INTEGER", "deleted_at": "TEXT", "deleted_by": "INTEGER",
@@ -1181,19 +1184,19 @@ def get_audit_event(audit_id,path=None):
         return db.execute("SELECT * FROM audit_events WHERE id=?",(audit_id,)).fetchone()
 
 
-def record_system_incident(fingerprint,reference,category,source,details,path=None):
+def record_system_incident(fingerprint,reference,category,source,details,path=None,operation=None,now=None):
     """Create one open incident or atomically count a repeated occurrence."""
-    now=utc_now()
+    now=now or utc_now();operation=operation or details.get("operation")
     with get_connection(path) as db:
         row=db.execute("SELECT * FROM system_incidents WHERE fingerprint=? AND status='open'",(fingerprint,)).fetchone()
         if row:
             db.execute("""UPDATE system_incidents SET last_seen=?,occurrence_count=occurrence_count+1,
-              exception_type=?,message=?,traceback=? WHERE id=?""",
-              (now,details["exception_type"],details.get("message"),details.get("traceback"),row["id"]))
+              exception_type=?,message=?,traceback=?,operation=COALESCE(?,operation) WHERE id=?""",
+              (now,details["exception_type"],details.get("message"),details.get("traceback"),operation,row["id"]))
             return db.execute("SELECT * FROM system_incidents WHERE id=?",(row["id"],)).fetchone(),False
         cur=db.execute("""INSERT INTO system_incidents
-          (fingerprint,error_reference,category,source,exception_type,message,traceback,first_seen,last_seen)
-          VALUES(?,?,?,?,?,?,?,?,?)""",(fingerprint,reference,category,source,details["exception_type"],
+          (fingerprint,error_reference,category,source,operation,exception_type,message,traceback,first_seen,last_seen)
+          VALUES(?,?,?,?,?,?,?,?,?,?)""",(fingerprint,reference,category,source,operation,details["exception_type"],
           details.get("message"),details.get("traceback"),now,now))
         return db.execute("SELECT * FROM system_incidents WHERE id=?",(cur.lastrowid,)).fetchone(),True
 
@@ -1202,16 +1205,56 @@ def get_system_incident(incident_id,path=None):
     with get_connection(path) as db:return db.execute("SELECT * FROM system_incidents WHERE id=?",(incident_id,)).fetchone()
 
 
-def resolve_transient_incidents(path=None):
-    """Resolve open transport incidents after confirmed Telegram communication."""
+def resolve_transient_incidents(path=None,operation=None,source=None,resolution_reason="matching_operation_succeeded"):
+    """Resolve only transport incidents matching the operation that recovered."""
     now=utc_now()
     with get_connection(path) as db:
-        rows=db.execute("SELECT * FROM system_incidents WHERE category='transient_network' AND status='open'").fetchall()
+        sql="SELECT * FROM system_incidents WHERE category='transient_network' AND status='open'";params=[]
+        if operation is not None:sql+=" AND operation=?";params.append(operation)
+        if source is not None:sql+=" AND source=?";params.append(source)
+        rows=db.execute(sql,params).fetchall()
         for row in rows:
-            db.execute("UPDATE system_incidents SET status='resolved',resolved_at=? WHERE id=?",(now,row["id"]))
+            db.execute("UPDATE system_incidents SET status='resolved',resolved_at=?,resolution_reason=? WHERE id=?",
+                (now,resolution_reason,row["id"]))
             audit_event(db,None,"system_incident_resolved","system_incident",row["id"],
                 previous_value="open",new_value="resolved",error_reference=row["error_reference"],actor_role="system")
         return len(rows)
+
+
+def claim_polling_escalation(incident_id,path=None,now=None):
+    """Durably claim the one allowed Owner escalation for a polling incident."""
+    with get_connection(path) as db:
+        cur=db.execute("UPDATE system_incidents SET escalated_at=? WHERE id=? AND escalated_at IS NULL AND status='open'",
+            (now or utc_now(),incident_id))
+        return bool(cur.rowcount)
+
+
+def polling_incidents_due_escalation(path=None,now=None):
+    """Return unnotified polling incidents that crossed count or duration thresholds."""
+    current=datetime.fromisoformat(now or utc_now());rows=[]
+    with get_connection(path) as db:
+        candidates=db.execute("""SELECT * FROM system_incidents WHERE status='open' AND category='transient_network'
+          AND source='telegram_polling' AND operation='get_updates' AND escalated_at IS NULL""").fetchall()
+    for row in candidates:
+        age=(current-datetime.fromisoformat(row["first_seen"])).total_seconds()
+        if row["occurrence_count"]>=3 or (row["occurrence_count"]>=2 and age>=300):rows.append(row)
+    return rows
+
+
+def resolve_quiet_polling_incidents(path=None,now=None,quiet_seconds=120):
+    """Resolve getUpdates incidents only after their own failure stream stays quiet."""
+    current=datetime.fromisoformat(now or utc_now());resolved=0
+    with get_connection(path) as db:
+        rows=db.execute("""SELECT * FROM system_incidents WHERE status='open' AND category='transient_network'
+          AND source='telegram_polling' AND operation='get_updates'""").fetchall()
+        for row in rows:
+            if (current-datetime.fromisoformat(row["last_seen"])).total_seconds()<quiet_seconds:continue
+            db.execute("""UPDATE system_incidents SET status='resolved',resolved_at=?,resolution_reason='polling_quiet_window'
+              WHERE id=?""",(current.isoformat(),row["id"]));resolved+=1
+            audit_event(db,None,"system_incident_resolved","system_incident",row["id"],previous_value="open",
+                new_value="resolved",reason="Polling remained quiet for two minutes",
+                error_reference=row["error_reference"],actor_role="system")
+    return resolved
 
 
 def create_support_request(telegram_id, category, message, path=None):
