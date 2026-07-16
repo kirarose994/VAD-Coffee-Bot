@@ -219,7 +219,7 @@ def admin_card(cfg, user_id=None):
     permitted=(metrics.get("needs_attention",0) if user_id is None else
         (metrics["pending_registrations"] if has_permission(user_id,cfg,"review_registrations") else 0)+
         (metrics["pending_vacations"]+metrics["pending_sick"] if has_permission(user_id,cfg,"review_vacations") or has_permission(user_id,cfg,"review_sick_days") else 0)+
-        (metrics["pending_pop"]+metrics.get("missing_pop",0) if has_permission(user_id,cfg,"review_pop") else 0)+
+        (metrics["pending_pop"]+metrics.get("preservation_reviews",0)+metrics.get("missing_pop",0) if has_permission(user_id,cfg,"review_pop") else 0)+
         (metrics.get("three_day_alerts",0) if has_permission(user_id,cfg,"view_creator_reports") else 0)+
         (metrics.get("support_requests",0) if has_permission(user_id,cfg,"manage_support") else 0)+
         (metrics.get("active_warnings",0)+metrics.get("active_strikes",0) if has_permission(user_id,cfg,"adjust_warnings") else 0)+
@@ -554,7 +554,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if has_permission(user_id,cfg,"review_vacations") or has_permission(user_id,cfg,"review_sick_days"):
             permitted.append(("💙 Away Notices",counts["away_notices"],"away_queue"))
         if has_permission(user_id,cfg,"review_pop"):
-            permitted.append(("📸 POP reviews",counts["pop_reviews"],"pop_queue"))
+            permitted.append(("📸 POP reviews",counts["pop_reviews"]+counts.get("preservation_reviews",0),"pop_queue"))
         if has_permission(user_id,cfg,"view_creator_reports"):
             if action=="needs_attention":permitted.append(("🟡 Near two days",counts["near_two_days"],"participation_queue"))
             permitted.extend([("🔴 Three-day follow-ups",counts["three_day_alerts"],"participation_queue"),
@@ -615,7 +615,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action in {"vacation_help", "sick_help"}:
         return await _show(query,"Choose Let Us Know You’ll Be Away to start the guided Away Notice workflow.",menu_markup(ctx,[("💙 Start Away Notice","away_help")],"creator"))
     if action == "pop_help":
-        return await _show(query, "Submit meaningful POP proof in the configured girls-group Thursday POP topic. Images elsewhere are ignored.", menu_markup(ctx, [], "creator"))
+        return await _show(query, "Post your screenshot, image, or qualifying link directly in the configured POP topic inside Sellers Chat. Proof is never submitted through this bot. Duplicate posts do not create duplicate weekly credit.", menu_markup(ctx, [], "creator"))
     if action in {"my_activity", "my_status"}:
         text = creator_card(user_id, cfg)
         return await _show(query, text, menu_markup(ctx, [], "creator"))
@@ -818,21 +818,57 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         now = datetime.now(cfg.timezone)
         period = current_period(now,*_pop_args(cfg))
         rows = db.pop_status_report(now,*_pop_args(cfg))
-        pending = [r for r in rows if r["effective_status"] == "awaiting_review"]
+        pending = [r for r in rows if r["submission_status"] == "pending"]
         missing = [r for r in rows if r["effective_status"] == "missing"]
+        preservation = db.pop_preservation_review_rows()
         due = f"{period.due_at.strftime('%A, %b')} {period.due_at.day} at {period.due_at.strftime('%I').lstrip('0')}:{period.due_at.strftime('%M %p')} ET"
-        lines = ["📸 Thursday POP Review",f"Due: {due}",f"Waiting for review: {len(pending)}",f"Missing after deadline: {len(missing)}"]
+        lines = ["📸 Thursday POP Review",f"Due: {due}",f"Waiting for proof review: {len(pending)}",
+            f"Preservation review: {len(preservation)}",f"Missing after deadline: {len(missing)}"]
         lines += [f"\n{r['display_name']} · Awaiting review" for r in pending[:8]]
-        if not pending: lines.append("\n📸 No POP reviews are waiting.\nYou’re all caught up.")
-        buttons=[(r["display_name"][:40],f"pop_select_{r['id']}") for r in pending[:20]]
+        lines += [f"\n{r['display_name']} · Preservation needs review" for r in preservation[:8]]
+        if not pending and not preservation: lines.append("\n📸 No POP reviews are waiting.\nYou’re all caught up.")
+        combined={r["id"]:r for r in [*pending,*preservation]}
+        buttons=[(r["display_name"][:40],f"pop_select_{r['id']}") for r in list(combined.values())[:20]]
         return await _show(query,"\n".join(lines)[:3900],menu_markup(ctx,buttons,"admin"))
     if action.startswith("pop_select_"):
         if not has_permission(user_id,cfg,"review_pop"): return await _show(query,"POP review isn’t included in your access.",home_markup(ctx,user_id))
         submission_id=int(action.removeprefix("pop_select_"));submission=db.get_pop_submission(submission_id)
-        if not submission or submission["status"]!="pending": return await _show(query,"That POP submission is no longer pending.",menu_markup(ctx,[],"pop_queue"))
+        if not submission: return await _show(query,"That POP submission is unavailable.",menu_markup(ctx,[],"pop_queue"))
         creator=db.get_creator(submission["telegram_id"])
-        return await _show(query,f"📸 Review POP\n\n{creator['display_name']}\nSubmitted: {friendly_timestamp(submission['submitted_at'],timezone_name=getattr(cfg,'timezone_name','America/New_York'))}\n\nChoose a decision.",
-            menu_markup(ctx,[("✅ Approve",f"pop_decide_approved_{submission_id}"),("🔴 Reject",f"pop_decide_rejected_{submission_id}"),("🟡 Request Resubmission",f"pop_decide_resubmission_requested_{submission_id}")],"pop_queue"))
+        preservation_labels={"pending_24h":"Pending 24-hour verification","preserved":"Preserved for 24 hours",
+            "early_removed":"Early removal confirmed","unable_to_verify":"Unable to verify — Admin review required",
+            "legacy_record":"Legacy record"}
+        actions=[]
+        if submission["status"]=="pending":
+            actions += [("✅ Approve",f"pop_decide_approved_{submission_id}"),("🔴 Reject",f"pop_decide_rejected_{submission_id}"),
+                ("🟡 Request Resubmission",f"pop_decide_resubmission_requested_{submission_id}")]
+        if submission["preservation_status"] in {"pending_24h","unable_to_verify"}:
+            actions += [("✅ Confirm Preserved",f"pop_preserve_preserved_{submission_id}"),
+                ("⚠️ Confirm Early Removal",f"pop_preserve_early_{submission_id}")]
+        return await _show(query,f"📸 Review POP\n\n{creator['display_name']}\nSubmitted: {friendly_timestamp(submission['submitted_at'],timezone_name=getattr(cfg,'timezone_name','America/New_York'))}\nReview: {submission['status'].replace('_',' ').title()}\nPreservation: {preservation_labels.get(submission['preservation_status'],'Needs review')}\n\nChoose a decision.",
+            menu_markup(ctx,actions,"pop_queue"))
+    if action.startswith("pop_preserve_"):
+        if not has_permission(user_id,cfg,"review_pop"): return await _show(query,"POP review isn’t included in your access.",home_markup(ctx,user_id))
+        raw=action.removeprefix("pop_preserve_")
+        if raw.startswith("confirm_early_"):
+            submission_id=int(raw.removeprefix("confirm_early_"));submission=db.get_pop_submission(submission_id)
+            if not submission:return await _show(query,"That POP submission is unavailable.",menu_markup(ctx,[],"pop_queue"))
+            changed=db.set_pop_preservation_status(submission_id,"early_removed",user_id,"Admin directly confirmed removal before 24 hours")
+            if changed and db.claim_pop_preservation_alert(submission_id):
+                creator=db.get_creator(submission["telegram_id"])
+                await send_routed(ctx.bot,cfg,"pop_review",
+                    f"⚠️ Early POP removal confirmed\n{creator['display_name']}\n"
+                    f"Week: {submission['week_key']}\nProof recorded: {friendly_timestamp(submission['submitted_at'],timezone_name=getattr(cfg,'timezone_name','America/New_York'))}\n"
+                    "An Admin directly confirmed that the proof was removed before the 24-hour requirement.",
+                    target_telegram_id=submission["telegram_id"],related_submission_id=submission_id,
+                    payload_summary=f"Confirmed early POP removal for submission {submission_id}")
+            return await _show(query,"Early removal was recorded and audited." if changed else "That preservation result was already recorded.",menu_markup(ctx,[],"pop_queue"))
+        status,submission_raw=raw.rsplit("_",1);submission_id=int(submission_raw)
+        if status=="early":
+            return await _show(query,"⚠️ Confirm Early Removal\n\nUse this only when you directly confirmed that the original POP post was removed before 24 hours. An unavailable or inconclusive Telegram result is not proof of removal.",
+                menu_markup(ctx,[("⚠️ Confirm Early Removal",f"pop_preserve_confirm_early_{submission_id}")],f"pop_select_{submission_id}"))
+        changed=db.set_pop_preservation_status(submission_id,"preserved",user_id,"Admin confirmed proof remained available for 24 hours") if status=="preserved" else False
+        return await _show(query,"✅ The 24-hour preservation requirement is satisfied." if changed else "That preservation result was already recorded.",menu_markup(ctx,[],"pop_queue"))
     if action.startswith("pop_decide_"):
         if not has_permission(user_id,cfg,"review_pop"): return await _show(query,"POP review isn’t included in your access.",home_markup(ctx,user_id))
         raw=action.removeprefix("pop_decide_");status,submission_raw=raw.rsplit("_",1);submission_id=int(submission_raw)

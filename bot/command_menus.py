@@ -93,7 +93,7 @@ async def scoped_command(update:Update,ctx:ContextTypes.DEFAULT_TYPE):
         text=("📋 My Creator Status\n\n"+creator_card(user_id,cfg) if creator else
             "Creator status is available after registration. Open your VAD home to register or review your registration.")
         markup=home_markup(ctx,user_id)
-    elif command=="pop":text,markup="📸 Thursday POP\n\nOpen your private POP status and submission tools.",menu_markup(ctx,[("📸 Open Thursday POP","pop_help")])
+    elif command=="pop":text,markup="📸 Thursday POP\n\nOpen your private POP status and posting guidance.",menu_markup(ctx,[("📸 Open Thursday POP","pop_help")])
     elif command=="away":text,markup="💙 Time Away\n\nSubmit an Away Notice or review your existing notices privately.",menu_markup(ctx,[("💙 Let Us Know You’ll Be Away","away_help"),("📋 My Away Notices","my_away_notices")])
     elif command=="timeline":text,markup="📜 My Activity History\n\nOpen your private creator timeline.",menu_markup(ctx,[("📜 View My Activity History","timeline_0")])
     elif command=="support":text,markup="💬 VAD Support\n\nAsk the Admin team for help through a private guided message.",menu_markup(ctx,[("💬 Contact VAD Support","contact")])

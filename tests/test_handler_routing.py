@@ -65,6 +65,14 @@ class HandlerRoutingTests(unittest.TestCase):
                 field:{"file_id":f"{field}-file","file_unique_id":f"{field}-unique","duration":15}}},self.app.bot)
             self.assertTrue(any(handler.check_update(update) for handler in self.app.handlers[10]),field)
 
+    def test_tracker_observer_matches_edited_pop_messages(self):
+        update=Update.de_json({"update_id":4,"edited_message":{"message_id":13,"date":0,"edit_date":1,
+            "message_thread_id":11,"chat":{"id":-300,"type":"supergroup","title":"Sellers"},
+            "from":{"id":20,"is_bot":False,"first_name":"Creator"},
+            "text":"Updated proof https://t.me/example/1",
+            "entities":[{"type":"url","offset":14,"length":22}]}},self.app.bot)
+        self.assertTrue(any(handler.check_update(update) for handler in self.app.handlers[10]))
+
     def test_temporary_setup_handlers_are_not_loaded(self):
         source=(Path(__file__).parents[1]/"bot"/"main.py").read_text(encoding="utf-8")
         self.assertNotIn("register_setup_handlers",source)

@@ -12,6 +12,7 @@ import database as db
 from engagement import classify, contains_promotional_spam
 from permissions import can_manage_sensitive, can_mutate, can_read, can_view_audit, has_permission, role_for
 from pop_policy import label as pop_label
+from pop_reliability import classify_pop_proof
 from routing import send_routed
 from briefing import daily_admin_brief_job
 from constants import MIN_AUDIO_PARTICIPATION_SECONDS
@@ -138,6 +139,13 @@ async def creator_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def week_key(now):
     year, week, _ = now.isocalendar()
     return f"{year}-W{week:02d}"
+
+
+def _pop_observed_at(update, message, timezone):
+    """Use Telegram's timestamp when available without trusting it for eligibility."""
+    edited = getattr(update, "edited_message", None)
+    moment = getattr(message, "edit_date", None) if edited is not None else getattr(message, "date", None)
+    return moment.astimezone(timezone).isoformat() if moment else datetime.now(timezone).isoformat()
 
 
 async def pop_report_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -317,13 +325,15 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     thread_id = msg.message_thread_id
     media = bool(msg.photo or msg.sticker or msg.animation or msg.video or msg.voice or getattr(msg,"audio",None) or msg.document)
-    pop_caption = (msg.caption or "").casefold() if media else ""
     pop_chat_id = getattr(cfg,"pop_chat_id",None) or getattr(cfg,"girls_chat_id",None)
-    if (media and "pop" in pop_caption and pop_chat_id == msg.chat_id and cfg.pop_thread_id
-            and thread_id == cfg.pop_thread_id and local_now.weekday() == 3):
-        proof_type = "photo" if msg.photo else "document" if msg.document else "media"
-        if db.submit_pop(user.id, week_key(local_now), msg.message_id, msg.chat_id, thread_id, proof_type):
-            await msg.reply_text("Thursday POP received! 📸 It’s now waiting for review.")
+    proof_type = classify_pop_proof(msg)
+    if (proof_type and pop_chat_id == msg.chat_id and cfg.pop_thread_id
+            and thread_id == cfg.pop_thread_id
+            and local_now.weekday() == getattr(cfg,"pop_due_weekday",3)):
+        submitted_at=_pop_observed_at(update,msg,cfg.timezone)
+        if db.submit_pop(user.id,week_key(local_now),msg.message_id,msg.chat_id,thread_id,
+                proof_type,submitted_at=submitted_at):
+            await msg.reply_text("Thursday POP received! 📸 It’s waiting for review, and its 24-hour preservation check has started.")
             # A normal receipt is visible in the review queue and Daily Brief; it is not urgent.
         _record_creator_participation_diagnostic(cfg,creator,msg,"pop_workflow_message")
         return
@@ -478,6 +488,26 @@ async def daily_owner_summary_job(ctx: ContextTypes.DEFAULT_TYPE):
             db.record_audit(None,"owner_summary_delivery_failed","notification",target_telegram_id=owner_id,result="error")
 
 
+async def pop_preservation_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """Create one calm Admin review item after each proof's 24-hour window."""
+    cfg=config(ctx);now=datetime.now(cfg.timezone)
+    for row in db.pop_preservation_due(now):
+        if not db.mark_pop_preservation_unavailable(row["id"],now.isoformat()):
+            continue
+        if not db.claim_pop_preservation_alert(row["id"]):
+            continue
+        submitted=datetime.fromisoformat(row["submitted_at"]).astimezone(cfg.timezone)
+        stamp=f"{submitted.strftime('%A, %B')} {submitted.day} at {submitted.strftime('%I').lstrip('0')}:{submitted.strftime('%M %p')} ET"
+        await send_routed(ctx.bot,cfg,"pop_review",
+            "🟡 POP preservation review needed\n"
+            f"{escape(row['display_name'])}\n"
+            f"Week: {row['week_key']}\nProof recorded: {stamp}\n"
+            "Telegram could not automatically confirm whether the original post remained available for 24 hours. "
+            "This is inconclusive and is not evidence of early removal. Please review manually.",
+            target_telegram_id=row["telegram_id"],related_submission_id=row["id"],
+            payload_summary=f"POP preservation review for submission {row['id']}")
+
+
 async def telegram_recovery_job(ctx: ContextTypes.DEFAULT_TYPE):
     """Maintain polling incidents without making a competing Telegram probe."""
     db.resolve_quiet_polling_incidents()
@@ -523,6 +553,7 @@ def register_handlers(app):
     )
     app.add_handler(MessageHandler(pop_media, observe), group=10)
     app.job_queue.run_repeating(inactivity_job, interval=1800, first=60, name="inactivity-monitor")
+    app.job_queue.run_repeating(pop_preservation_job,interval=900,first=120,name="pop-preservation-monitor")
     # A repeating check allows Owner settings to take effect without rescheduling jobs.
     app.job_queue.run_repeating(daily_admin_brief_job, interval=900, first=90, name="daily-admin-brief")
     app.job_queue.run_repeating(telegram_recovery_job,interval=60,first=60,name="telegram-polling-incident-maintenance")

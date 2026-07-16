@@ -22,6 +22,9 @@ LABELS = {
     "excused": "💙 Excused",
     "resubmission_requested": "🟡 Resubmission requested",
     "rejected": "🔴 Missing",
+    "complete_preservation_pending": "✅ Complete — preservation pending",
+    "complete_preserved": "✅ Complete — 24-hour requirement satisfied",
+    "needs_review": "🟡 Needs review",
 }
 
 

@@ -23,7 +23,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(db.set_vacation(10, "2026-07-31", 99, self.path))
         self.assertEqual(len(db.history(path=self.path)), 3)
         with db.get_connection(self.path) as connection:
-            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()["version"], 10)
+            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()["version"], 11)
 
     def test_repeat_registration_preserves_approval_and_prevents_duplicates(self):
         self.assertEqual(db.register_creator(6558268505,"kira","Kira",self.path),"created")

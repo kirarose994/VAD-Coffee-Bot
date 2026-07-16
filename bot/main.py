@@ -106,7 +106,7 @@ def main() -> None:
     app.bot_data["config"] = config
     register_application_handlers(app)
     logger.info("Bot is running. Press Ctrl-C to stop.")
-    app.run_polling(allowed_updates=["message", "callback_query"], drop_pending_updates=True)
+    app.run_polling(allowed_updates=["message", "edited_message", "callback_query"], drop_pending_updates=True)
 
 
 if __name__ == "__main__":
