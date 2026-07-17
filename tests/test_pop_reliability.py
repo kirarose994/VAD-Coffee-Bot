@@ -202,7 +202,7 @@ class PreservationDatabaseTests(unittest.TestCase):
         with db.get_connection(legacy) as migrated:
             row=migrated.execute("SELECT preservation_status FROM pop_submissions").fetchone()
             self.assertEqual(row["preservation_status"],"legacy_record")
-            self.assertEqual(migrated.execute("SELECT version FROM schema_version").fetchone()[0],12)
+            self.assertEqual(migrated.execute("SELECT version FROM schema_version").fetchone()[0],13)
 
 
 class PreservationJobTests(unittest.IsolatedAsyncioTestCase):

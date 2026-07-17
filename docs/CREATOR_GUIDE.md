@@ -18,7 +18,10 @@ creator may be connected as one proof. Multiple posts do not create duplicate cr
 earliest valid posting time is retained.
 
 The original Telegram posting time is shown in Eastern Time. Thursday proof is **On Time**;
-proof first posted Friday or later is **Late**. Reconnecting later does not change that time.
+proof first posted Friday or later is **Late**. Late proof still counts as submitted and shows
+the exact time after the configured Thursday deadline. It never becomes Missing merely because
+it was late. Reconnecting later does not change the original posting time. If a covering approved
+Away Notice exists, **Excused** remains authoritative even when proof is posted voluntarily.
 
 Your status may show **Complete — preservation pending**, **Complete — 24-hour requirement
 satisfied**, or **Needs review**. Telegram does not reliably tell ordinary bots whenever a group

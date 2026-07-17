@@ -35,5 +35,11 @@ and unrelated conversation do not qualify. Evidence is correlated only for the s
 the configured numeric chat/topic and a five-minute window. A covering approved Away Notice
 remains Excused even when the creator voluntarily posts proof.
 
+The first qualified late proof for a creator creates one informational heads-up in
+the existing POP review location. It includes the original Eastern Time posting time, exact
+calculated lateness, week, and retained source-message reference. Duplicate proof does not repeat
+the alert. A late heads-up never creates a warning, strike, or automatic consequence. Historical
+reconciliation is Owner-only; Regular Admins cannot create or change those decisions.
+
 After restart, normal schedules wait for Telegram's pending-update catch-up window. Owners—not
 ordinary Admins—receive the private recovery confidence report.

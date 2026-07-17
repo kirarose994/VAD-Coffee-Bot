@@ -12,7 +12,8 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 import database as db
 from config import RESOURCE_DEFAULTS
 from permissions import Membership, Role, has_permission, role_for, roles_for
-from pop_policy import current_period, label as pop_label
+from pop_policy import (current_period, format_lateness, label as pop_label,
+    posted_time)
 from presentation import audit_entry, friendly_timestamp, system_error_detail, timeline_entry
 from runtime_config import persist_setting
 from routing import ROUTES, routing_summary, send_routed
@@ -38,6 +39,31 @@ def _owner_setup_incomplete(config):
     except sqlite3.OperationalError as exc:
         if "no such table" not in str(exc).casefold():raise
         return True
+
+
+def _pop_source_reference(row):
+    if row.get("manual_reconciliation_id"):
+        return row.get("manual_source_reference") or "Owner-entered historical record; no Telegram reference"
+    if row.get("chat_id") is not None and row.get("message_id") is not None:
+        return f"chat {row['chat_id']} / message {row['message_id']}"
+    return "No source-message reference"
+
+
+def _pop_reconciliation_preview(draft,cfg):
+    creator=db.get_creator(draft["telegram_id"]);status=draft["status"]
+    labels={"on_time":"On Time","late":"Late","excused":"Excused",
+        "submitted_needs_review":"Needs Review","missing":"Missing"}
+    lines=["📸 Historical POP Reconciliation — Dry Run","","Nothing has been saved.","",
+        f"Creator: {creator['display_name'] if creator else 'Unavailable creator'}",
+        f"Week: {draft['week_key']}",f"Decision: {labels[status]}"]
+    if draft.get("source_message_at"):
+        source=datetime.fromisoformat(draft["source_message_at"])
+        lines.append(f"Original post: {posted_time(source,cfg.timezone_name)}")
+        if status=="late":lines.append(f"Late by: {format_lateness(source,*_pop_args(cfg))}")
+        lines.append(f"Source: {draft.get('source_reference') or 'No source-message reference provided'}")
+    lines += ["Reason: Manual historical reconciliation after pre-recovery outage",
+        "","Confirm only if this matches the visible historical evidence."]
+    return "\n".join(lines)
 
 
 def _button(label, nonce, action):
@@ -622,7 +648,13 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         status=pop_label(row["creator_status"] if row else "not_due")
         detail=""
         if row and row["source_message_at"]:
-            detail=f"\n\nRecorded: {friendly_timestamp(row['source_message_at'],timezone_name=cfg.timezone_name)}"
+            if row["creator_status"]=="late":
+                source=datetime.fromisoformat(row["source_message_at"])
+                detail=(f"\n\n📸 Your Weekly POP was recorded {posted_time(source,cfg.timezone_name)} and is marked Late."
+                    f"\n\nIt was submitted {format_lateness(source,*_pop_args(cfg))} after the Thursday deadline."
+                    "\n\nIf you believe something is incorrect, contact VAD Support.")
+            else:
+                detail=f"\n\nRecorded: {friendly_timestamp(row['source_message_at'],timezone_name=cfg.timezone_name)}"
             if row["recovered_after_outage"]:detail += "\nYour original posting time was preserved after the bot reconnected."
         return await _show(query, f"📸 Weekly POP\n\n{status}{detail}\n\nPost screenshots, images, qualifying links, or a clear posting description directly in the configured POP topic inside Sellers Chat. Proof is never submitted through this bot. Duplicate posts do not create duplicate weekly credit.", menu_markup(ctx, [], "creator"))
     if action == "pop_recovery_report":
@@ -638,6 +670,9 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for row in manual[:12]:
             reference=(f"chat {row['chat_id']} / message {row['message_id']}" if row.get("id") else "No recoverable proof reference")
             manual_lines.append(f"• {row['display_name']} — {pop_label(row['effective_status'])} — {reference}")
+        late_lines=[f"• {row['display_name']} — {posted_time(datetime.fromisoformat(row['source_message_at']),cfg.timezone_name)}"
+            f" — {row['late_by']} late — {_pop_source_reference(row)}" for row in rows
+            if row["effective_status"]=="late" and row.get("source_message_at")]
         text=(f"📸 POP Recovery Report\n\nStarted: {friendly_timestamp(run['started_at'],timezone_name=cfg.timezone_name)}\n"
             f"Recovered Telegram updates: {run['updates_recovered']}\nPOP: {run['pop_recovered']}\n"
             f"Participation: {run['participation_recovered']}\nAway Notices: {run['away_recovered']}\n\n"
@@ -645,8 +680,63 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"Recovery confidence: {confidence}{gap}\n\n"
             f"Current week\nOn time: {counts['on_time']}\nLate: {counts['late']}\nExcused: {counts['excused']}\n"
             f"Needs manual review: {counts['submitted_needs_review']}\nNo recoverable proof found: {counts['missing']}"
+            +(f"\n\nLate submissions\n"+"\n".join(late_lines[:12]) if late_lines else "")
             +("\n\nManual review\n"+"\n".join(manual_lines) if manual_lines else ""))
-        return await _show(query,text,menu_markup(ctx,[],"owner_recovery_tools"))
+        return await _show(query,text,menu_markup(ctx,[("🧾 Reconcile Affected Week","pop_reconcile_weeks")],"owner_recovery_tools"))
+    if action.startswith("pop_reconcile_"):
+        if role is not Role.OWNER:
+            ctx.user_data.pop("pop_reconciliation_draft",None);ctx.user_data.pop("pop_reconciliation_week",None)
+            return await _show(query,"Historical POP reconciliation is Owner-only.",home_markup(ctx,user_id))
+        if action=="pop_reconcile_weeks":
+            weeks=db.recent_pop_week_keys(datetime.now(cfg.timezone),*_pop_args(cfg),count=8)
+            return await _show(query,"📸 Reconcile Affected Week\n\nChoose the week shown by the historical Telegram evidence. The bot will not search Telegram history.",
+                menu_markup(ctx,[(week,f"pop_reconcile_week_{week}") for week in weeks],"pop_recovery_report"))
+        if action.startswith("pop_reconcile_week_"):
+            week=action.removeprefix("pop_reconcile_week_");ctx.user_data["pop_reconciliation_week"]=week
+            creators=[r for r in db.list_creators() if r["status"]=="active" and r["deleted_at"] is None]
+            return await _show(query,f"📸 Reconcile {week}\n\nChoose a creator. Nothing will change until the preview is confirmed.",
+                menu_markup(ctx,[(r["display_name"][:40],f"pop_reconcile_creator_{r['telegram_id']}") for r in creators[:30]],"pop_reconcile_weeks"))
+        if action.startswith("pop_reconcile_creator_"):
+            week=ctx.user_data.get("pop_reconciliation_week");target=int(action.removeprefix("pop_reconcile_creator_"))
+            if not week or not db.get_creator(target):return await _show(query,"That reconciliation selection expired.",menu_markup(ctx,[],"pop_reconcile_weeks"))
+            ctx.user_data["pop_reconciliation_draft"]={"telegram_id":target,"week_key":week,"request_key":secrets.token_hex(16)}
+            return await _show(query,"📸 Choose Historical Status\n\nChoose only what the visible historical evidence supports.",menu_markup(ctx,[
+                ("✅ On Time","pop_reconcile_status_on_time"),("🟠 Late","pop_reconcile_status_late"),
+                ("💙 Excused","pop_reconcile_status_excused"),("🟡 Needs Review","pop_reconcile_status_submitted_needs_review"),
+                ("🔴 Missing","pop_reconcile_status_missing")],"pop_reconcile_weeks"))
+        if action.startswith("pop_reconcile_status_"):
+            draft=ctx.user_data.get("pop_reconciliation_draft");status=action.removeprefix("pop_reconcile_status_")
+            if not draft or status not in {"on_time","late","excused","submitted_needs_review","missing"}:
+                return await _show(query,"That reconciliation selection expired.",menu_markup(ctx,[],"pop_reconcile_weeks"))
+            draft["status"]=status
+            if status in {"on_time","late"}:
+                ctx.user_data["guided_input"]="pop_reconciliation_timestamp"
+                return await _show(query,"🕒 Original Telegram Time\n\nEnter the visible Eastern Time as:\nYYYY-MM-DD HH:MM\n\nYou may add an optional Telegram source reference after the time.\n\nExample: 2026-07-17 01:32 https://t.me/c/...",
+                    menu_markup(ctx,[],"pop_reconcile_weeks"))
+            return await _show(query,_pop_reconciliation_preview(draft,cfg),
+                menu_markup(ctx,[("✅ Confirm Historical Decision","pop_reconcile_confirm")],"pop_reconcile_weeks"))
+        if action in {"pop_reconcile_confirm","pop_reconcile_confirm_overwrite"}:
+            draft=ctx.user_data.get("pop_reconciliation_draft")
+            if not draft or not draft.get("status"):
+                return await _show(query,"That reconciliation preview expired. Nothing was saved.",menu_markup(ctx,[],"pop_reconcile_weeks"))
+            if action=="pop_reconcile_confirm_overwrite" and not draft.get("overwrite_confirmation_pending"):
+                return await _show(query,"The required first confirmation was not completed. Nothing was saved.",menu_markup(ctx,[],"pop_reconcile_weeks"))
+            context=db.pop_reconciliation_context(draft["telegram_id"],draft["week_key"])
+            if not context:return await _show(query,"That creator is unavailable. Nothing was saved.",menu_markup(ctx,[],"pop_reconcile_weeks"))
+            if context["reliable_submission"] and action!="pop_reconcile_confirm_overwrite":
+                draft["overwrite_confirmation_pending"]=True
+                return await _show(query,"⚠️ Second Confirmation Required\n\nA reliable Telegram-observed POP record already exists for this creator and week. The historical decision has not been saved. Confirm again only if the visible evidence proves the existing record is incorrect.",
+                    menu_markup(ctx,[("⚠️ Confirm Overwrite","pop_reconcile_confirm_overwrite")],"pop_reconcile_weeks"))
+            result=db.record_manual_pop_reconciliation(draft["telegram_id"],draft["week_key"],draft["status"],
+                draft.get("source_message_at"),draft.get("source_reference"),user_id,draft["request_key"],
+                allow_reliable_overwrite=action=="pop_reconcile_confirm_overwrite",due_weekday=cfg.pop_due_weekday,
+                cutoff_time=cfg.pop_cutoff_time,timezone_name=cfg.timezone_name)
+            if result.get("requires_second_confirmation"):
+                return await _show(query,"A reliable record requires a second confirmation. Nothing was saved.",
+                    menu_markup(ctx,[("⚠️ Confirm Overwrite","pop_reconcile_confirm_overwrite")],"pop_reconcile_weeks"))
+            ctx.user_data.pop("pop_reconciliation_draft",None)
+            text="✅ Historical POP reconciliation saved and audited." if result.get("saved") else "That reconciliation was already handled. No duplicate was created."
+            return await _show(query,text+"\n\nNo warning or strike was created.",menu_markup(ctx,[],"pop_recovery_report"))
     if action in {"my_activity", "my_status"}:
         text = creator_card(user_id, cfg)
         return await _show(query, text, menu_markup(ctx, [], "creator"))
@@ -850,11 +940,18 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         period = current_period(now,*_pop_args(cfg))
         rows = db.pop_status_report(now,*_pop_args(cfg))
         pending = [r for r in rows if r["submission_status"] == "pending"]
+        on_time = [r for r in rows if r["effective_status"] == "on_time"]
+        late = [r for r in rows if r["effective_status"] == "late"]
+        excused = [r for r in rows if r["effective_status"] == "excused"]
+        needs_review = [r for r in rows if r["effective_status"] == "submitted_needs_review"]
         missing = [r for r in rows if r["effective_status"] == "missing"]
         preservation = db.pop_preservation_review_rows()
         due = f"{period.due_at.strftime('%A, %b')} {period.due_at.day} at {period.due_at.strftime('%I').lstrip('0')}:{period.due_at.strftime('%M %p')} ET"
-        lines = ["📸 Thursday POP Review",f"Due: {due}",f"Waiting for proof review: {len(pending)}",
-            f"Preservation review: {len(preservation)}",f"Missing after deadline: {len(missing)}"]
+        lines = ["📸 Thursday POP Review",f"Due: {due}",f"On Time: {len(on_time)}",f"Late: {len(late)}",
+            f"Excused: {len(excused)}",f"Needs Review: {len(needs_review)}",f"Missing: {len(missing)}",
+            f"Waiting for proof review: {len(pending)}",f"Preservation review: {len(preservation)}"]
+        lines += [f"\n🟠 {r['display_name']} · {posted_time(datetime.fromisoformat(r['source_message_at']),cfg.timezone_name)}"
+            f" · {r['late_by']} late\nSource: {_pop_source_reference(r)}" for r in late[:8]]
         lines += [f"\n{r['display_name']} · Awaiting review" for r in pending[:8]]
         lines += [f"\n{r['display_name']} · Preservation needs review" for r in preservation[:8]]
         if not pending and not preservation: lines.append("\n📸 No POP reviews are waiting.\nYou’re all caught up.")
@@ -876,7 +973,11 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if submission["preservation_status"] in {"pending_24h","unable_to_verify"}:
             actions += [("✅ Confirm Preserved",f"pop_preserve_preserved_{submission_id}"),
                 ("⚠️ Confirm Early Removal",f"pop_preserve_early_{submission_id}")]
-        return await _show(query,f"📸 Review POP\n\n{creator['display_name']}\nSubmitted: {friendly_timestamp(submission['submitted_at'],timezone_name=getattr(cfg,'timezone_name','America/New_York'))}\nReview: {submission['status'].replace('_',' ').title()}\nPreservation: {preservation_labels.get(submission['preservation_status'],'Needs review')}\n\nChoose a decision.",
+        source=datetime.fromisoformat(submission["source_message_at"] or submission["submitted_at"])
+        timing=(f"\nTiming: Late · {format_lateness(source,*_pop_args(cfg))} late" if submission["timing_status"]=="late"
+            else f"\nTiming: {str(submission['timing_status'] or 'Unknown').replace('_',' ').title()}")
+        reference=f"chat {submission['chat_id']} / message {submission['message_id']}"
+        return await _show(query,f"📸 Review POP\n\n{creator['display_name']}\nSubmitted: {friendly_timestamp(submission['submitted_at'],timezone_name=getattr(cfg,'timezone_name','America/New_York'))}{timing}\nSource: {reference}\nReview: {submission['status'].replace('_',' ').title()}\nPreservation: {preservation_labels.get(submission['preservation_status'],'Needs review')}\n\nChoose a decision.",
             menu_markup(ctx,actions,"pop_queue"))
     if action.startswith("pop_preserve_"):
         if not has_permission(user_id,cfg,"review_pop"): return await _show(query,"POP review isn’t included in your access.",home_markup(ctx,user_id))
