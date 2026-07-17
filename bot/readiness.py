@@ -7,7 +7,7 @@ from pathlib import Path
 import database as db
 
 EXPECTED_MAIN_CHAT_ID = -1003543892255
-CURRENT_SCHEMA_VERSION = 11
+CURRENT_SCHEMA_VERSION = 12
 REQUIRED_DOCS = ("OWNER_GUIDE.md", "SETUP_GUIDE.md", "QUICK_START_FOR_KIRA_AND_ALEX.md")
 
 
@@ -63,7 +63,10 @@ def readiness_items(config,path=None,now=None):
             "Ready when Telegram privacy mode is disabled or an ordinary participation message has been observed.","location_participation"),
         _item("ordinary_messages","Bot can read ordinary messages in participation area","ready" if detected or counted else "unverified","Send a meaningful test message in the verified participation topic.","test_meaningful"),
         _item("sellers","Sellers group configured","ready" if _configured(getattr(config,"creator_group_id",None)) else "setup","The Sellers group is required for seller workflows.","location_sellers"),
-        _item("pop_topic","POP topic configured","ready" if _configured(getattr(config,"pop_thread_id",None)) else "setup","Verify the Sellers group POP topic.","location_pop"),
+        _item("pop_topic","POP topic observed","ready" if "pop:last_topic_update" in state else "unverified" if _configured(getattr(config,"pop_thread_id",None)) else "setup",
+            "Ready requires a recent message observed in the configured Sellers POP topic.","location_pop"),
+        _item("pop_recovery","POP outage recovery","ready" if state.get("pop:last_recovery_confidence",{}).get("value")=="complete" else "unverified",
+            "Pending Telegram updates are preserved; the latest recovery must also be complete.","health"),
         _item("admin","Admin group configured","ready" if _configured(getattr(config,"admin_chat_id",None)) else "setup","Private operational cards require an Admin group.","location_admin"),
     ]
     for key,label,attr,action in route_specs:

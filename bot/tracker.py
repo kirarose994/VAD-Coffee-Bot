@@ -6,13 +6,13 @@ import json
 from html import escape
 
 from telegram import Update
-from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import CommandHandler, ContextTypes, MessageHandler, TypeHandler, filters
 
 import database as db
 from engagement import classify, contains_promotional_spam
 from permissions import can_manage_sensitive, can_mutate, can_read, can_view_audit, has_permission, role_for
-from pop_policy import label as pop_label
-from pop_reliability import classify_pop_proof
+from pop_policy import label as pop_label, submission_timing
+from pop_reliability import classify_pop_candidate
 from routing import send_routed
 from briefing import daily_admin_brief_job
 from constants import MIN_AUDIO_PARTICIPATION_SECONDS
@@ -142,10 +142,21 @@ def week_key(now):
 
 
 def _pop_observed_at(update, message, timezone):
-    """Use Telegram's timestamp when available without trusting it for eligibility."""
-    edited = getattr(update, "edited_message", None)
-    moment = getattr(message, "edit_date", None) if edited is not None else getattr(message, "date", None)
+    """Return the original Telegram source time, never delayed processing/edit time."""
+    moment = getattr(message, "date", None)
     return moment.astimezone(timezone).isoformat() if moment else datetime.now(timezone).isoformat()
+
+
+def _update_type(update):
+    return "edited_message" if getattr(update,"edited_message",None) is not None else "message"
+
+
+async def record_update_observation(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Count each replayable Telegram update once without consuming or rerouting it."""
+    message=getattr(update,"edited_message",None) or getattr(update,"message",None)
+    source_at=_pop_observed_at(update,message,config(ctx).timezone) if message else None
+    kind=_update_type(update) if message else "callback_query" if getattr(update,"callback_query",None) else "other"
+    db.claim_processed_update(getattr(update,"update_id",None),kind,source_at)
 
 
 async def pop_report_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -262,6 +273,19 @@ def _record_creator_participation_diagnostic(config, creator, message, reason):
     db.set_system_state(f"participation:last_creator:{creator['telegram_id']}", json.dumps(payload, separators=(",", ":")))
 
 
+def _record_pop_location_diagnostic(config,message,reason):
+    """Persist numeric location matches without retaining proof text or URLs."""
+    configured_chat=getattr(config,"pop_chat_id",None) or getattr(config,"girls_chat_id",None)
+    configured_thread=getattr(config,"pop_thread_id",None)
+    payload={"observed_at":datetime.now(config.timezone).isoformat(),
+        "observed_chat_id":message.chat_id,"observed_thread_id":message.message_thread_id,
+        "configured_chat_id":configured_chat,"configured_thread_id":configured_thread,
+        "chat_matches":message.chat_id==configured_chat,
+        "topic_matches":message.chat_id==configured_chat and message.message_thread_id==configured_thread,
+        "reason":reason}
+    db.set_system_state("pop:last_observation",json.dumps(payload,separators=(",",":")))
+
+
 def _audio_details(message):
     """Return Telegram's stable audio identity, duration, and participation type."""
     media = message.voice or getattr(message, "audio", None)
@@ -326,16 +350,38 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     thread_id = msg.message_thread_id
     media = bool(msg.photo or msg.sticker or msg.animation or msg.video or msg.voice or getattr(msg,"audio",None) or msg.document)
     pop_chat_id = getattr(cfg,"pop_chat_id",None) or getattr(cfg,"girls_chat_id",None)
-    proof_type = classify_pop_proof(msg)
-    if (proof_type and pop_chat_id == msg.chat_id and cfg.pop_thread_id
-            and thread_id == cfg.pop_thread_id
-            and local_now.weekday() == getattr(cfg,"pop_due_weekday",3)):
-        submitted_at=_pop_observed_at(update,msg,cfg.timezone)
-        if db.submit_pop(user.id,week_key(local_now),msg.message_id,msg.chat_id,thread_id,
-                proof_type,submitted_at=submitted_at):
-            await msg.reply_text("Thursday POP received! 📸 It’s waiting for review, and its 24-hour preservation check has started.")
-            # A normal receipt is visible in the review queue and Daily Brief; it is not urgent.
-        _record_creator_participation_diagnostic(cfg,creator,msg,"pop_workflow_message")
+    in_pop_topic=bool(pop_chat_id==msg.chat_id and cfg.pop_thread_id and thread_id==cfg.pop_thread_id)
+    _record_pop_location_diagnostic(cfg,msg,"configured_topic" if in_pop_topic else "outside_configured_topic")
+    if in_pop_topic:
+        source_at=_pop_observed_at(update,msg,cfg.timezone);observed_at=local_now.isoformat()
+        update_id=getattr(update,"update_id",None)
+        _,recovered=db.claim_processed_update(update_id,_update_type(update),source_at)
+        decision=classify_pop_candidate(msg)
+        period_week,timing=submission_timing(datetime.fromisoformat(source_at),
+            getattr(cfg,"pop_due_weekday",3),getattr(cfg,"pop_cutoff_time","23:59"),
+            getattr(cfg,"timezone_name","America/New_York"))
+        db.set_system_state("pop:last_topic_update",observed_at)
+        db.set_system_state("pop:last_observed_chat_id",msg.chat_id)
+        db.set_system_state("pop:last_observed_thread_id",thread_id)
+        if (decision.proof_type or decision.needs_review) and timing!="not_yet_due":
+            proof_type=decision.proof_type or "ambiguous_text"
+            needs_review=decision.reason if decision.needs_review else None
+            related=db.recent_pop_evidence(user.id,msg.chat_id,thread_id,source_at)
+            relationship="supporting" if related else "primary"
+            result=db.record_pop_evidence(user.id,period_week,msg.message_id,msg.chat_id,thread_id,
+                proof_type,timing,source_message_at=source_at,observed_at=observed_at,
+                update_id=update_id,recovered_after_outage=recovered,
+                needs_review_reason=needs_review,relationship=relationship)
+            if decision.proof_type:db.set_system_state("pop:last_valid_proof",observed_at)
+            if result["created"]:
+                qualifier=" and needs review" if needs_review else ""
+                recovery=" after the bot reconnected" if recovered else ""
+                await msg.reply_text(f"📸 Your Weekly POP was recorded{recovery}{qualifier}. Your original posting time was used.")
+            _record_creator_participation_diagnostic(cfg,creator,msg,"pop_workflow_message")
+            return
+        # POP-topic conversation must never spill into participation tracking.
+        _record_creator_participation_diagnostic(cfg,creator,msg,
+            "pop_candidate_needs_context" if decision.needs_review else "pop_unqualified_message")
         return
     if not participation_enabled(cfg,msg.chat_id,thread_id):
         configured_chat,_configured_topics=_participation_location(cfg)
@@ -359,6 +405,9 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         stored=db.record_engagement(user.id,msg.message_id,msg.chat_id,thread_id,digest,
             "accepted" if accepted else "rejected",decision_reason,event_type=event_type)
         if stored and accepted:
+            source_at=_pop_observed_at(update,msg,cfg.timezone)
+            _,recovered=db.claim_processed_update(getattr(update,"update_id",None),_update_type(update),source_at)
+            if recovered:db.count_recovered_event("participation")
             diagnostic_reason=(f"accepted_{event_type}_during_away_notice"
                 if active_away_notice else f"accepted_{event_type}")
             _record_creator_participation_diagnostic(cfg,creator,msg,diagnostic_reason)
@@ -379,6 +428,9 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     stored=db.record_engagement(user.id,msg.message_id,msg.chat_id,thread_id,decision.digest or None,
                          "accepted" if decision.accepted else "rejected",decision.reason)
     if stored and decision.accepted:
+        source_at=_pop_observed_at(update,msg,cfg.timezone)
+        _,recovered=db.claim_processed_update(getattr(update,"update_id",None),_update_type(update),source_at)
+        if recovered:db.count_recovered_event("participation")
         diagnostic_reason = "accepted_during_away_notice" if active_away_notice else "accepted"
         _record_creator_participation_diagnostic(cfg,creator,msg,diagnostic_reason)
         counted_at=datetime.now(cfg.timezone).isoformat()
@@ -529,7 +581,46 @@ async def telegram_recovery_job(ctx: ContextTypes.DEFAULT_TYPE):
             except Exception:pass
 
 
+def _recovery_stamp(value,cfg):
+    if not value:return "Unknown"
+    moment=datetime.fromisoformat(value).astimezone(cfg.timezone)
+    return f"{moment.strftime('%A')} {moment.strftime('%I').lstrip('0')}:{moment.strftime('%M %p')} ET"
+
+
+async def startup_recovery_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """Finalize one pending-update catch-up and privately summarize it to Owners."""
+    cfg=config(ctx);run_id=ctx.bot_data.get("recovery_run_id")
+    if not run_id:return
+    run=db.finalize_recovery_run(run_id,datetime.now(cfg.timezone).isoformat())
+    if not run:return
+    db.set_system_state("pop:last_reconciliation",run["completed_at"])
+    db.set_system_state("pop:last_recovery_confidence",run["confidence"])
+    if not db.claim_recovery_summary(run_id):return
+    body=("♻️ Recovery Summary\n\n"
+        f"Offline: {_recovery_stamp(run['previous_heartbeat_at'],cfg)} – {_recovery_stamp(run['started_at'],cfg)}\n"
+        f"Telegram updates recovered: {run['updates_recovered']}\n"
+        f"POP submissions recovered: {run['pop_recovered']}\n"
+        f"Participation events recovered: {run['participation_recovered']}\n"
+        f"Away Notice updates recovered: {run['away_recovered']}\n\n"
+        f"POP on time: {run['pop_on_time']}\nPOP late: {run['pop_late']}\n"
+        f"POP needs review: {run['pop_needs_review']}\n"
+        f"Recovery confidence: {run['confidence'].title()}")
+    if run["unresolved_gap"]:
+        body += "\n\nAn unrecoverable gap may remain. Telegram does not provide arbitrary group-history retrieval."
+    for owner_id in cfg.owner_user_ids:
+        if not db.claim_owner_summary(owner_id,f"recovery:{run_id}"):continue
+        try:await ctx.bot.send_message(owner_id,body)
+        except Exception:
+            db.record_audit(None,"recovery_summary_delivery_failed","recovery_run",
+                target_record_id=run_id,target_telegram_id=owner_id,result="error")
+
+
+async def runtime_heartbeat_job(ctx: ContextTypes.DEFAULT_TYPE):
+    db.record_runtime_heartbeat()
+
+
 def register_handlers(app):
+    app.add_handler(TypeHandler(Update,record_update_observation),group=-100)
     app.add_handler(CommandHandler("creator_register", register))
     app.add_handler(CommandHandler("creator_approve", approve))
     app.add_handler(CommandHandler("creator_deactivate", deactivate))
@@ -552,10 +643,12 @@ def register_handlers(app):
         filters.VIDEO | filters.VOICE | filters.AUDIO | filters.Document.ALL
     )
     app.add_handler(MessageHandler(pop_media, observe), group=10)
-    app.job_queue.run_repeating(inactivity_job, interval=1800, first=60, name="inactivity-monitor")
-    app.job_queue.run_repeating(pop_preservation_job,interval=900,first=120,name="pop-preservation-monitor")
+    app.job_queue.run_once(startup_recovery_job,when=105,name="startup-pop-recovery")
+    app.job_queue.run_repeating(runtime_heartbeat_job,interval=30,first=15,name="runtime-heartbeat")
+    app.job_queue.run_repeating(inactivity_job, interval=1800, first=150, name="inactivity-monitor")
+    app.job_queue.run_repeating(pop_preservation_job,interval=900,first=180,name="pop-preservation-monitor")
     # A repeating check allows Owner settings to take effect without rescheduling jobs.
-    app.job_queue.run_repeating(daily_admin_brief_job, interval=900, first=90, name="daily-admin-brief")
+    app.job_queue.run_repeating(daily_admin_brief_job, interval=900, first=180, name="daily-admin-brief")
     app.job_queue.run_repeating(telegram_recovery_job,interval=60,first=60,name="telegram-polling-incident-maintenance")
     cfg = app.bot_data.get("config")
     if cfg and getattr(cfg, "daily_owner_summary_enabled", False):

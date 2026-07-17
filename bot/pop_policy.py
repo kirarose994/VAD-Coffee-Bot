@@ -25,6 +25,9 @@ LABELS = {
     "complete_preservation_pending": "✅ Complete — preservation pending",
     "complete_preserved": "✅ Complete — 24-hour requirement satisfied",
     "needs_review": "🟡 Needs review",
+    "on_time": "✅ On Time",
+    "late": "🟠 Late",
+    "submitted_needs_review": "🟡 Submitted — Needs Review",
 }
 
 
@@ -42,7 +45,9 @@ def current_period(now: datetime, due_weekday=3, cutoff_time="23:59", timezone_n
     monday = (local - timedelta(days=local.weekday())).replace(hour=0,minute=0,second=0,microsecond=0)
     due_day = monday + timedelta(days=int(due_weekday))
     cutoff = _cutoff(cutoff_time)
-    due_at = due_day.replace(hour=cutoff.hour,minute=cutoff.minute,second=0,microsecond=0)
+    # A minute-based setting describes the whole selected minute.  The default
+    # 23:59 cutoff therefore includes Thursday 11:59:59.999999 PM ET.
+    due_at = due_day.replace(hour=cutoff.hour,minute=cutoff.minute,second=59,microsecond=999999)
     year, week, _ = monday.isocalendar()
     return PopPeriod(f"{year}-W{week:02d}",monday,due_at)
 
@@ -69,3 +74,13 @@ def calculate_status(now: datetime, *, submission_status=None, excused=False,
 
 def label(status: str) -> str:
     return LABELS.get(status,status.replace("_"," ").title())
+
+
+def submission_timing(source_at: datetime, due_weekday=3, cutoff_time="23:59",
+                      timezone_name="America/New_York") -> tuple[str, str]:
+    """Return the source message's canonical week and ET timing classification."""
+    period = current_period(source_at,due_weekday,cutoff_time,timezone_name)
+    local = source_at.astimezone(ZoneInfo(timezone_name))
+    if local.date() < period.due_at.date():
+        return period.week_key,"not_yet_due"
+    return period.week_key, "on_time" if local <= period.due_at else "late"

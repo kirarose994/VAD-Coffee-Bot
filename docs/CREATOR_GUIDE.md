@@ -11,9 +11,14 @@ come back.
 Use an Away Notice when time away should pause expectations; private details are optional.
 Participation is optional while you’re away. Meaningful messages will still count, but you will not be penalized for inactivity during your away period.
 Post POP proof directly in the configured POP topic inside Sellers Chat—never through the bot.
-Screenshots, images, and qualifying links can be detected without the word “POP.” A description
-without media or a link does not complete POP. Multiple qualifying posts in one week do not
-create duplicate credit; the earliest qualifying record is kept.
+Screenshots, images, image documents, qualifying links, and a clear description of where the
+weekly flyer was posted can be detected without the word “POP.” Unclear proof is shown as
+**Needs Review** so an Admin can check it fairly. A nearby image and description from the same
+creator may be connected as one proof. Multiple posts do not create duplicate credit; the
+earliest valid posting time is retained.
+
+The original Telegram posting time is shown in Eastern Time. Thursday proof is **On Time**;
+proof first posted Friday or later is **Late**. Reconnecting later does not change that time.
 
 Your status may show **Complete — preservation pending**, **Complete — 24-hour requirement
 satisfied**, or **Needs review**. Telegram does not reliably tell ordinary bots whenever a group

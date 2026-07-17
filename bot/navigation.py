@@ -431,7 +431,8 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 ("🧪 Test Center","test_center"),("🩺 System Health","health"),("💾 Export","export_help"),
                 ("🌸 Weekly Update Preview","weekly_preview")]),
             "owner_recovery_tools":("♻️ Recovery","Review archived records and restore them through protected workflows.",[
-                ("📦 Archive Records","deleted"),("♻️ Restore Records","restore_help")]),
+                ("📸 POP Recovery Report","pop_recovery_report"),("📦 Archive Records","deleted"),
+                ("♻️ Restore Records","restore_help")]),
             "owner_setup_tools":("⚙️ System Setup","Configure and verify the bot without crowding daily operations.",[
                 ("✅ Setup & Readiness","readiness"),("🧭 Complete Initial Setup","setup_wizard"),
                 ("📍 Telegram Locations","telegram_locations"),("⚙️ Configuration","setup")]),
@@ -468,7 +469,8 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             buttons += [(f"🟡 {len(snap['participation']['approaching'])} Approaching Reminder","snapshot_list_participation_approaching"),
                 (f"🔴 {len(snap['participation']['follow_up'])} Three-Day Follow-Up","snapshot_list_participation_follow_up")]
         if "pop" in sections:
-            buttons += [(f"📸 {len(snap['pop']['submitted'])+len(snap['pop']['awaiting_review'])} POP Received","snapshot_list_pop_received"),
+            received=sum(len(snap["pop"][key]) for key in ("submitted","awaiting_review","on_time","late","submitted_needs_review"))
+            buttons += [(f"📸 {received} POP Received","snapshot_list_pop_received"),
                 (f"🔴 {len(snap['pop']['missing'])} POP Exceptions","snapshot_list_pop_missing")]
         if "away" in sections:buttons.append((f"💙 {len(snap['away']['pending'])} Away Notices Waiting","away_queue"))
         if "support" in sections:buttons.append((f"📨 {len(snap['support']['open'])} Open Support Requests","support_queue"))
@@ -514,7 +516,8 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if section not in _snapshot_sections(user_id,cfg):return await _show(query,"That snapshot section is not included in your permissions.",home_markup(ctx,user_id))
         snap=build_snapshot(cfg)
         mapping={"creators_active":snap["creators"]["active"],"participation_approaching":snap["participation"]["approaching"],
-            "participation_follow_up":snap["participation"]["follow_up"],"pop_received":snap["pop"]["submitted"]+snap["pop"]["awaiting_review"],
+            "participation_follow_up":snap["participation"]["follow_up"],"pop_received":sum(
+                (snap["pop"][key] for key in ("submitted","awaiting_review","on_time","late","submitted_needs_review")),[]),
             "pop_missing":snap["pop"]["missing"]}
         rows=mapping.get(key,[]);lines=[]
         for row in rows:
@@ -615,7 +618,35 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action in {"vacation_help", "sick_help"}:
         return await _show(query,"Choose Let Us Know You’ll Be Away to start the guided Away Notice workflow.",menu_markup(ctx,[("💙 Start Away Notice","away_help")],"creator"))
     if action == "pop_help":
-        return await _show(query, "Post your screenshot, image, or qualifying link directly in the configured POP topic inside Sellers Chat. Proof is never submitted through this bot. Duplicate posts do not create duplicate weekly credit.", menu_markup(ctx, [], "creator"))
+        rows=db.pop_status_report(datetime.now(cfg.timezone),*_pop_args(cfg));row=next((r for r in rows if r["telegram_id"]==user_id),None)
+        status=pop_label(row["creator_status"] if row else "not_due")
+        detail=""
+        if row and row["source_message_at"]:
+            detail=f"\n\nRecorded: {friendly_timestamp(row['source_message_at'],timezone_name=cfg.timezone_name)}"
+            if row["recovered_after_outage"]:detail += "\nYour original posting time was preserved after the bot reconnected."
+        return await _show(query, f"📸 Weekly POP\n\n{status}{detail}\n\nPost screenshots, images, qualifying links, or a clear posting description directly in the configured POP topic inside Sellers Chat. Proof is never submitted through this bot. Duplicate posts do not create duplicate weekly credit.", menu_markup(ctx, [], "creator"))
+    if action == "pop_recovery_report":
+        if role is not Role.OWNER:return await _show(query,"POP Recovery Reports are Owner-only.",home_markup(ctx,user_id))
+        run=db.latest_recovery_run()
+        if not run:return await _show(query,"📸 POP Recovery Report\n\nNo startup recovery run has been recorded yet.",menu_markup(ctx,[],"owner_recovery_tools"))
+        confidence=run["confidence"].title();gap=("\nPossible gap: "+run["unresolved_gap"] if run["unresolved_gap"] else "")
+        rows=db.pop_status_report(datetime.now(cfg.timezone),*_pop_args(cfg));counts={key:0 for key in
+            ("on_time","late","excused","submitted_needs_review","missing")}
+        for row in rows:counts[row["effective_status"]]=counts.get(row["effective_status"],0)+1
+        manual=[row for row in rows if row["effective_status"] in {"submitted_needs_review","missing"}]
+        manual_lines=[]
+        for row in manual[:12]:
+            reference=(f"chat {row['chat_id']} / message {row['message_id']}" if row.get("id") else "No recoverable proof reference")
+            manual_lines.append(f"• {row['display_name']} — {pop_label(row['effective_status'])} — {reference}")
+        text=(f"📸 POP Recovery Report\n\nStarted: {friendly_timestamp(run['started_at'],timezone_name=cfg.timezone_name)}\n"
+            f"Recovered Telegram updates: {run['updates_recovered']}\nPOP: {run['pop_recovered']}\n"
+            f"Participation: {run['participation_recovered']}\nAway Notices: {run['away_recovered']}\n\n"
+            f"On time: {run['pop_on_time']}\nLate: {run['pop_late']}\nNeeds review: {run['pop_needs_review']}\n"
+            f"Recovery confidence: {confidence}{gap}\n\n"
+            f"Current week\nOn time: {counts['on_time']}\nLate: {counts['late']}\nExcused: {counts['excused']}\n"
+            f"Needs manual review: {counts['submitted_needs_review']}\nNo recoverable proof found: {counts['missing']}"
+            +("\n\nManual review\n"+"\n".join(manual_lines) if manual_lines else ""))
+        return await _show(query,text,menu_markup(ctx,[],"owner_recovery_tools"))
     if action in {"my_activity", "my_status"}:
         text = creator_card(user_id, cfg)
         return await _show(query, text, menu_markup(ctx, [], "creator"))

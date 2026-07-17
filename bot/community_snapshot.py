@@ -33,7 +33,8 @@ def build_snapshot(config,now=None,path=None):
         else:participation["up_to_date"].append(creator)
     pop_rows=[dict(r) for r in db.pop_status_report(now,config.pop_due_weekday,config.pop_cutoff_time,config.timezone_name,path)]
     pop={key:[r for r in pop_rows if r["effective_status"]==key] for key in
-        ("not_due","due_today","still_needed","missing","submitted","awaiting_review","excused","resubmission_requested","rejected")}
+        ("not_due","due_today","still_needed","missing","submitted","awaiting_review","excused",
+         "resubmission_requested","rejected","on_time","late","submitted_needs_review")}
     pending_away=[dict(r) for r in db.list_absence_requests("pending",path=path)]
     upcoming=[dict(r) for r in db.calendar_absences((today+timedelta(days=1)).isoformat(),(today+timedelta(days=30)).isoformat(),path)
         if date.fromisoformat(r["start_date"])>today]
@@ -61,7 +62,8 @@ def build_snapshot(config,now=None,path=None):
 
 def pop_attention(snapshot):
     pop=snapshot["pop"]
-    return pop["awaiting_review"]+pop["resubmission_requested"]+pop["rejected"]+pop["missing"]
+    return (pop.get("awaiting_review",[])+pop.get("submitted_needs_review",[])+
+        pop.get("resubmission_requested",[])+pop.get("rejected",[])+pop.get("missing",[]))
 
 
 def section_lines(snapshot,section,include_zero=True):
@@ -69,7 +71,10 @@ def section_lines(snapshot,section,include_zero=True):
     rows={
         "creators":[("Approved",len(snapshot["creators"]["approved"])),("Active",len(snapshot["creators"]["active"])),("Currently away",len(snapshot["creators"]["away"])),("Pending registrations",len(snapshot["creators"]["pending"]))],
         "participation":[("🟢 Up to date",len(p["up_to_date"])),("🟡 Approaching reminder",len(p["approaching"])),("🟠 Reminder due or sent",len(p["reminder_due"])),("🔴 Admin follow-up",len(p["follow_up"])),("🔵 Excused",len(p["excused"]))],
-        "pop":[("Not due yet",len(pop["not_due"])),("Received",len(pop["submitted"])+len(pop["awaiting_review"])),("Excused",len(pop["excused"])),("Still due today",len(pop["due_today"])+len(pop["still_needed"])),("Missing after deadline",len(pop["missing"])),("Needs attention",len(pop_attention(snapshot)))],
+        "pop":[("Not due yet",len(pop.get("not_due",[]))),("On time",len(pop.get("on_time",[]))),("Late",len(pop.get("late",[]))),
+            ("Needs review",len(pop.get("submitted_needs_review",[]))+len(pop.get("awaiting_review",[]))),("Excused",len(pop.get("excused",[]))),
+            ("Still due today",len(pop.get("due_today",[]))+len(pop.get("still_needed",[]))),("Missing after deadline",len(pop.get("missing",[]))),
+            ("Needs attention",len(pop_attention(snapshot)))],
         "away":[("Currently away",len(away["current"])),("Upcoming",len(away["upcoming"])),("Waiting for Admin attention",len(away["pending"]))],
         "support":[("Open",len(support["open"])),("Unassigned",len(support["unassigned"])),("Escalated to Owner",len(support["escalated"]))],
         "accountability":[("Active warnings",acct["warnings"]),("Active strikes",acct["strikes"]),("Owner-review cases",acct["owner_reviews"])],

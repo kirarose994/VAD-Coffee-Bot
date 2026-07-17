@@ -15,5 +15,9 @@ for inconclusive preservation results rather than inferring creator behavior.
 Optionally explore branded visual cards as a separate opt-in enhancement; routine reminders
 and operational messages should remain lightweight text unless mobile testing proves a clear benefit.
 
+After POP recovery runs stably for several days, improve production hosting and persistent
+storage before beginning the broader Creator Experience Hub. Attachment support and the optional
+creator check-in remain separate privacy-reviewed projects.
+
 All roadmap work must remain additive, audited, migration-safe, mobile-friendly, and covered
 by role-isolation and idempotency tests.

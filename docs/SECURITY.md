@@ -12,9 +12,17 @@
   opens, fetches, executes, scrapes, or stores the full URL.
 - POP proof is accepted only for an active creator in the configured Sellers Chat and POP thread.
   Edited messages repeat every server-side identity, location, day, and week check.
+- Update IDs and source chat/message/thread references support idempotency. POP metadata does not
+  retain submitted URLs, captions, descriptions, or image files, and links are never fetched.
+- Split evidence is correlated only by immutable creator ID, exact numeric location, week, and a
+  five-minute window; evidence from different creators cannot be combined.
+- Startup has one polling consumer with pending-update deletion disabled. Evidence, update, alert,
+  and Owner-summary claims are database-deduplicated across restarts.
 - Telegram does not reliably report arbitrary group-message deletion or provide general
   historical-message lookup to ordinary bots. An inconclusive 24-hour preservation check creates
   a deduplicated Admin review item, never an automatic accusation, warning, or strike. Confirmed
   early removal requires direct Admin evidence and an explicit confirmation.
+- Recovery confidence is conservative: no prior heartbeat is **Unknown**, and an outage beyond
+  the conservative queue window is **Partial**. Neither state is presented as complete recovery.
 
 Rotate any credential found in Git history, remove it from history, and review access logs.

@@ -67,8 +67,45 @@ def initialize_database(path: Path | None = None):
           preservation_due_at TEXT, preservation_checked_at TEXT,
           preservation_reviewed_by INTEGER, preservation_note TEXT,
           preservation_alerted_at TEXT,
+          timing_status TEXT, source_message_at TEXT, observed_at TEXT,
+          recovered_after_outage INTEGER NOT NULL DEFAULT 0,
+          needs_review_reason TEXT, source_update_id INTEGER,
           FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id),
           UNIQUE(telegram_id, week_key)
+        );
+        CREATE TABLE IF NOT EXISTS pop_evidence (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, submission_id INTEGER,
+          telegram_id INTEGER NOT NULL, week_key TEXT NOT NULL,
+          message_id INTEGER NOT NULL, chat_id INTEGER NOT NULL, thread_id INTEGER,
+          update_id INTEGER, proof_type TEXT NOT NULL, confidence TEXT NOT NULL,
+          source_message_at TEXT NOT NULL, observed_at TEXT NOT NULL,
+          recovered_after_outage INTEGER NOT NULL DEFAULT 0,
+          relationship TEXT NOT NULL DEFAULT 'primary',
+          FOREIGN KEY(submission_id) REFERENCES pop_submissions(id),
+          FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id),
+          UNIQUE(chat_id,message_id)
+        );
+        CREATE INDEX IF NOT EXISTS pop_evidence_creator_time
+          ON pop_evidence(telegram_id,week_key,source_message_at);
+        CREATE TABLE IF NOT EXISTS recovery_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL,
+          previous_heartbeat_at TEXT, catchup_until TEXT NOT NULL,
+          completed_at TEXT, confidence TEXT NOT NULL DEFAULT 'unknown',
+          status TEXT NOT NULL DEFAULT 'catching_up',
+          updates_recovered INTEGER NOT NULL DEFAULT 0,
+          pop_recovered INTEGER NOT NULL DEFAULT 0,
+          participation_recovered INTEGER NOT NULL DEFAULT 0,
+          away_recovered INTEGER NOT NULL DEFAULT 0,
+          pop_on_time INTEGER NOT NULL DEFAULT 0, pop_late INTEGER NOT NULL DEFAULT 0,
+          pop_excused INTEGER NOT NULL DEFAULT 0, pop_needs_review INTEGER NOT NULL DEFAULT 0,
+          unresolved_gap TEXT, summary_claimed_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS one_open_recovery_run
+          ON recovery_runs(status) WHERE status='catching_up';
+        CREATE TABLE IF NOT EXISTS processed_updates (
+          update_id INTEGER PRIMARY KEY, update_type TEXT NOT NULL,
+          source_message_at TEXT, processed_at TEXT NOT NULL,
+          recovered_after_outage INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS audit_history (
           id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id INTEGER NOT NULL,
@@ -228,7 +265,7 @@ def initialize_database(path: Path | None = None):
         """)
         _migrate_legacy_schema(db)
         _seed_message_templates(db)
-        db.execute("UPDATE schema_version SET version=11")
+        db.execute("UPDATE schema_version SET version=12")
 
 
 DEFAULT_MESSAGE_TEMPLATES = {
@@ -312,12 +349,37 @@ def _migrate_legacy_schema(db):
         "preservation_status": "TEXT", "preservation_due_at": "TEXT",
         "preservation_checked_at": "TEXT", "preservation_reviewed_by": "INTEGER",
         "preservation_note": "TEXT", "preservation_alerted_at": "TEXT",
+        "timing_status": "TEXT", "source_message_at": "TEXT", "observed_at": "TEXT",
+        "recovered_after_outage": "INTEGER NOT NULL DEFAULT 0",
+        "needs_review_reason": "TEXT", "source_update_id": "INTEGER",
     })
     if "preservation_status" not in pop_columns_before:
         # Existing records predate preservation tracking. Treat them as legacy rather
         # than generating a false review storm or claiming they were verified.
         db.execute("""UPDATE pop_submissions SET preservation_status='legacy_record'
           WHERE preservation_status IS NULL""")
+    db.execute("""UPDATE pop_submissions SET source_message_at=COALESCE(source_message_at,submitted_at),
+      observed_at=COALESCE(observed_at,submitted_at),timing_status=COALESCE(timing_status,'legacy')""")
+    db.executescript("""CREATE TABLE IF NOT EXISTS pop_evidence (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,submission_id INTEGER,telegram_id INTEGER NOT NULL,
+      week_key TEXT NOT NULL,message_id INTEGER NOT NULL,chat_id INTEGER NOT NULL,thread_id INTEGER,
+      update_id INTEGER,proof_type TEXT NOT NULL,confidence TEXT NOT NULL,
+      source_message_at TEXT NOT NULL,observed_at TEXT NOT NULL,recovered_after_outage INTEGER NOT NULL DEFAULT 0,
+      relationship TEXT NOT NULL DEFAULT 'primary',FOREIGN KEY(submission_id) REFERENCES pop_submissions(id),
+      FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id),UNIQUE(chat_id,message_id));
+      CREATE INDEX IF NOT EXISTS pop_evidence_creator_time ON pop_evidence(telegram_id,week_key,source_message_at);
+      CREATE TABLE IF NOT EXISTS recovery_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,started_at TEXT NOT NULL,previous_heartbeat_at TEXT,
+      catchup_until TEXT NOT NULL,completed_at TEXT,confidence TEXT NOT NULL DEFAULT 'unknown',
+      status TEXT NOT NULL DEFAULT 'catching_up',updates_recovered INTEGER NOT NULL DEFAULT 0,
+      pop_recovered INTEGER NOT NULL DEFAULT 0,participation_recovered INTEGER NOT NULL DEFAULT 0,
+      away_recovered INTEGER NOT NULL DEFAULT 0,pop_on_time INTEGER NOT NULL DEFAULT 0,
+      pop_late INTEGER NOT NULL DEFAULT 0,pop_excused INTEGER NOT NULL DEFAULT 0,
+      pop_needs_review INTEGER NOT NULL DEFAULT 0,unresolved_gap TEXT,summary_claimed_at TEXT);
+      CREATE UNIQUE INDEX IF NOT EXISTS one_open_recovery_run ON recovery_runs(status) WHERE status='catching_up';
+      CREATE TABLE IF NOT EXISTS processed_updates (
+      update_id INTEGER PRIMARY KEY,update_type TEXT NOT NULL,source_message_at TEXT,processed_at TEXT NOT NULL,
+      recovered_after_outage INTEGER NOT NULL DEFAULT 0);""")
     _add_columns(db, "creators", {
         "availability": "TEXT NOT NULL DEFAULT 'unavailable'",
         "availability_since": "TEXT", "availability_changed_by": "INTEGER",
@@ -857,9 +919,12 @@ def pop_status_report(now=None, due_weekday=3, cutoff_time="23:59", timezone_nam
     now = now or datetime.now(ZoneInfo(timezone_name))
     period = current_period(now,due_weekday,cutoff_time,timezone_name)
     with get_connection(path) as db:
-        rows = db.execute("""SELECT c.telegram_id,c.display_name,c.registered_at,p.id,p.status AS submission_status,
+        rows = db.execute("""SELECT c.telegram_id,c.display_name,c.registered_at,p.id,p.message_id,p.chat_id,p.thread_id,
+          p.status AS submission_status,
           p.submitted_at,p.proof_type,p.preservation_status,p.preservation_due_at,
-          p.preservation_checked_at,CASE WHEN x.id IS NULL THEN 0 ELSE 1 END AS excused
+          p.preservation_checked_at,p.timing_status,p.source_message_at,p.observed_at,
+          p.recovered_after_outage,p.needs_review_reason,
+          CASE WHEN x.id IS NULL THEN 0 ELSE 1 END AS excused
           FROM creators c
           LEFT JOIN pop_submissions p ON p.telegram_id=c.telegram_id AND p.week_key=? AND p.deleted_at IS NULL
           LEFT JOIN pop_excuses x ON x.telegram_id=c.telegram_id AND x.week_key=?
@@ -873,12 +938,15 @@ def pop_status_report(now=None, due_weekday=3, cutoff_time="23:59", timezone_nam
             item["effective_status"] = calculate_status(now,submission_status=row["submission_status"],
                 excused=bool(row["excused"]),registered_at=row["registered_at"],due_weekday=due_weekday,
                 cutoff_time=cutoff_time,timezone_name=timezone_name)
-            if item["id"] is not None and item["preservation_status"] == "pending_24h":
-                item["creator_status"] = "complete_preservation_pending"
-            elif item["id"] is not None and item["preservation_status"] == "preserved":
-                item["creator_status"] = "complete_preserved"
+            if item["excused"]:
+                item["effective_status"] = item["creator_status"] = "excused"
+            elif item["id"] is not None and item["needs_review_reason"]:
+                item["effective_status"] = item["creator_status"] = "submitted_needs_review"
             elif item["id"] is not None and item["preservation_status"] in {"unable_to_verify","early_removed"}:
                 item["creator_status"] = "needs_review"
+                item["effective_status"] = "submitted_needs_review"
+            elif item["id"] is not None and item["timing_status"] in {"on_time","late"}:
+                item["effective_status"] = item["creator_status"] = item["timing_status"]
             else:
                 item["creator_status"] = item["effective_status"]
             result.append(item)
@@ -887,7 +955,8 @@ def pop_status_report(now=None, due_weekday=3, cutoff_time="23:59", timezone_nam
 
 def pop_status_counts(now=None, due_weekday=3, cutoff_time="23:59", timezone_name="America/New_York", path=None):
     rows = pop_status_report(now,due_weekday,cutoff_time,timezone_name,path)
-    keys = {"not_due","due_today","still_needed","missing","submitted","awaiting_review","excused","resubmission_requested","rejected"}
+    keys = {"not_due","due_today","still_needed","missing","submitted","awaiting_review","excused",
+        "resubmission_requested","rejected","on_time","late","submitted_needs_review"}
     counts = {key:0 for key in keys}
     for row in rows: counts[row["effective_status"]] = counts.get(row["effective_status"],0) + 1
     counts["total"] = len(rows)
@@ -1142,23 +1211,170 @@ def claim_notification(telegram_id, cycle_at, kind, path=None):
             return False
 
 
-def submit_pop(telegram_id, week_key, message_id, chat_id, thread_id, proof_type, path=None, submitted_at=None):
+def record_pop_evidence(telegram_id, week_key, message_id, chat_id, thread_id, proof_type,
+                        timing_status, *, source_message_at, observed_at=None, update_id=None,
+                        recovered_after_outage=False, needs_review_reason=None,
+                        relationship="primary", path=None):
+    """Attach evidence to one canonical creator/week record, retaining the earliest proof."""
+    observed_at=observed_at or utc_now();confidence="needs_review" if needs_review_reason else "qualified"
     with get_connection(path) as db:
-        try:
-            submitted_at = submitted_at or utc_now()
-            due_at = (datetime.fromisoformat(submitted_at) + timedelta(hours=24)).isoformat()
+        existing_evidence=db.execute("SELECT * FROM pop_evidence WHERE chat_id=? AND message_id=?",
+            (chat_id,message_id)).fetchone()
+        if existing_evidence:
+            # Edited messages may strengthen a prior candidate, but cannot move it to
+            # another creator, location, or week.
+            if (existing_evidence["telegram_id"]!=telegram_id or existing_evidence["thread_id"]!=thread_id
+                    or existing_evidence["week_key"]!=week_key):
+                return {"created":False,"duplicate":True,"submission_id":existing_evidence["submission_id"]}
+            db.execute("""UPDATE pop_evidence SET proof_type=?,confidence=?,update_id=COALESCE(?,update_id),
+              observed_at=?,recovered_after_outage=MAX(recovered_after_outage,?) WHERE id=?""",
+              (proof_type,confidence,update_id,observed_at,int(recovered_after_outage),existing_evidence["id"]))
+        canonical=db.execute("SELECT * FROM pop_submissions WHERE telegram_id=? AND week_key=? AND deleted_at IS NULL",
+            (telegram_id,week_key)).fetchone()
+        created=False
+        combined_qualified=bool(canonical and relationship=="supporting" and
+            (not needs_review_reason or not canonical["needs_review_reason"]))
+        canonical_proof="combined" if combined_qualified else proof_type
+        canonical_review_reason=None if combined_qualified else needs_review_reason
+        if not canonical:
+            due_at=(datetime.fromisoformat(source_message_at)+timedelta(hours=24)).isoformat()
             db.execute("""INSERT INTO pop_submissions
               (telegram_id,week_key,message_id,chat_id,thread_id,proof_type,submitted_at,
-               preservation_status,preservation_due_at)
-              VALUES(?,?,?,?,?,?,?,'pending_24h',?)""",
-              (telegram_id,week_key,message_id,chat_id,thread_id,proof_type,submitted_at,due_at))
+               preservation_status,preservation_due_at,timing_status,source_message_at,observed_at,
+               recovered_after_outage,needs_review_reason,source_update_id)
+              VALUES(?,?,?,?,?,?,?,'pending_24h',?,?,?,?,?,?,?)""",
+              (telegram_id,week_key,message_id,chat_id,thread_id,canonical_proof,source_message_at,due_at,
+               timing_status,source_message_at,observed_at,int(recovered_after_outage),canonical_review_reason,update_id))
             submission_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            canonical=db.execute("SELECT * FROM pop_submissions WHERE id=?",(submission_id,)).fetchone();created=True
             audit_event(db, telegram_id, "pop_submitted", "pop_submission", submission_id,
                         telegram_id, related_submission_id=submission_id,
                         source_chat_id=chat_id, source_thread_id=thread_id)
-            return True
-        except sqlite3.IntegrityError:
-            return False
+        else:
+            submission_id=canonical["id"]
+            if datetime.fromisoformat(source_message_at)<datetime.fromisoformat(canonical["source_message_at"] or canonical["submitted_at"]):
+                due_at=(datetime.fromisoformat(source_message_at)+timedelta(hours=24)).isoformat()
+                db.execute("""UPDATE pop_submissions SET message_id=?,chat_id=?,thread_id=?,proof_type=?,
+                  submitted_at=?,source_message_at=?,preservation_due_at=?,timing_status=?,
+                  recovered_after_outage=MAX(recovered_after_outage,?),needs_review_reason=?,
+                  source_update_id=? WHERE id=?""",
+                  (message_id,chat_id,thread_id,canonical_proof,source_message_at,source_message_at,due_at,
+                   timing_status,int(recovered_after_outage),canonical_review_reason,update_id,submission_id))
+            elif combined_qualified:
+                db.execute("UPDATE pop_submissions SET proof_type='combined',needs_review_reason=NULL WHERE id=?",
+                    (submission_id,))
+        if not existing_evidence:
+            db.execute("""INSERT INTO pop_evidence(submission_id,telegram_id,week_key,message_id,chat_id,thread_id,
+              update_id,proof_type,confidence,source_message_at,observed_at,recovered_after_outage,relationship)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              (submission_id,telegram_id,week_key,message_id,chat_id,thread_id,update_id,proof_type,
+               confidence,source_message_at,observed_at,int(recovered_after_outage),relationship))
+        else:
+            db.execute("UPDATE pop_evidence SET submission_id=? WHERE id=?",(submission_id,existing_evidence["id"]))
+        if recovered_after_outage and (created or not existing_evidence):
+            _increment_recovery(db,"pop",timing_status,needs_review=bool(canonical_review_reason))
+        return {"created":created,"duplicate":bool(existing_evidence),"submission_id":submission_id}
+
+
+def submit_pop(telegram_id, week_key, message_id, chat_id, thread_id, proof_type, path=None,
+               submitted_at=None, timing_status="on_time", observed_at=None, update_id=None,
+               recovered_after_outage=False, needs_review_reason=None):
+    """Backward-compatible canonical submission helper."""
+    result=record_pop_evidence(telegram_id,week_key,message_id,chat_id,thread_id,proof_type,timing_status,
+        source_message_at=submitted_at or utc_now(),observed_at=observed_at,update_id=update_id,
+        recovered_after_outage=recovered_after_outage,needs_review_reason=needs_review_reason,path=path)
+    return result["created"]
+
+
+def recent_pop_evidence(telegram_id, chat_id, thread_id, source_at, seconds=300, path=None):
+    """Return same-creator/same-topic evidence close enough for safe split correlation."""
+    moment=datetime.fromisoformat(source_at);start=(moment-timedelta(seconds=seconds)).isoformat()
+    end=(moment+timedelta(seconds=seconds)).isoformat()
+    with get_connection(path) as db:
+        return db.execute("""SELECT * FROM pop_evidence WHERE telegram_id=? AND chat_id=? AND thread_id=?
+          AND source_message_at BETWEEN ? AND ? ORDER BY source_message_at""",
+          (telegram_id,chat_id,thread_id,start,end)).fetchall()
+
+
+def begin_recovery_run(started_at=None, catchup_seconds=90, path=None):
+    started_at=started_at or utc_now()
+    with get_connection(path) as db:
+        open_run=db.execute("SELECT * FROM recovery_runs WHERE status='catching_up' ORDER BY id DESC LIMIT 1").fetchone()
+        if open_run:return open_run["id"]
+        previous=db.execute("SELECT state_value FROM system_state WHERE state_key='runtime:last_heartbeat'").fetchone()
+        previous_at=previous["state_value"] if previous else None
+        catchup=(datetime.fromisoformat(started_at)+timedelta(seconds=catchup_seconds)).isoformat()
+        cur=db.execute("""INSERT INTO recovery_runs(started_at,previous_heartbeat_at,catchup_until,unresolved_gap)
+          VALUES(?,?,?,?)""",(started_at,previous_at,catchup,
+          None if previous_at else "No prior runtime heartbeat is available"))
+        return cur.lastrowid
+
+
+def active_recovery_run(path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM recovery_runs WHERE status='catching_up' ORDER BY id DESC LIMIT 1").fetchone()
+
+
+def claim_processed_update(update_id, update_type, source_message_at=None, path=None):
+    """Record one Telegram update for recovery accounting without blocking other handlers."""
+    if update_id is None:return True,False
+    now=utc_now()
+    with get_connection(path) as db:
+        run=db.execute("SELECT * FROM recovery_runs WHERE status='catching_up' ORDER BY id DESC LIMIT 1").fetchone()
+        recovered=bool(run and source_message_at and datetime.fromisoformat(source_message_at)<datetime.fromisoformat(run["started_at"]))
+        try:
+            db.execute("INSERT INTO processed_updates VALUES(?,?,?,?,?)",
+                (update_id,update_type,source_message_at,now,int(recovered)))
+        except sqlite3.IntegrityError:return False,recovered
+        if recovered:
+            db.execute("UPDATE recovery_runs SET updates_recovered=updates_recovered+1 WHERE id=?",(run["id"],))
+        return True,recovered
+
+
+def _increment_recovery(connection, kind, timing_status=None, needs_review=False):
+    column={"pop":"pop_recovered","participation":"participation_recovered","away":"away_recovered"}[kind]
+    run=connection.execute("SELECT id FROM recovery_runs WHERE status='catching_up' ORDER BY id DESC LIMIT 1").fetchone()
+    if not run:return
+    fields=[f"{column}={column}+1"]
+    if kind=="pop":
+        if timing_status in {"on_time","late"}:fields.append(f"pop_{timing_status}=pop_{timing_status}+1")
+        if needs_review:fields.append("pop_needs_review=pop_needs_review+1")
+    connection.execute(f"UPDATE recovery_runs SET {','.join(fields)} WHERE id=?",(run["id"],))
+
+
+def count_recovered_event(kind, path=None):
+    with get_connection(path) as db:_increment_recovery(db,kind)
+
+
+def finalize_recovery_run(run_id, now=None, path=None):
+    now=now or utc_now()
+    with get_connection(path) as db:
+        row=db.execute("SELECT * FROM recovery_runs WHERE id=? AND status='catching_up'",(run_id,)).fetchone()
+        if not row:return None
+        if datetime.fromisoformat(now)<datetime.fromisoformat(row["catchup_until"]):return None
+        if not row["previous_heartbeat_at"]:confidence="unknown"
+        else:
+            gap=datetime.fromisoformat(row["started_at"])-datetime.fromisoformat(row["previous_heartbeat_at"])
+            confidence="complete" if gap<=timedelta(hours=23) else "partial"
+        unresolved=None if confidence=="complete" else (row["unresolved_gap"] or "Telegram queue retention may not cover the full outage")
+        db.execute("UPDATE recovery_runs SET status='complete',completed_at=?,confidence=?,unresolved_gap=? WHERE id=?",
+            (now,confidence,unresolved,run_id))
+        return db.execute("SELECT * FROM recovery_runs WHERE id=?",(run_id,)).fetchone()
+
+
+def claim_recovery_summary(run_id, path=None):
+    with get_connection(path) as db:
+        cur=db.execute("UPDATE recovery_runs SET summary_claimed_at=? WHERE id=? AND summary_claimed_at IS NULL",
+            (utc_now(),run_id))
+        return bool(cur.rowcount)
+
+
+def latest_recovery_run(path=None):
+    with get_connection(path) as db:return db.execute("SELECT * FROM recovery_runs ORDER BY id DESC LIMIT 1").fetchone()
+
+
+def record_runtime_heartbeat(path=None):
+    set_system_state("runtime:last_heartbeat",utc_now(),path)
 
 
 def pop_preservation_due(now=None, path=None):

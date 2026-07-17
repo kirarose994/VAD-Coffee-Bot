@@ -28,3 +28,12 @@ verify preservation, the POP queue says **Unable to verify — Admin review requ
 inconclusive: never treat it as confirmed early removal, a warning, or a strike. Record **Early
 removal confirmed** only after directly verifying reliable evidence; the confirmation is audited
 and alerted once.
+
+POP review distinguishes **On Time**, **Late**, **Excused**, **Submitted — Needs Review**, and
+**Missing**. Clear text proof is reviewable; greetings, emoji-only messages, vague statements,
+and unrelated conversation do not qualify. Evidence is correlated only for the same creator in
+the configured numeric chat/topic and a five-minute window. A covering approved Away Notice
+remains Excused even when the creator voluntarily posts proof.
+
+After restart, normal schedules wait for Telegram's pending-update catch-up window. Owners—not
+ordinary Admins—receive the private recovery confidence report.
