@@ -1,5 +1,20 @@
 # Changelog
 
+## POP reliability
+
+- Recognize screenshots, captioned media, ordinary links, and Telegram story/channel/post links
+  in the configured Sellers Chat POP topic without requiring the word “POP.”
+- Re-evaluate edited messages while preserving immutable identity, location, Thursday, weekly,
+  and active-creator checks.
+- Added restart-safe 24-hour preservation and outage evidence in schema version 12.
+- Preserve queued updates, use original Telegram timestamps for On Time/Late, retain earliest
+  evidence, and route clear or ambiguous text safely to Admin review.
+- Added durable update/evidence idempotency, runtime heartbeats, conservative recovery confidence,
+  delayed post-catch-up scheduling, and an Owner-only POP Recovery Report.
+- Route inconclusive Telegram preservation checks to Admin review without alleging early removal.
+- Added explicit, audited Admin confirmation before recording early removal.
+- Kept POP proof in Sellers Chat; no bot submission flow was added and no production migration was run.
+
 ## Version 1.0 UX polish
 
 - Added a compact Owner-only Community Pulse with privacy-safe drill-downs.

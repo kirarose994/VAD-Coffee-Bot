@@ -13,7 +13,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from config import Config
-from database import initialize_database, set_system_state, synchronize_role_memberships
+from database import begin_recovery_run, initialize_database, set_system_state, synchronize_role_memberships
 from handlers.error import error_handler
 from navigation import register_navigation
 from operations import register_operations
@@ -96,6 +96,7 @@ async def startup_readiness_notice(app: Application) -> None:
 def main() -> None:
     config = Config.from_env()
     initialize_database()
+    recovery_run_id=begin_recovery_run(datetime.now(ZoneInfo("America/New_York")).isoformat())
     apply_persisted_settings(config)
     synchronize_role_memberships(config)
     set_system_state("last_restart", datetime.now(ZoneInfo("America/New_York")).isoformat())
@@ -104,9 +105,12 @@ def main() -> None:
     logger.info("Starting VAD Operations Bot")
     app = Application.builder().token(config.token).post_init(startup_readiness_notice).build()
     app.bot_data["config"] = config
+    app.bot_data["recovery_run_id"] = recovery_run_id
     register_application_handlers(app)
     logger.info("Bot is running. Press Ctrl-C to stop.")
-    app.run_polling(allowed_updates=["message", "callback_query"], drop_pending_updates=True)
+    # The pending queue is the only safe short-outage recovery source. Never
+    # discard it and never run a second getUpdates consumer.
+    app.run_polling(allowed_updates=["message", "edited_message", "callback_query"], drop_pending_updates=False)
 
 
 if __name__ == "__main__":

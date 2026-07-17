@@ -46,6 +46,12 @@ be restored by an Owner; repeat registration does not overwrite approval.
 Verify timezone and cutoff, then confirm every screen uses `pop_policy.py`. Missing is valid
 only after the due cutoff.
 
+## POP after an outage
+
+Open **Owner Tools → Recovery → POP Recovery Report**. Complete means retained Telegram updates
+were processed inside the conservative recovery window. Partial or Unknown requires manual
+review. Never infer proof from an unavailable message or claim arbitrary group-history retrieval.
+
 ## Delivery failed
 
 Verify bot membership, permissions, chat ID, and topic ID in Setup. Review the safe error in

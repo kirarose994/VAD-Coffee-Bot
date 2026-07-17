@@ -98,7 +98,7 @@ class IncidentDatabaseTests(unittest.TestCase):
         with db.get_connection(legacy) as migrated:
             columns={row["name"] for row in migrated.execute("PRAGMA table_info(system_incidents)")}
             row=migrated.execute("SELECT * FROM system_incidents WHERE id=1").fetchone()
-            self.assertEqual(migrated.execute("SELECT version FROM schema_version").fetchone()[0],10)
+            self.assertEqual(migrated.execute("SELECT version FROM schema_version").fetchone()[0],12)
         self.assertTrue({"operation","escalated_at","resolution_reason"}.issubset(columns))
         self.assertEqual(row["error_reference"],"ERR-OLD");self.assertEqual(row["status"],"resolved")
 

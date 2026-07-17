@@ -25,6 +25,35 @@ message text. Support Requests stay in Needs Attention until handled or resolved
 
 Review three-strike cases and destructive actions manually. Never share exports publicly.
 
+## POP reliability
+
+POP recognition uses immutable Telegram ID plus the configured Sellers Chat and POP thread IDs;
+it never depends on the visible topic name. Screenshots and qualifying links are recognized
+without opening, fetching, or storing the submitted URL. Weekly uniqueness keeps the earliest
+qualifying record.
+
+The preservation monitor runs every 15 minutes and persists its state in SQLite so restarts do
+not duplicate review items. Because Telegram does not reliably expose arbitrary message deletion
+or historical-message lookup to ordinary bots, a due check becomes **Unable to verify — Admin
+review required** instead of an accusation. Admins may confirm preservation or, after directly
+verifying reliable evidence and confirming the protected action, record early removal. Each
+uncertain or confirmed-removal alert is claimed once.
+
+## POP outage recovery
+
+Polling starts without dropping Telegram's pending updates and uses one `getUpdates` consumer.
+A startup recovery run records the previous heartbeat, waits for pending messages to pass through
+normal idempotent handlers, and only then permits reconciliation and ordinary scheduled checks.
+
+Open **Owner Tools → Recovery → POP Recovery Report** for the latest outage window, recovered
+update counts, current-week totals, manual-review references, and confidence. Owners also receive
+one private restart summary. **Complete** means the recorded outage fits inside the conservative
+recoverable window; **Partial** or **Unknown** means a gap may remain. Telegram does not provide
+arbitrary full supergroup history, and the report never claims to have searched it.
+
+For an already-ended Thursday, use this as a dry review list. Do not rewrite historical records
+or mark strikes without explicit Owner review and reliable evidence.
+
 ## Setup and readiness
 
 Open **Setup & Readiness** to see one plain-language status for every required group, topic,
