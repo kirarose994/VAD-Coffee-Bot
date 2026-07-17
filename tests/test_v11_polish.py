@@ -29,7 +29,7 @@ class V11DatabaseTests(unittest.TestCase):
 
     def test_additive_schema_v4_preserves_creator_and_general_member_identity(self):
         with db.get_connection(self.path) as connection:
-            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()[0],12)
+            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()[0],13)
             member = connection.execute("SELECT * FROM community_members WHERE telegram_id=10").fetchone()
         self.assertEqual(member["member_type"],"creator")
 

@@ -84,3 +84,36 @@ def submission_timing(source_at: datetime, due_weekday=3, cutoff_time="23:59",
     if local.date() < period.due_at.date():
         return period.week_key,"not_yet_due"
     return period.week_key, "on_time" if local <= period.due_at else "late"
+
+
+def lateness_minutes(source_at: datetime, due_weekday=3, cutoff_time="23:59",
+                     timezone_name="America/New_York") -> int:
+    """Return whole clock minutes after the configured ET cutoff, without persisting them.
+
+    The configured cutoff names a minute (for example 23:59) and that entire minute
+    remains on time.  Human-facing lateness is measured from the named clock minute,
+    so Friday 00:15 is displayed as 16 minutes after a Thursday 23:59 cutoff.
+    """
+    zone = ZoneInfo(timezone_name)
+    local = source_at.astimezone(zone)
+    period = current_period(local,due_weekday,cutoff_time,timezone_name)
+    if local <= period.due_at:
+        return 0
+    cutoff_minute = period.due_at.replace(second=0,microsecond=0)
+    return max(1,int((local-cutoff_minute).total_seconds()//60))
+
+
+def format_lateness(source_at: datetime, due_weekday=3, cutoff_time="23:59",
+                    timezone_name="America/New_York") -> str:
+    minutes=lateness_minutes(source_at,due_weekday,cutoff_time,timezone_name)
+    hours,remainder=divmod(minutes,60)
+    parts=[]
+    if hours:parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+    if remainder or not parts:parts.append(f"{remainder} minute{'s' if remainder != 1 else ''}")
+    return " ".join(parts)
+
+
+def posted_time(source_at: datetime, timezone_name="America/New_York") -> str:
+    local=source_at.astimezone(ZoneInfo(timezone_name))
+    hour=local.strftime("%I").lstrip("0") or "0"
+    return f"{local.strftime('%A')} at {hour}:{local.strftime('%M %p')} ET"
