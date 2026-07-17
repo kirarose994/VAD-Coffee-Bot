@@ -262,10 +262,18 @@ def initialize_database(path: Path | None = None):
         );
         CREATE UNIQUE INDEX IF NOT EXISTS system_incidents_one_open
           ON system_incidents(fingerprint) WHERE status='open';
+        CREATE TABLE IF NOT EXISTS process_leases (
+          lease_name TEXT PRIMARY KEY,
+          instance_id TEXT NOT NULL,
+          acquired_at TEXT NOT NULL,
+          heartbeat_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          startup_source TEXT
+        );
         """)
         _migrate_legacy_schema(db)
         _seed_message_templates(db)
-        db.execute("UPDATE schema_version SET version=12")
+        db.execute("UPDATE schema_version SET version=13")
 
 
 DEFAULT_MESSAGE_TEMPLATES = {
@@ -413,6 +421,167 @@ def _migrate_legacy_schema(db):
       FROM creators WHERE 1
       ON CONFLICT(telegram_id) DO UPDATE SET member_type='creator',
       display_name=excluded.display_name,username=excluded.username,updated_at=excluded.updated_at""",(now,now))
+
+
+def _lease_timestamp(value=None):
+    """Return a timezone-aware UTC instant for process-lease comparisons."""
+    if value is None:
+        return datetime.now(timezone.utc)
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+    if value.tzinfo is None:
+        raise ValueError("Process lease timestamps must be timezone-aware")
+    return value.astimezone(timezone.utc)
+
+
+def _lease_connection(path=None):
+    connection = sqlite3.connect(path or DATABASE_PATH, isolation_level=None)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA busy_timeout = 5000")
+    return connection
+
+
+def acquire_process_lease(lease_name, instance_id, ttl_seconds, startup_source=None,
+                          path=None, now=None):
+    """Atomically acquire or take over a clearly expired singleton lease.
+
+    ``BEGIN IMMEDIATE`` serializes competing SQLite writers before either can
+    inspect the current lease. Each process receives a unique instance ID, so a
+    stale process can never refresh or release a successor's lease.
+    """
+    if not lease_name or not instance_id or ttl_seconds <= 0:
+        raise ValueError("A lease name, instance ID, and positive TTL are required")
+    current = _lease_timestamp(now)
+    expires = current + timedelta(seconds=ttl_seconds)
+    acquired_at = current.isoformat()
+    connection = _lease_connection(path)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT instance_id,expires_at FROM process_leases WHERE lease_name=?",
+            (lease_name,),
+        ).fetchone()
+        if row:
+            try:
+                active = _lease_timestamp(row["expires_at"]) > current
+            except (TypeError, ValueError):
+                # Corrupt or unverifiable ownership must fail closed.
+                connection.rollback()
+                return False
+            if active and row["instance_id"] != instance_id:
+                connection.rollback()
+                return False
+        connection.execute("""INSERT INTO process_leases
+          (lease_name,instance_id,acquired_at,heartbeat_at,expires_at,startup_source)
+          VALUES(?,?,?,?,?,?)
+          ON CONFLICT(lease_name) DO UPDATE SET
+          instance_id=excluded.instance_id,acquired_at=excluded.acquired_at,
+          heartbeat_at=excluded.heartbeat_at,expires_at=excluded.expires_at,
+          startup_source=excluded.startup_source""",
+          (lease_name,instance_id,acquired_at,acquired_at,expires.isoformat(),
+           (startup_source or "unknown")[:160]))
+        connection.commit()
+        return True
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def heartbeat_process_lease(lease_name, instance_id, ttl_seconds, path=None, now=None):
+    """Extend an active lease only while the caller still owns it."""
+    if not lease_name or not instance_id or ttl_seconds <= 0:
+        raise ValueError("A lease name, instance ID, and positive TTL are required")
+    current = _lease_timestamp(now)
+    expires = current + timedelta(seconds=ttl_seconds)
+    connection = _lease_connection(path)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT instance_id,expires_at FROM process_leases WHERE lease_name=?",
+            (lease_name,),
+        ).fetchone()
+        if not row or row["instance_id"] != instance_id:
+            connection.rollback()
+            return False
+        try:
+            active = _lease_timestamp(row["expires_at"]) > current
+        except (TypeError, ValueError):
+            connection.rollback()
+            return False
+        if not active:
+            connection.rollback()
+            return False
+        changed = connection.execute("""UPDATE process_leases
+          SET heartbeat_at=?,expires_at=?
+          WHERE lease_name=? AND instance_id=?""",
+          (current.isoformat(),expires.isoformat(),lease_name,instance_id)).rowcount
+        connection.commit()
+        return changed == 1
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def release_process_lease(lease_name, instance_id, path=None):
+    """Release a lease only if it is still owned by this process instance."""
+    connection = _lease_connection(path)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        changed = connection.execute(
+            "DELETE FROM process_leases WHERE lease_name=? AND instance_id=?",
+            (lease_name,instance_id),
+        ).rowcount
+        connection.commit()
+        return changed == 1
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def get_process_lease(lease_name, path=None):
+    with get_connection(path) as db:
+        return db.execute("SELECT * FROM process_leases WHERE lease_name=?",(lease_name,)).fetchone()
+
+
+def clear_expired_process_lease(lease_name, expected_instance_id, path=None, now=None):
+    """Delete only the specifically inspected lease after it has expired."""
+    current = _lease_timestamp(now)
+    connection = _lease_connection(path)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT instance_id,expires_at FROM process_leases WHERE lease_name=?",
+            (lease_name,),
+        ).fetchone()
+        if not row or row["instance_id"] != expected_instance_id:
+            connection.rollback()
+            return False
+        try:
+            expired = _lease_timestamp(row["expires_at"]) <= current
+        except (TypeError, ValueError):
+            connection.rollback()
+            return False
+        if not expired:
+            connection.rollback()
+            return False
+        changed = connection.execute(
+            "DELETE FROM process_leases WHERE lease_name=? AND instance_id=?",
+            (lease_name,expected_instance_id),
+        ).rowcount
+        connection.commit()
+        return changed == 1
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def register_creator(telegram_id, username, display_name, path=None):

@@ -1,5 +1,15 @@
 # Changelog
 
+## Bot API singleton safety
+
+- Added an additive schema-v13 SQLite lease that is acquired before Telegram polling.
+- Added atomic startup exclusion, heartbeat renewal, expiry takeover, owner-checked release, and
+  fail-closed shutdown when ownership cannot be verified.
+- Added a sanitized startup identity line without tokens, secrets, or environment dumps.
+- Disabled both executable historical launchers under `bot_backup_before_tracker/` while keeping
+  the archive available as reference.
+- Documented that separate Autoscale filesystems still require singleton hosting.
+
 ## POP reliability
 
 - Recognize screenshots, captioned media, ordinary links, and Telegram story/channel/post links

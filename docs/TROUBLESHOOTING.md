@@ -22,6 +22,26 @@ remain intentionally ignored.
 Confirm exactly one polling process. Telegram `Conflict: terminated by other getUpdates`
 means another workflow or deployment uses the same token.
 
+## Startup says another process owns the polling lease
+
+Do not start another copy. Confirm whether the Workspace workflow, a published deployment, or a
+manual process is still running. Processes sharing `bot/vad_tracker.db` are protected by a
+90-second lease and normal crash recovery needs no manual database change.
+
+To inspect a suspected stale lease, first stop every bot process, back up `vad_tracker.db` and its
+WAL/SHM companions, and wait at least 90 seconds. Inspect the `process_leases` row without editing
+it and copy the displayed `instance_id`. From `bot/`, the safe cleanup helper is:
+
+```text
+python -c "import database; print(database.clear_expired_process_lease('telegram_bot_api_poller','INSPECTED_INSTANCE_ID'))"
+```
+
+The helper uses a write transaction and deletes only that exact instance after its timestamp has
+expired. It refuses a live, changed, missing, or malformed lease. Never delete the table or clear a
+lease while any poller may still be running. If the helper refuses a malformed record, leave
+polling stopped and obtain an Owner-reviewed database repair rather than bypassing fail-closed
+startup.
+
 ## Participation does not count
 
 Verify creator status is active, no Away Notice is active, and current chat/topic exactly

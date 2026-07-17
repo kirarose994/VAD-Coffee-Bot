@@ -3,8 +3,13 @@
 
 import logging
 import os
+import re
+import socket
+import subprocess
 import sys
+import uuid
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -13,7 +18,9 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from config import Config
-from database import begin_recovery_run, initialize_database, set_system_state, synchronize_role_memberships
+from database import (DATABASE_PATH, acquire_process_lease, begin_recovery_run,
+    heartbeat_process_lease, initialize_database, release_process_lease,
+    set_system_state, synchronize_role_memberships)
 from handlers.error import error_handler
 from navigation import register_navigation
 from operations import register_operations
@@ -23,6 +30,12 @@ from readiness import critical_fingerprint
 from tracker import register_handlers
 from telegram_io import retry_telegram
 from command_menus import register_command_scopes, register_scoped_command_handlers
+
+
+APPLICATION_NAME = "VAD Operations Bot"
+POLLER_LEASE_NAME = "telegram_bot_api_poller"
+POLLER_LEASE_TTL_SECONDS = 90
+POLLER_LEASE_HEARTBEAT_SECONDS = 30
 
 
 async def groupid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -52,6 +65,68 @@ def setup_logging(level: str) -> None:
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+def _safe_identifier(value: str | None, fallback: str = "unknown") -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._:-]+", "-", (value or "").strip())[:80]
+    return cleaned or fallback
+
+
+def startup_source() -> str:
+    """Return a short non-secret host/source label without dumping environment data."""
+    if os.environ.get("REPLIT_DEPLOYMENT"):
+        return "replit-deployment:" + _safe_identifier(os.environ.get("REPL_ID"))
+    if os.environ.get("REPL_ID"):
+        return "replit-workspace:" + _safe_identifier(os.environ.get("REPL_ID"))
+    return "host:" + _safe_identifier(socket.gethostname())
+
+
+def commit_identifier() -> str:
+    for key in ("REPLIT_GIT_COMMIT", "GIT_COMMIT", "SOURCE_COMMIT"):
+        if os.environ.get(key):
+            return _safe_identifier(os.environ[key])
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            cwd=Path(__file__).resolve().parent.parent,
+            capture_output=True, text=True, timeout=2, check=True,
+        )
+        return _safe_identifier(result.stdout)
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+def log_startup_identity(logger, instance_id, source, lease_acquired,
+                         polling_started_at=None) -> None:
+    logger.info(
+        "startup_identity application=%s commit=%s instance_id=%s database=sqlite:%s "
+        "lease_acquired=%s polling_start_et=%s source=%s",
+        APPLICATION_NAME, commit_identifier(), instance_id, DATABASE_PATH.resolve(),
+        str(bool(lease_acquired)).lower(), polling_started_at or "not-started", source,
+    )
+
+
+async def poller_lease_heartbeat_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Keep the poller lease alive; stop polling immediately if ownership is lost."""
+    if ctx.application.bot_data.get("poller_lease_lost"):
+        return
+    instance_id = ctx.application.bot_data["process_instance_id"]
+    try:
+        owned = heartbeat_process_lease(
+            POLLER_LEASE_NAME, instance_id, POLLER_LEASE_TTL_SECONDS,
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).critical(
+            "Singleton lease heartbeat could not be verified; stopping polling (%s)",
+            type(exc).__name__,
+        )
+        owned = False
+    if not owned:
+        ctx.application.bot_data["poller_lease_lost"] = True
+        logging.getLogger(__name__).critical(
+            "Singleton lease ownership was lost; stopping Telegram polling"
+        )
+        ctx.application.stop_running()
 
 
 def register_application_handlers(app: Application) -> None:
@@ -93,25 +168,71 @@ async def startup_readiness_notice(app: Application) -> None:
         except Exception:pass
 
 
-def main() -> None:
+def main() -> int:
     config = Config.from_env()
-    initialize_database()
-    recovery_run_id=begin_recovery_run(datetime.now(ZoneInfo("America/New_York")).isoformat())
-    apply_persisted_settings(config)
-    synchronize_role_memberships(config)
-    set_system_state("last_restart", datetime.now(ZoneInfo("America/New_York")).isoformat())
     setup_logging(config.log_level)
     logger = logging.getLogger(__name__)
-    logger.info("Starting VAD Operations Bot")
-    app = Application.builder().token(config.token).post_init(startup_readiness_notice).build()
-    app.bot_data["config"] = config
-    app.bot_data["recovery_run_id"] = recovery_run_id
-    register_application_handlers(app)
-    logger.info("Bot is running. Press Ctrl-C to stop.")
-    # The pending queue is the only safe short-outage recovery source. Never
-    # discard it and never run a second getUpdates consumer.
-    app.run_polling(allowed_updates=["message", "edited_message", "callback_query"], drop_pending_updates=False)
+    initialize_database()
+    instance_id = uuid.uuid4().hex
+    source = startup_source()
+    try:
+        acquired = acquire_process_lease(
+            POLLER_LEASE_NAME, instance_id, POLLER_LEASE_TTL_SECONDS, source,
+        )
+    except Exception as exc:
+        log_startup_identity(logger,instance_id,source,False)
+        logger.critical(
+            "Singleton lease verification failed; Telegram polling will not start (%s)",
+            type(exc).__name__,
+        )
+        return 2
+    if not acquired:
+        log_startup_identity(logger,instance_id,source,False)
+        logger.error(
+            "Another live VAD Operations Bot process owns the polling lease; "
+            "this process will exit without contacting Telegram"
+        )
+        return 2
+
+    polling_started_at = datetime.now(ZoneInfo("America/New_York")).isoformat()
+    log_startup_identity(logger,instance_id,source,True,polling_started_at)
+    try:
+        recovery_run_id=begin_recovery_run(polling_started_at)
+        apply_persisted_settings(config)
+        synchronize_role_memberships(config)
+        set_system_state("last_restart", polling_started_at)
+        app = Application.builder().token(config.token).post_init(startup_readiness_notice).build()
+        app.bot_data["config"] = config
+        app.bot_data["recovery_run_id"] = recovery_run_id
+        app.bot_data["process_instance_id"] = instance_id
+        register_application_handlers(app)
+        app.job_queue.run_repeating(
+            poller_lease_heartbeat_job,
+            interval=POLLER_LEASE_HEARTBEAT_SECONDS,
+            first=POLLER_LEASE_HEARTBEAT_SECONDS,
+            name="bot-api-poller-singleton-heartbeat",
+        )
+        # Verify ownership again immediately before the first Telegram request.
+        if not heartbeat_process_lease(
+            POLLER_LEASE_NAME, instance_id, POLLER_LEASE_TTL_SECONDS,
+        ):
+            logger.critical("Singleton lease was lost before polling; startup aborted")
+            return 2
+        logger.info("Bot is running. Press Ctrl-C to stop.")
+        # The pending queue is the only safe short-outage recovery source. Never
+        # discard it and never run a second getUpdates consumer.
+        app.run_polling(allowed_updates=["message", "edited_message", "callback_query"], drop_pending_updates=False)
+        return 0
+    except Exception as exc:
+        logger.critical("Bot startup or polling stopped with %s",type(exc).__name__)
+        raise
+    finally:
+        try:
+            released = release_process_lease(POLLER_LEASE_NAME,instance_id)
+            logger.info("Singleton polling lease released=%s instance_id=%s",released,instance_id)
+        except Exception as exc:
+            logger.error("Singleton lease release failed; it will expire safely (%s)",type(exc).__name__)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
