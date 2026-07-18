@@ -283,10 +283,133 @@ def initialize_database(path: Path | None = None):
           expires_at TEXT NOT NULL,
           startup_source TEXT
         );
+        CREATE TABLE IF NOT EXISTS history_recovery_sources (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_key TEXT NOT NULL UNIQUE,
+          source_kind TEXT NOT NULL CHECK(source_kind IN ('participation','pop')),
+          peer_id INTEGER NOT NULL,
+          canonical_chat_id INTEGER NOT NULL,
+          thread_id INTEGER,
+          status TEXT NOT NULL DEFAULT 'disabled'
+            CHECK(status IN ('disabled','enabled','error')),
+          checkpoint_message_id INTEGER NOT NULL DEFAULT 0
+            CHECK(checkpoint_message_id >= 0),
+          checkpoint_message_at TEXT,
+          checkpoint_updated_at TEXT,
+          scan_overlap_seconds INTEGER NOT NULL DEFAULT 300
+            CHECK(scan_overlap_seconds BETWEEN 0 AND 86400),
+          last_scan_started_at TEXT,
+          last_scan_completed_at TEXT,
+          last_success_at TEXT,
+          last_error_reference TEXT
+            CHECK(last_error_reference IS NULL OR
+              (length(last_error_reference) BETWEEN 1 AND 64 AND
+               last_error_reference NOT GLOB '*[^A-Za-z0-9_-]*')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS history_recovery_source_location
+          ON history_recovery_sources(peer_id,COALESCE(thread_id,-1),source_kind);
+        CREATE INDEX IF NOT EXISTS history_recovery_sources_status
+          ON history_recovery_sources(status,source_kind);
+        CREATE TABLE IF NOT EXISTS history_recovery_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id INTEGER NOT NULL,
+          instance_id TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'discovering'
+            CHECK(status IN ('discovering','replaying','complete','partial','failed','cancelled')),
+          confidence TEXT NOT NULL DEFAULT 'unknown'
+            CHECK(confidence IN ('unknown','complete','partial')),
+          started_at TEXT NOT NULL,
+          discovery_completed_at TEXT,
+          completed_at TEXT,
+          starting_checkpoint_message_id INTEGER NOT NULL
+            CHECK(starting_checkpoint_message_id >= 0),
+          fixed_boundary_message_id INTEGER NOT NULL
+            CHECK(fixed_boundary_message_id >= 0),
+          fixed_boundary_message_at TEXT,
+          ending_checkpoint_message_id INTEGER
+            CHECK(ending_checkpoint_message_id IS NULL OR ending_checkpoint_message_id >= 0),
+          discovered_count INTEGER NOT NULL DEFAULT 0 CHECK(discovered_count >= 0),
+          applied_count INTEGER NOT NULL DEFAULT 0 CHECK(applied_count >= 0),
+          duplicate_count INTEGER NOT NULL DEFAULT 0 CHECK(duplicate_count >= 0),
+          ignored_count INTEGER NOT NULL DEFAULT 0 CHECK(ignored_count >= 0),
+          review_count INTEGER NOT NULL DEFAULT 0 CHECK(review_count >= 0),
+          failed_count INTEGER NOT NULL DEFAULT 0 CHECK(failed_count >= 0),
+          unresolved_gap TEXT,
+          error_reference TEXT
+            CHECK(error_reference IS NULL OR
+              (length(error_reference) BETWEEN 1 AND 64 AND
+               error_reference NOT GLOB '*[^A-Za-z0-9_-]*')),
+          FOREIGN KEY(source_id) REFERENCES history_recovery_sources(id),
+          UNIQUE(id,source_id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS history_recovery_one_active_run
+          ON history_recovery_runs(source_id)
+          WHERE status IN ('discovering','replaying');
+        CREATE INDEX IF NOT EXISTS history_recovery_runs_status
+          ON history_recovery_runs(status,started_at DESC);
+        CREATE TABLE IF NOT EXISTS history_recovery_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          run_id INTEGER NOT NULL,
+          source_id INTEGER NOT NULL,
+          source_peer_id INTEGER NOT NULL,
+          canonical_chat_id INTEGER NOT NULL,
+          message_id INTEGER NOT NULL CHECK(message_id > 0),
+          thread_id INTEGER,
+          sender_telegram_id INTEGER NOT NULL,
+          source_message_at TEXT NOT NULL,
+          edit_at TEXT,
+          message_type TEXT NOT NULL
+            CHECK(message_type IN ('text','caption','photo','document','animation','video','voice','audio','sticker','other')),
+          has_photo INTEGER NOT NULL DEFAULT 0 CHECK(has_photo IN (0,1)),
+          has_document INTEGER NOT NULL DEFAULT 0 CHECK(has_document IN (0,1)),
+          has_animation INTEGER NOT NULL DEFAULT 0 CHECK(has_animation IN (0,1)),
+          has_video INTEGER NOT NULL DEFAULT 0 CHECK(has_video IN (0,1)),
+          has_voice INTEGER NOT NULL DEFAULT 0 CHECK(has_voice IN (0,1)),
+          has_audio INTEGER NOT NULL DEFAULT 0 CHECK(has_audio IN (0,1)),
+          has_sticker INTEGER NOT NULL DEFAULT 0 CHECK(has_sticker IN (0,1)),
+          has_url_entity INTEGER NOT NULL DEFAULT 0 CHECK(has_url_entity IN (0,1)),
+          media_duration_seconds INTEGER
+            CHECK(media_duration_seconds IS NULL OR media_duration_seconds >= 0),
+          media_identity_hash TEXT
+            CHECK(media_identity_hash IS NULL OR length(media_identity_hash)=64),
+          normalized_text_hash TEXT
+            CHECK(normalized_text_hash IS NULL OR length(normalized_text_hash)=64),
+          classification_version TEXT NOT NULL,
+          participation_decision TEXT NOT NULL
+            CHECK(participation_decision IN ('accepted','rejected','not_applicable')),
+          participation_reason TEXT,
+          participation_digest TEXT
+            CHECK(participation_digest IS NULL OR length(participation_digest)=64),
+          pop_decision TEXT NOT NULL
+            CHECK(pop_decision IN ('qualified','needs_review','unqualified','not_applicable')),
+          pop_proof_type TEXT,
+          pop_reason TEXT,
+          status TEXT NOT NULL DEFAULT 'pending'
+            CHECK(status IN ('pending','applied','duplicate','ignored','needs_review','failed')),
+          discovered_at TEXT NOT NULL,
+          processing_started_at TEXT,
+          processed_at TEXT,
+          attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+          error_reference TEXT
+            CHECK(error_reference IS NULL OR
+              (length(error_reference) BETWEEN 1 AND 64 AND
+               error_reference NOT GLOB '*[^A-Za-z0-9_-]*')),
+          applied_target_type TEXT,
+          applied_target_id INTEGER,
+          FOREIGN KEY(source_id) REFERENCES history_recovery_sources(id),
+          FOREIGN KEY(run_id,source_id) REFERENCES history_recovery_runs(id,source_id),
+          UNIQUE(source_peer_id,message_id)
+        );
+        CREATE INDEX IF NOT EXISTS history_recovery_items_queue
+          ON history_recovery_items(status,run_id,id);
+        CREATE INDEX IF NOT EXISTS history_recovery_items_source_time
+          ON history_recovery_items(source_id,source_message_at,message_id);
         """)
         _migrate_legacy_schema(db)
         _seed_message_templates(db)
-        db.execute("UPDATE schema_version SET version=13")
+        db.execute("UPDATE schema_version SET version=14")
 
 
 DEFAULT_MESSAGE_TEMPLATES = {

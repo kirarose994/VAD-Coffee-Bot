@@ -94,7 +94,7 @@ class ProcessLeaseTests(unittest.TestCase):
         db.initialize_database(self.path)
         db.initialize_database(self.path)
         with db.get_connection(self.path) as connection:
-            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()[0],13)
+            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()[0],14)
             self.assertEqual(connection.execute("SELECT display_name FROM creators WHERE telegram_id=77").fetchone()[0],
                 "Preserved Creator")
             self.assertEqual(connection.execute(
