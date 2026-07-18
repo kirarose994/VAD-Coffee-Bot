@@ -10,16 +10,19 @@ from typing import Any, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import database as db
+from pop_policy import submission_timing
 
 
 SECTION_ORDER = (
     "ready_to_recover",
+    "already_credited_skipped",
     "needs_owner_review",
     "not_eligible_unqualified",
     "unmatched_inactive",
 )
 SECTION_TITLES = {
     "ready_to_recover": "Ready to Recover",
+    "already_credited_skipped": "Already Credited / Skipped",
     "needs_owner_review": "Needs Owner Review",
     "not_eligible_unqualified": "Not Eligible / Unqualified",
     "unmatched_inactive": "Unmatched or Inactive Creators",
@@ -77,8 +80,15 @@ def _identity_label(identity: Mapping[str, Any]) -> str:
     return f"{name}{suffix}"
 
 
-def _message_view(row: Mapping[str, Any], timezone_name: str) -> dict[str, Any]:
+def _message_view(
+    row: Mapping[str, Any],
+    timezone_name: str,
+    due_weekday: int,
+    cutoff_time: str,
+) -> dict[str, Any]:
     local, readable = _source_time(row.get("original_timestamp"), timezone_name)
+    week_key, timing_status = submission_timing(
+        local, due_weekday, cutoff_time, timezone_name)
     decision = row.get("pop_decision") or "unqualified"
     return {
         "message_id": int(row["message_id"]),
@@ -87,6 +97,8 @@ def _message_view(row: Mapping[str, Any], timezone_name: str) -> dict[str, Any]:
         "proof_type": row.get("pop_proof_type") or row.get("media_type") or "other",
         "status": decision,
         "reason": row.get("pop_reason") or "No classifier reason was recorded",
+        "week_key": week_key,
+        "timing_status": timing_status,
     }
 
 
@@ -98,7 +110,21 @@ def build_owner_report(
 ) -> dict[str, Any]:
     """Group a privacy-minimal scanner report by immutable creator identity."""
 
-    messages = list(scan_report.get("messages", ()))
+    messages = []
+    seen_messages: set[tuple[int, int]] = set()
+    configured_chat_id = int(scan_report.get("configured_chat_id") or 0)
+    for row in scan_report.get("messages", ()):
+        identity = (configured_chat_id, int(row["message_id"]))
+        if identity in seen_messages:
+            continue
+        seen_messages.add(identity)
+        messages.append(row)
+    values = os.environ if environ is None else environ
+    try:
+        due_weekday = int(values.get("POP_DUE_WEEKDAY", "3"))
+    except (TypeError, ValueError) as exc:
+        raise OwnerReportError("POP_DUE_WEEKDAY is invalid") from exc
+    cutoff_time = values.get("POP_CUTOFF_TIME", "23:59")
     sender_ids = {int(row["sender_telegram_id"]) for row in messages}
     timezone_name = _configured_timezone(creator_database, environ)
     identities = {row["telegram_id"]: row for row in
@@ -106,7 +132,17 @@ def build_owner_report(
     grouped: dict[int, list[dict[str, Any]]] = {}
     for row in messages:
         grouped.setdefault(int(row["sender_telegram_id"]), []).append(
-            _message_view(row, timezone_name))
+            _message_view(row, timezone_name, due_weekday, cutoff_time))
+
+    existing_credits: dict[tuple[int, str], dict[str, Any]] = {}
+    with db.get_readonly_connection(creator_database) as connection:
+        for telegram_id, creator_messages in grouped.items():
+            for week_key in {row["week_key"] for row in creator_messages}:
+                credit = connection.execute("""SELECT id,status,week_key,message_id
+                  FROM pop_submissions WHERE telegram_id=? AND week_key=?
+                    AND deleted_at IS NULL""", (telegram_id, week_key)).fetchone()
+                if credit:
+                    existing_credits[(telegram_id, week_key)] = dict(credit)
 
     sections = {key: [] for key in SECTION_ORDER}
     for telegram_id, creator_messages in grouped.items():
@@ -115,7 +151,13 @@ def build_owner_report(
         qualified = [row for row in creator_messages if row["status"] == "qualified"]
         review = [row for row in creator_messages if row["status"] == "needs_review"]
         unqualified = [row for row in creator_messages if row["status"] == "unqualified"]
-        if not identity["eligible_for_recovery"]:
+        comparison = qualified[0] if qualified else review[0] if review else unqualified[0]
+        existing_credit = existing_credits.get((telegram_id, comparison["week_key"]))
+        if existing_credit:
+            section = "already_credited_skipped"
+            outcome, eligibility_reason, primary = (
+                "Skipped — POP Credit Already Exists", "existing_weekly_credit", comparison)
+        elif not identity["eligible_for_recovery"]:
             section = "unmatched_inactive"
             if not identity["creator_matched"]:
                 outcome, eligibility_reason = "Not Eligible — Unmatched Telegram ID", "creator_not_found"
@@ -135,6 +177,13 @@ def build_owner_report(
             section = "not_eligible_unqualified"
             outcome, eligibility_reason, primary = "Not Eligible / Unqualified", "no_qualified_evidence", unqualified[0]
         additional = [row for row in creator_messages if row is not primary]
+        recovery_status = {
+            "ready_to_recover": "ready_to_recover",
+            "already_credited_skipped": "already_credited",
+            "needs_owner_review": "needs_owner_review",
+            "not_eligible_unqualified": "unqualified",
+            "unmatched_inactive": "ineligible",
+        }[section]
         sections[section].append({
             "telegram_id": telegram_id,
             "creator_name": identity.get("approved_creator_name") or identity.get("display_name"),
@@ -145,18 +194,23 @@ def build_owner_report(
             "creator_archived": identity["creator_archived"],
             "eligible_for_recovery": identity["eligible_for_recovery"],
             "final_outcome": outcome,
+            "recovery_status": recovery_status,
+            "include_in_future_write_set": section == "ready_to_recover",
             "eligibility_reason": eligibility_reason,
             "earliest_qualifying_timestamp": (
                 qualified[0]["original_timestamp"] if qualified else None),
             "earliest_qualifying_timestamp_display": (
                 qualified[0]["original_timestamp_display"] if qualified else None),
             "primary_evidence": primary,
+            "selected_recovery_evidence": primary if section == "ready_to_recover" else None,
+            "comparison_evidence": primary if section == "already_credited_skipped" else None,
             "additional_messages_found": len(additional),
             "additional_messages": additional,
             "unqualified_or_review_reasons": [
                 {"message_id": row["message_id"], "status": row["status"], "reason": row["reason"]}
                 for row in creator_messages if row["status"] in {"unqualified", "needs_review"}
             ],
+            "existing_credit": existing_credit,
         })
     for rows in sections.values():
         rows.sort(key=lambda row: (row["identity_label"].casefold(), row["telegram_id"]))
@@ -169,13 +223,24 @@ def build_owner_report(
     creator_totals = {
         "total": len(grouped),
         "ready_to_recover": len(sections["ready_to_recover"]),
+        "already_credited_skipped": len(sections["already_credited_skipped"]),
         "needs_owner_review": len(sections["needs_owner_review"]),
         "not_eligible_unqualified": len(sections["not_eligible_unqualified"]),
         "unmatched_inactive": len(sections["unmatched_inactive"]),
     }
+    recovery_candidates = [{
+        "telegram_id": row["telegram_id"],
+        "creator_name": row["creator_name"],
+        "username": row["username"],
+        "week_key": row["selected_recovery_evidence"]["week_key"],
+        "message_id": row["selected_recovery_evidence"]["message_id"],
+        "original_timestamp": row["selected_recovery_evidence"]["original_timestamp"],
+        "original_timestamp_display": row["selected_recovery_evidence"]["original_timestamp_display"],
+        "proof_type": row["selected_recovery_evidence"]["proof_type"],
+    } for row in sections["ready_to_recover"]]
     return {"read_only": True, "timezone": timezone_name,
         "message_totals": message_totals, "creator_totals": creator_totals,
-        "sections": sections}
+        "sections": sections, "recovery_candidates": recovery_candidates}
 
 
 def render_owner_report(report: Mapping[str, Any]) -> str:
@@ -185,6 +250,7 @@ def render_owner_report(report: Mapping[str, Any]) -> str:
     lines=["POP History Recovery · Owner Dry Run","",
         f"Timezone: {report['timezone']}",
         (f"Creator totals: {creators['total']} total · {creators['ready_to_recover']} ready · "
+         f"{creators['already_credited_skipped']} already credited/skipped · "
          f"{creators['needs_owner_review']} needs review · "
          f"{creators['not_eligible_unqualified']} unqualified · "
          f"{creators['unmatched_inactive']} unmatched/inactive"),
@@ -198,12 +264,21 @@ def render_owner_report(report: Mapping[str, Any]) -> str:
             continue
         for row in rows:
             primary=row["primary_evidence"]
+            evidence_label=("Selected recovery evidence"
+                if row["selected_recovery_evidence"] else
+                "Historical evidence for comparison" if row["comparison_evidence"] else
+                "Evidence")
             lines += ["",f"• {row['identity_label']}",f"  Telegram ID: {row['telegram_id']}",
                 f"  Outcome: {row['final_outcome']}",
-                f"  Evidence: {primary['original_timestamp_display']}",
+                f"  {evidence_label}: {primary['original_timestamp_display']}",
                 f"  Proof: {primary['proof_type']} · message {primary['message_id']}",
                 f"  Additional messages found: {row['additional_messages_found']}"]
             if row.get("eligibility_reason"):lines.append(f"  Eligibility reason: {row['eligibility_reason']}")
+            if row.get("existing_credit"):
+                credit=row["existing_credit"]
+                lines.append(
+                    f"  Existing credit: week {credit['week_key']} · status {credit['status']} · "
+                    f"submission {credit['id']}")
             for extra in row["additional_messages"]:
                 lines.append(f"    - message {extra['message_id']} · {extra['original_timestamp_display']} · "
                     f"{extra['proof_type']} · {extra['status']} · {extra['reason']}")
