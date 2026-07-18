@@ -29,4 +29,11 @@
 - Recovery confidence is conservative: no prior heartbeat is **Unknown**, and an outage beyond
   the conservative queue window is **Partial**. Neither state is presented as complete recovery.
 
+- Schema v13 keeps Owner-entered historical decisions separate from Telegram-observed evidence.
+  It never fabricates chat or message IDs. Nonce-protected previews, repeated Owner authorization,
+  a second overwrite confirmation, request-key idempotency, and append-only audit events protect
+  reconciliation. Regular Admins have no reconciliation mutation path.
+- Late-alert claims are atomic per canonical creator/week record. Their content is informational
+  and routes only to the existing authorized POP-review destination; no warning or strike is created.
+
 Rotate any credential found in Git history, remove it from history, and review access logs.

@@ -11,7 +11,7 @@ from telegram.ext import CommandHandler, ContextTypes, MessageHandler, TypeHandl
 import database as db
 from engagement import classify, contains_promotional_spam
 from permissions import can_manage_sensitive, can_mutate, can_read, can_view_audit, has_permission, role_for
-from pop_policy import label as pop_label, submission_timing
+from pop_policy import format_lateness, label as pop_label, posted_time, submission_timing
 from pop_reliability import classify_pop_candidate
 from routing import send_routed
 from briefing import daily_admin_brief_job
@@ -373,6 +373,19 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 update_id=update_id,recovered_after_outage=recovered,
                 needs_review_reason=needs_review,relationship=relationship)
             if decision.proof_type:db.set_system_state("pop:last_valid_proof",observed_at)
+            if decision.proof_type and timing=="late":
+                late=db.claim_late_pop_alert(result["submission_id"])
+                if late:
+                    source=datetime.fromisoformat(late["source_message_at"])
+                    await send_routed(ctx.bot,cfg,"pop_review",
+                        "🟠 Late POP recorded\n\n"
+                        f"Creator: {escape(late['display_name'])}\n"
+                        f"Posted: {posted_time(source,cfg.timezone_name)}\n"
+                        f"Late by: {format_lateness(source,cfg.pop_due_weekday,cfg.pop_cutoff_time,cfg.timezone_name)}\n"
+                        f"Week: {late['week_key']}\n\n"
+                        "The proof was still recorded. This is a heads-up only; no warning or strike was created automatically.",
+                        target_telegram_id=late["telegram_id"],related_submission_id=late["id"],
+                        payload_summary=f"Late POP heads-up for submission {late['id']}")
             if result["created"]:
                 qualifier=" and needs review" if needs_review else ""
                 recovery=" after the bot reconnected" if recovered else ""

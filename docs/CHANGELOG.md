@@ -9,6 +9,17 @@
 - Disabled both executable historical launchers under `bot_backup_before_tracker/` while keeping
   the archive available as reference.
 - Documented that separate Autoscale filesystems still require singleton hosting.
+## POP late handling and historical reconciliation
+
+- Added schema version 13 with a one-time late-alert claim and a separate append-only table for
+  Owner-confirmed historical POP decisions; existing schema-v12 evidence remains unchanged.
+- Calculate exact lateness from the original Telegram timestamp and configured Eastern cutoff.
+  Valid late proof remains Late, retains the earliest canonical evidence, and never becomes Missing.
+- Added one deduplicated informational late heads-up in the existing POP-review destination. It
+  creates no warning, strike, or automatic consequence.
+- Added an Owner-only dry-run reconciliation workflow with timestamp validation, optional source
+  reference, repeated authorization, second confirmation over reliable evidence, and full audit.
+- Approved Away Notice excusals remain authoritative when a creator voluntarily posts proof.
 
 ## POP reliability
 

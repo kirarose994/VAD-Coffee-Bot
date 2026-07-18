@@ -11,6 +11,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, Mes
 
 import database as db
 from permissions import Role, has_permission, role_for
+from pop_policy import format_lateness, posted_time, submission_timing
 from runtime_config import persist_setting
 from routing import send_routed
 
@@ -262,6 +263,37 @@ async def contact_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def guided_contact_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     guided = ctx.user_data.get("guided_input")
+    if guided == "pop_reconciliation_timestamp":
+        cfg,actor=ctx.bot_data["config"],update.effective_user.id
+        if role_for(actor,cfg) is not Role.OWNER:
+            ctx.user_data.pop("guided_input",None);ctx.user_data.pop("pop_reconciliation_draft",None)
+            return await update.effective_message.reply_text("Historical POP reconciliation is Owner-only.")
+        draft=ctx.user_data.get("pop_reconciliation_draft");parts=update.effective_message.text.split(maxsplit=2)
+        if not draft or draft.get("status") not in {"on_time","late"}:
+            ctx.user_data.pop("guided_input",None)
+            return await update.effective_message.reply_text("That reconciliation selection expired. Nothing was saved.")
+        if len(parts)<2:
+            return await update.effective_message.reply_text("Enter the visible Eastern Time as YYYY-MM-DD HH:MM, followed by an optional source reference.")
+        try:source=datetime.strptime(f"{parts[0]} {parts[1]}","%Y-%m-%d %H:%M").replace(tzinfo=cfg.timezone)
+        except ValueError:
+            return await update.effective_message.reply_text("That time doesn’t look right. Use YYYY-MM-DD HH:MM in Eastern Time.")
+        source_week,timing=submission_timing(source,cfg.pop_due_weekday,cfg.pop_cutoff_time,cfg.timezone_name)
+        if source_week!=draft["week_key"]:
+            return await update.effective_message.reply_text(f"That timestamp belongs to {source_week}, not {draft['week_key']}. Nothing was saved.")
+        if timing!=draft["status"]:
+            return await update.effective_message.reply_text(f"That timestamp calculates as {timing.replace('_',' ').title()}, not {draft['status'].replace('_',' ').title()}. Nothing was saved.")
+        draft["source_message_at"]=source.isoformat();draft["source_reference"]=_clean(parts[2],500) if len(parts)>2 else None
+        ctx.user_data.pop("guided_input",None);nonce=secrets.token_urlsafe(6);ctx.user_data["menu_nonce"]=nonce
+        creator=db.get_creator(draft["telegram_id"])
+        preview=("📸 Historical POP Reconciliation — Dry Run\n\nNothing has been saved.\n\n"
+            f"Creator: {creator['display_name'] if creator else 'Unavailable creator'}\nWeek: {draft['week_key']}\n"
+            f"Decision: {draft['status'].replace('_',' ').title()}\nOriginal post: {posted_time(source,cfg.timezone_name)}\n"
+            +(f"Late by: {format_lateness(source,cfg.pop_due_weekday,cfg.pop_cutoff_time,cfg.timezone_name)}\n" if draft["status"]=="late" else "")
+            +f"Source: {draft.get('source_reference') or 'No source-message reference provided'}\n"
+            "Reason: Manual historical reconciliation after pre-recovery outage\n\nConfirm only if this matches the visible historical evidence.")
+        return await update.effective_message.reply_text(preview,reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Confirm Historical Decision",callback_data=f"op:{nonce}:pop_reconcile_confirm")],
+            [InlineKeyboardButton("❌ Cancel",callback_data=f"op:{nonce}:pop_reconcile_weeks")]]))
     if guided == "support_reply":
         cfg,actor=ctx.bot_data["config"],update.effective_user.id
         if not has_permission(actor,cfg,"manage_support"):

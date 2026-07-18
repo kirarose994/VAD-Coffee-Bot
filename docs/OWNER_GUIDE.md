@@ -54,6 +54,19 @@ arbitrary full supergroup history, and the report never claims to have searched 
 For an already-ended Thursday, use this as a dry review list. Do not rewrite historical records
 or mark strikes without explicit Owner review and reliable evidence.
 
+Choose **Owner Tools → Recovery → POP Recovery Report → Reconcile Affected Week** for the
+schema-v13 historical workflow. Choose a generated week and creator, select On Time, Late,
+Excused, Needs Review, or Missing, and review the dry-run preview. On Time and Late require the
+original visible Telegram date/time in Eastern Time; a source reference is optional. The bot
+calculates lateness from that timestamp and the configured cutoff without storing a duplicate
+duration. Confirming a change over reliable Telegram-observed evidence requires a second explicit
+confirmation. Every saved decision is append-only and audited with the reason **Manual historical
+reconciliation after pre-recovery outage**. The workflow never searches Telegram history, invents
+message IDs, creates warnings or strikes, or rewrites the underlying Telegram evidence.
+
+Every reconciliation step rechecks the environment-backed Owner role. Keep only the intended
+Owners in `OWNER_USER_IDS`; never place real Telegram IDs in source code or documentation.
+
 ## Setup and readiness
 
 Open **Setup & Readiness** to see one plain-language status for every required group, topic,

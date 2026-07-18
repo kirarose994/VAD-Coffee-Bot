@@ -7,7 +7,8 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from pop_policy import calculate_status, current_period
+from pop_policy import (calculate_status, current_period, format_lateness,
+    lateness_minutes, submission_timing)
 
 DATABASE_PATH = Path(__file__).with_name("vad_tracker.db")
 
@@ -69,7 +70,7 @@ def initialize_database(path: Path | None = None):
           preservation_alerted_at TEXT,
           timing_status TEXT, source_message_at TEXT, observed_at TEXT,
           recovered_after_outage INTEGER NOT NULL DEFAULT 0,
-          needs_review_reason TEXT, source_update_id INTEGER,
+          needs_review_reason TEXT, source_update_id INTEGER, late_alerted_at TEXT,
           FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id),
           UNIQUE(telegram_id, week_key)
         );
@@ -87,6 +88,18 @@ def initialize_database(path: Path | None = None):
         );
         CREATE INDEX IF NOT EXISTS pop_evidence_creator_time
           ON pop_evidence(telegram_id,week_key,source_message_at);
+        CREATE TABLE IF NOT EXISTS pop_manual_reconciliations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER NOT NULL,
+          week_key TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('on_time','late','excused','submitted_needs_review','missing')),
+          source_message_at TEXT, source_reference TEXT,
+          reason TEXT NOT NULL, created_at TEXT NOT NULL, created_by INTEGER NOT NULL,
+          overwrote_submission_id INTEGER, request_key TEXT NOT NULL UNIQUE,
+          FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id),
+          FOREIGN KEY(overwrote_submission_id) REFERENCES pop_submissions(id)
+        );
+        CREATE INDEX IF NOT EXISTS pop_manual_reconciliation_lookup
+          ON pop_manual_reconciliations(telegram_id,week_key,id DESC);
         CREATE TABLE IF NOT EXISTS recovery_runs (
           id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL,
           previous_heartbeat_at TEXT, catchup_until TEXT NOT NULL,
@@ -360,6 +373,7 @@ def _migrate_legacy_schema(db):
         "timing_status": "TEXT", "source_message_at": "TEXT", "observed_at": "TEXT",
         "recovered_after_outage": "INTEGER NOT NULL DEFAULT 0",
         "needs_review_reason": "TEXT", "source_update_id": "INTEGER",
+        "late_alerted_at": "TEXT",
     })
     if "preservation_status" not in pop_columns_before:
         # Existing records predate preservation tracking. Treat them as legacy rather
@@ -376,6 +390,15 @@ def _migrate_legacy_schema(db):
       relationship TEXT NOT NULL DEFAULT 'primary',FOREIGN KEY(submission_id) REFERENCES pop_submissions(id),
       FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id),UNIQUE(chat_id,message_id));
       CREATE INDEX IF NOT EXISTS pop_evidence_creator_time ON pop_evidence(telegram_id,week_key,source_message_at);
+      CREATE TABLE IF NOT EXISTS pop_manual_reconciliations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,telegram_id INTEGER NOT NULL,week_key TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('on_time','late','excused','submitted_needs_review','missing')),
+      source_message_at TEXT,source_reference TEXT,reason TEXT NOT NULL,created_at TEXT NOT NULL,
+      created_by INTEGER NOT NULL,overwrote_submission_id INTEGER,request_key TEXT NOT NULL UNIQUE,
+      FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id),
+      FOREIGN KEY(overwrote_submission_id) REFERENCES pop_submissions(id));
+      CREATE INDEX IF NOT EXISTS pop_manual_reconciliation_lookup
+      ON pop_manual_reconciliations(telegram_id,week_key,id DESC);
       CREATE TABLE IF NOT EXISTS recovery_runs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,started_at TEXT NOT NULL,previous_heartbeat_at TEXT,
       catchup_until TEXT NOT NULL,completed_at TEXT,confidence TEXT NOT NULL DEFAULT 'unknown',
@@ -1091,14 +1114,22 @@ def pop_status_report(now=None, due_weekday=3, cutoff_time="23:59", timezone_nam
         rows = db.execute("""SELECT c.telegram_id,c.display_name,c.registered_at,p.id,p.message_id,p.chat_id,p.thread_id,
           p.status AS submission_status,
           p.submitted_at,p.proof_type,p.preservation_status,p.preservation_due_at,
-          p.preservation_checked_at,p.timing_status,p.source_message_at,p.observed_at,
+          p.preservation_checked_at,p.timing_status,
+          COALESCE(m.source_message_at,p.source_message_at) AS source_message_at,
+          p.source_message_at AS telegram_source_message_at,p.observed_at,
           p.recovered_after_outage,p.needs_review_reason,
+          m.id AS manual_reconciliation_id,m.status AS manual_status,
+          m.source_reference AS manual_source_reference,m.created_at AS manual_created_at,
+          m.created_by AS manual_created_by,
           CASE WHEN x.id IS NULL THEN 0 ELSE 1 END AS excused
           FROM creators c
           LEFT JOIN pop_submissions p ON p.telegram_id=c.telegram_id AND p.week_key=? AND p.deleted_at IS NULL
           LEFT JOIN pop_excuses x ON x.telegram_id=c.telegram_id AND x.week_key=?
+          LEFT JOIN pop_manual_reconciliations m ON m.id=(
+            SELECT MAX(m2.id) FROM pop_manual_reconciliations m2
+            WHERE m2.telegram_id=c.telegram_id AND m2.week_key=?)
           WHERE c.status='active' AND c.deleted_at IS NULL ORDER BY c.display_name COLLATE NOCASE""",
-          (period.week_key,period.week_key)).fetchall()
+          (period.week_key,period.week_key,period.week_key)).fetchall()
         result = []
         for row in rows:
             item = _resolved_person_row(db,row)
@@ -1109,6 +1140,8 @@ def pop_status_report(now=None, due_weekday=3, cutoff_time="23:59", timezone_nam
                 cutoff_time=cutoff_time,timezone_name=timezone_name)
             if item["excused"]:
                 item["effective_status"] = item["creator_status"] = "excused"
+            elif item["manual_reconciliation_id"] is not None:
+                item["effective_status"] = item["creator_status"] = item["manual_status"]
             elif item["id"] is not None and item["needs_review_reason"]:
                 item["effective_status"] = item["creator_status"] = "submitted_needs_review"
             elif item["id"] is not None and item["preservation_status"] in {"unable_to_verify","early_removed"}:
@@ -1118,6 +1151,12 @@ def pop_status_report(now=None, due_weekday=3, cutoff_time="23:59", timezone_nam
                 item["effective_status"] = item["creator_status"] = item["timing_status"]
             else:
                 item["creator_status"] = item["effective_status"]
+            if item["creator_status"] == "late" and item["source_message_at"]:
+                source=datetime.fromisoformat(item["source_message_at"])
+                item["late_by_minutes"]=lateness_minutes(source,due_weekday,cutoff_time,timezone_name)
+                item["late_by"]=format_lateness(source,due_weekday,cutoff_time,timezone_name)
+            else:
+                item["late_by_minutes"]=0;item["late_by"]=None
             result.append(item)
         return result
 
@@ -1137,6 +1176,114 @@ def creator_current_pop_status(telegram_id, now=None, due_weekday=3, cutoff_time
         if row["telegram_id"] == telegram_id:
             return row["creator_status"]
     return "not_due"
+
+
+def recent_pop_week_keys(now=None, due_weekday=3, cutoff_time="23:59",
+                         timezone_name="America/New_York", count=8):
+    now=now or datetime.now(ZoneInfo(timezone_name))
+    keys=[]
+    for offset in range(max(1,count)+1):
+        period=current_period(now-timedelta(weeks=offset),due_weekday,cutoff_time,timezone_name)
+        if now.astimezone(ZoneInfo(timezone_name))>period.due_at and period.week_key not in keys:
+            keys.append(period.week_key)
+        if len(keys)>=max(1,count):break
+    return keys
+
+
+def pop_status_report_for_week(week_key, due_weekday=3, cutoff_time="23:59",
+                               timezone_name="America/New_York", path=None):
+    """Render a historical week through the same canonical policy as the live report."""
+    try:
+        year_raw,week_raw=week_key.split("-W",1);year,week=int(year_raw),int(week_raw)
+        monday=datetime.fromisocalendar(year,week,1).replace(tzinfo=ZoneInfo(timezone_name))
+    except (TypeError,ValueError):
+        return []
+    after_due=(monday+timedelta(days=int(due_weekday)+1)).replace(hour=12)
+    return pop_status_report(after_due,due_weekday,cutoff_time,timezone_name,path)
+
+
+def claim_late_pop_alert(submission_id, path=None):
+    """Atomically claim the one informational late alert for qualified proof."""
+    with get_connection(path) as db:
+        row=db.execute("""SELECT p.*,c.display_name,c.username
+          FROM pop_submissions p JOIN creators c ON c.telegram_id=p.telegram_id
+          WHERE p.id=? AND p.deleted_at IS NULL AND p.timing_status='late'
+          AND p.needs_review_reason IS NULL AND p.late_alerted_at IS NULL""",
+          (submission_id,)).fetchone()
+        if not row:return None
+        cur=db.execute("UPDATE pop_submissions SET late_alerted_at=? WHERE id=? AND late_alerted_at IS NULL",
+            (utc_now(),submission_id))
+        return _resolved_person_row(db,row) if cur.rowcount else None
+
+
+def pop_reconciliation_context(telegram_id, week_key, path=None):
+    with get_connection(path) as db:
+        creator=db.execute("SELECT * FROM creators WHERE telegram_id=? AND deleted_at IS NULL",
+            (telegram_id,)).fetchone()
+        if not creator:return None
+        submission=db.execute("""SELECT * FROM pop_submissions
+          WHERE telegram_id=? AND week_key=? AND deleted_at IS NULL""",(telegram_id,week_key)).fetchone()
+        manual=db.execute("""SELECT * FROM pop_manual_reconciliations
+          WHERE telegram_id=? AND week_key=? ORDER BY id DESC LIMIT 1""",(telegram_id,week_key)).fetchone()
+        excused=bool(db.execute("SELECT 1 FROM pop_excuses WHERE telegram_id=? AND week_key=?",
+            (telegram_id,week_key)).fetchone())
+        return {"creator":dict(creator),"submission":dict(submission) if submission else None,
+            "manual":dict(manual) if manual else None,"excused":excused,
+            "reliable_submission":bool(submission and not submission["needs_review_reason"] and
+                submission["timing_status"] in {"on_time","late"})}
+
+
+def record_manual_pop_reconciliation(telegram_id,week_key,status,source_message_at,
+        source_reference,actor_id,request_key,*,allow_reliable_overwrite=False,
+        due_weekday=3,cutoff_time="23:59",timezone_name="America/New_York",path=None):
+    """Append one Owner-confirmed historical decision without fabricating Telegram evidence."""
+    allowed={"on_time","late","excused","submitted_needs_review","missing"}
+    if status not in allowed:return {"saved":False,"error":"invalid_status"}
+    source=None
+    if status in {"on_time","late"}:
+        try:
+            source=datetime.fromisoformat(source_message_at)
+            source=(source.replace(tzinfo=ZoneInfo(timezone_name)) if source.tzinfo is None
+                else source.astimezone(ZoneInfo(timezone_name)))
+        except (TypeError,ValueError):return {"saved":False,"error":"source_time_required"}
+        source_week,timing=submission_timing(source,due_weekday,cutoff_time,timezone_name)
+        if source_week!=week_key or timing!=status:
+            return {"saved":False,"error":"timestamp_status_mismatch"}
+    reason="Manual historical reconciliation after pre-recovery outage"
+    with get_connection(path) as db:
+        db.execute("BEGIN IMMEDIATE")
+        existing=db.execute("SELECT id FROM pop_manual_reconciliations WHERE request_key=?",
+            (request_key,)).fetchone()
+        if existing:return {"saved":False,"duplicate":True,"id":existing["id"]}
+        creator=db.execute("SELECT 1 FROM creators WHERE telegram_id=? AND deleted_at IS NULL",
+            (telegram_id,)).fetchone()
+        if not creator:return {"saved":False,"error":"creator_unavailable"}
+        submission=db.execute("""SELECT * FROM pop_submissions
+          WHERE telegram_id=? AND week_key=? AND deleted_at IS NULL""",(telegram_id,week_key)).fetchone()
+        manual=db.execute("""SELECT * FROM pop_manual_reconciliations
+          WHERE telegram_id=? AND week_key=? ORDER BY id DESC LIMIT 1""",(telegram_id,week_key)).fetchone()
+        excused=bool(db.execute("SELECT 1 FROM pop_excuses WHERE telegram_id=? AND week_key=?",
+            (telegram_id,week_key)).fetchone())
+        reliable=bool(submission and not submission["needs_review_reason"] and
+            submission["timing_status"] in {"on_time","late"})
+        if reliable and not allow_reliable_overwrite:
+            return {"saved":False,"requires_second_confirmation":True}
+        context={"submission":dict(submission) if submission else None,
+            "manual":dict(manual) if manual else None,"excused":excused,"reliable_submission":reliable}
+        previous={"manual":context["manual"],"submission":context["submission"],"excused":context["excused"]}
+        cur=db.execute("""INSERT INTO pop_manual_reconciliations
+          (telegram_id,week_key,status,source_message_at,source_reference,reason,created_at,created_by,
+           overwrote_submission_id,request_key) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+          (telegram_id,week_key,status,source.isoformat() if source else None,
+           (source_reference or "").strip()[:500] or None,reason,utc_now(),actor_id,
+           context["submission"]["id"] if context["reliable_submission"] else None,request_key))
+        reconciliation_id=cur.lastrowid
+        audit_event(db,actor_id,"pop_historical_reconciled","pop_manual_reconciliation",
+            reconciliation_id,telegram_id,previous_value=previous,
+            new_value={"week_key":week_key,"status":status,"source_message_at":source.isoformat() if source else None,
+                "source_reference":(source_reference or "").strip()[:500] or None},reason=reason,
+            related_submission_id=context["submission"]["id"] if context["submission"] else None)
+        return {"saved":True,"id":reconciliation_id}
 
 
 def _participation_attention_rows(connection, warning_hours, alert_hours):
@@ -1277,6 +1424,8 @@ def export_snapshot(path=None):
             "creators": [dict(r) for r in db.execute("SELECT * FROM creators").fetchall()],
             "absences": [dict(r) for r in db.execute("SELECT * FROM absence_requests").fetchall()],
             "pop": [dict(r) for r in db.execute("SELECT * FROM pop_submissions").fetchall()],
+            "pop_manual_reconciliations": [dict(r) for r in db.execute(
+                "SELECT * FROM pop_manual_reconciliations").fetchall()],
             "warnings": [dict(r) for r in db.execute("SELECT * FROM creator_warnings").fetchall()],
             "notifications": [dict(r) for r in db.execute("SELECT * FROM notifications").fetchall()],
             "support_requests": [dict(r) for r in db.execute("SELECT * FROM support_requests").fetchall()],
