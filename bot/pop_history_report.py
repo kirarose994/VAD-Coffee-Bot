@@ -80,6 +80,132 @@ def _identity_label(identity: Mapping[str, Any]) -> str:
     return f"{name}{suffix}"
 
 
+def _configured_staff_ids(environ: Mapping[str, str]) -> dict[int, set[str]]:
+    roles: dict[int, set[str]] = {}
+    for key, role in (("OWNER_USER_IDS", "owner"), ("OWNER_TELEGRAM_IDS", "owner"),
+                      ("ADMIN_USER_IDS", "admin"), ("LEAD_ADMIN_USER_IDS", "admin")):
+        for raw in environ.get(key, "").split(","):
+            raw = raw.strip()
+            if raw:
+                try:
+                    roles.setdefault(int(raw), set()).add(role)
+                except ValueError:
+                    continue
+    return roles
+
+
+def _unmatched_resolution(
+    connection,
+    telegram_id: int,
+    environ: Mapping[str, str],
+) -> dict[str, Any]:
+    """Explain an unresolved immutable ID without fuzzy or username matching."""
+
+    creator = connection.execute("SELECT * FROM creators WHERE telegram_id=?",
+        (telegram_id,)).fetchone()
+    member = connection.execute("SELECT * FROM community_members WHERE telegram_id=?",
+        (telegram_id,)).fetchone()
+    bot_user = connection.execute("SELECT * FROM bot_users WHERE telegram_id=?",
+        (telegram_id,)).fetchone()
+    roles = connection.execute("""SELECT role,active,assigned_at,removed_at
+      FROM user_roles WHERE telegram_id=? ORDER BY role""", (telegram_id,)).fetchall()
+    registration_events = connection.execute("""SELECT action,occurred_at,target_type
+      FROM audit_events WHERE target_telegram_id=? AND
+        (action LIKE '%register%' OR action LIKE 'creator_profile_%')
+      ORDER BY occurred_at,id""", (telegram_id,)).fetchall()
+    legacy_events = connection.execute("""SELECT action,created_at
+      FROM audit_history WHERE target_id=? AND action LIKE '%register%'
+      ORDER BY created_at,id""", (telegram_id,)).fetchall()
+    configured_roles = sorted(_configured_staff_ids(environ).get(telegram_id, ()))
+    active_creator = bool(creator and creator["status"] == "active" and not creator["deleted_at"])
+    inactive_creator = bool(creator and creator["status"] == "inactive" and not creator["deleted_at"])
+    archived_creator = bool(creator and creator["deleted_at"])
+    staff_profile_events = [row for row in registration_events
+        if row["action"].startswith("creator_profile_")]
+
+    source_checks = [
+        {"source": "active_creators", "found": active_creator,
+         "detail": ("active canonical creator row found" if active_creator
+             else "no active creator row with this Telegram ID")},
+        {"source": "inactive_creators", "found": inactive_creator,
+         "detail": ("inactive canonical creator row found" if inactive_creator
+             else "no inactive creator row with this Telegram ID")},
+        {"source": "archived_creators", "found": archived_creator,
+         "detail": ("archived canonical creator row found" if archived_creator
+             else "no archived creator row with this Telegram ID")},
+        {"source": "other_creator_registration_states", "found": bool(
+            creator and not active_creator and not inactive_creator and not archived_creator),
+         "detail": (f"status={creator['status']}" if creator and not active_creator
+             and not inactive_creator and not archived_creator else
+             "no pending or rejected creator row with this Telegram ID")},
+        {"source": "community_members", "found": bool(member),
+         "detail": (f"member_type={member['member_type']}" if member
+             else "no row with this Telegram ID")},
+        {"source": "bot_users", "found": bool(bot_user),
+         "detail": ("private bot identity exists" if bot_user
+             else "no row with this Telegram ID")},
+        {"source": "user_roles", "found": bool(roles),
+         "detail": (", ".join(f"{row['role']} ({'active' if row['active'] else 'inactive'})"
+             for row in roles) if roles else "no role row with this Telegram ID")},
+        {"source": "configured_staff_roles", "found": bool(configured_roles),
+         "detail": (", ".join(configured_roles) if configured_roles
+             else "not configured as Owner or Admin under this Telegram ID")},
+        {"source": "staff_inherited_creator_profiles", "found": bool(
+            creator and (configured_roles or roles or staff_profile_events)),
+         "detail": ("staff-inherited creator profile exists under this Telegram ID"
+             if creator and (configured_roles or roles or staff_profile_events) else
+             "no staff-inherited creator profile with this Telegram ID")},
+        {"source": "historical_registration_audit", "found": bool(registration_events or legacy_events),
+         "detail": (", ".join(
+             [f"{row['action']} at {row['occurred_at']}" for row in registration_events] +
+             [f"{row['action']} at {row['created_at']}" for row in legacy_events])
+             if registration_events or legacy_events else
+             "no registration audit row with this Telegram ID")},
+    ]
+    if creator:
+        safe_match = True
+        reason = "canonical_creator_found_by_immutable_telegram_id"
+    elif configured_roles or roles:
+        safe_match = False
+        reason = "staff_identity_exists_but_canonical_creator_profile_is_missing"
+    elif member and member["member_type"] == "creator":
+        safe_match = False
+        reason = "historical_creator_membership_exists_but_canonical_creator_profile_is_missing"
+    elif registration_events or legacy_events:
+        safe_match = False
+        reason = "historical_registration_exists_but_no_current_creator_profile"
+    elif member:
+        safe_match = False
+        reason = f"telegram_id_belongs_to_{member['member_type']}_not_creator"
+    elif bot_user:
+        safe_match = False
+        reason = "telegram_user_is_known_but_has_no_creator_registration"
+    else:
+        safe_match = False
+        reason = "telegram_id_absent_from_all_available_identity_sources"
+    return {
+        "telegram_id": telegram_id,
+        "safe_match_found": safe_match,
+        "automatic_credit_eligible": False,
+        "resolution_status": "resolved_by_telegram_id" if safe_match else "unresolved_excluded",
+        "exact_reason": reason,
+        "source_checks": source_checks,
+        "identify_creator_action": {
+            "label": "Identify Creator",
+            "action": "identify_creator",
+            "owner_only": True,
+            "enabled": False,
+            "source_telegram_id": telegram_id,
+            "match_policy": "immutable_telegram_id_only",
+            "requires_existing_creator": True,
+            "requires_explicit_confirmation": True,
+            "requires_audit_logging": True,
+            "write_performed": False,
+            "blocked_reason": "identity_linking_not_implemented",
+        },
+    }
+
+
 def _message_view(
     row: Mapping[str, Any],
     timezone_name: str,
@@ -135,6 +261,7 @@ def build_owner_report(
             _message_view(row, timezone_name, due_weekday, cutoff_time))
 
     existing_credits: dict[tuple[int, str], dict[str, Any]] = {}
+    identity_resolutions: list[dict[str, Any]] = []
     with db.get_readonly_connection(creator_database) as connection:
         for telegram_id, creator_messages in grouped.items():
             for week_key in {row["week_key"] for row in creator_messages}:
@@ -143,6 +270,10 @@ def build_owner_report(
                     AND deleted_at IS NULL""", (telegram_id, week_key)).fetchone()
                 if credit:
                     existing_credits[(telegram_id, week_key)] = dict(credit)
+        identity_resolutions = [_unmatched_resolution(connection, telegram_id, values)
+            for telegram_id, identity in identities.items()
+            if not identity["creator_matched"]]
+    identity_resolutions.sort(key=lambda row: row["telegram_id"])
 
     sections = {key: [] for key in SECTION_ORDER}
     for telegram_id, creator_messages in grouped.items():
@@ -240,7 +371,8 @@ def build_owner_report(
     } for row in sections["ready_to_recover"]]
     return {"read_only": True, "timezone": timezone_name,
         "message_totals": message_totals, "creator_totals": creator_totals,
-        "sections": sections, "recovery_candidates": recovery_candidates}
+        "sections": sections, "recovery_candidates": recovery_candidates,
+        "unmatched_identity_resolution": identity_resolutions}
 
 
 def render_owner_report(report: Mapping[str, Any]) -> str:
@@ -286,4 +418,19 @@ def render_owner_report(report: Mapping[str, Any]) -> str:
                 if reason["message_id"] == primary["message_id"] or not any(
                     extra["message_id"] == reason["message_id"] for extra in row["additional_messages"]):
                     lines.append(f"  {reason['status'].replace('_',' ').title()} reason: {reason['reason']}")
+    lines += ["", "Unmatched Identity Resolution"]
+    resolutions=report.get("unmatched_identity_resolution", [])
+    if not resolutions:
+        lines.append("• None")
+    for resolution in resolutions:
+        lines += ["", f"• Telegram ID {resolution['telegram_id']}",
+            f"  Resolution: {resolution['resolution_status']}",
+            f"  Exact reason: {resolution['exact_reason']}",
+            "  Immutable-ID source checks:"]
+        for check in resolution["source_checks"]:
+            marker="found" if check["found"] else "not found"
+            lines.append(f"    - {check['source']}: {marker} · {check['detail']}")
+        action=resolution["identify_creator_action"]
+        lines += [f"  Owner review action: {action['label']} (not enabled)",
+            "  Requires explicit Owner confirmation and audit logging before any identity link."]
     return "\n".join(lines)

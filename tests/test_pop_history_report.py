@@ -135,6 +135,51 @@ class PopHistoryOwnerReportTests(unittest.TestCase):
         self.assertEqual(row["primary_evidence"]["reason"],"unqualified_text")
         self.assertIsNone(row["existing_credit"])
 
+    def test_unmatched_resolution_checks_every_source_by_telegram_id_only(self):
+        db.register_member(40,"same_username","Known Non-Creator","buyer",self.path)
+        db.record_bot_user(40,"same_username","Known Bot User",self.path)
+        with db.get_connection(self.path) as connection:
+            connection.execute("""INSERT INTO user_roles
+              (telegram_id,role,active,assigned_at,assigned_by)
+              VALUES(40,'admin',1,'2026-07-01T12:00:00-04:00',1)""")
+            db.audit_event(connection,1,"creator_registration_reviewed","creator",
+                target_telegram_id=40)
+            connection.execute("""INSERT INTO audit_history
+              (actor_id,target_id,action,details,created_at)
+              VALUES(1,40,'creator_registered','historical','2026-06-01T12:00:00-04:00')""")
+        report=build_owner_report(self.scan(),creator_database=self.path,
+            environ={"OWNER_USER_IDS":"40","TIMEZONE":"America/New_York"})
+        resolution=report["unmatched_identity_resolution"][0]
+        self.assertEqual(resolution["telegram_id"],40)
+        self.assertFalse(resolution["safe_match_found"])
+        self.assertFalse(resolution["automatic_credit_eligible"])
+        self.assertEqual(resolution["exact_reason"],
+            "staff_identity_exists_but_canonical_creator_profile_is_missing")
+        checks={row["source"]:row for row in resolution["source_checks"]}
+        for source in ("active_creators","inactive_creators","archived_creators",
+                "other_creator_registration_states","staff_inherited_creator_profiles"):
+            self.assertFalse(checks[source]["found"])
+        for source in ("community_members","bot_users","user_roles",
+                "configured_staff_roles","historical_registration_audit"):
+            self.assertTrue(checks[source]["found"])
+        # A mutable username collision with creator 10/11 never creates a match.
+        self.assertNotEqual(resolution["telegram_id"],10)
+        self.assertNotEqual(resolution["telegram_id"],11)
+
+    def test_unmatched_resolution_explains_absence_and_action_is_nonexecuting(self):
+        report=build_owner_report(self.scan(),creator_database=self.path)
+        resolution=report["unmatched_identity_resolution"][0]
+        self.assertEqual(resolution["exact_reason"],
+            "telegram_id_absent_from_all_available_identity_sources")
+        action=resolution["identify_creator_action"]
+        self.assertEqual(action["label"],"Identify Creator")
+        self.assertTrue(action["owner_only"])
+        self.assertFalse(action["enabled"])
+        self.assertTrue(action["requires_explicit_confirmation"])
+        self.assertTrue(action["requires_audit_logging"])
+        self.assertFalse(action["write_performed"])
+        self.assertEqual(report["recovery_candidates"][0]["telegram_id"],10)
+
     def test_inactive_archived_and_unmatched_are_explicitly_ineligible(self):
         report=build_owner_report(self.scan(),creator_database=self.path)
         rows={row["telegram_id"]:row for row in report["sections"]["unmatched_inactive"]}
@@ -151,6 +196,9 @@ class PopHistoryOwnerReportTests(unittest.TestCase):
             self.assertIn(title,rendered)
         self.assertIn("Creator totals: 6 total",rendered)
         self.assertIn("Message totals: 7 total",rendered)
+        self.assertIn("Unmatched Identity Resolution",rendered)
+        self.assertIn("Exact reason: telegram_id_absent_from_all_available_identity_sources",rendered)
+        self.assertIn("Owner review action: Identify Creator (not enabled)",rendered)
         self.assertEqual(rendered.count("Approved Name (@same_username)"),1)
         self.assertNotIn("raw",rendered.casefold())
 
