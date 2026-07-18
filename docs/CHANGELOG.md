@@ -1,5 +1,14 @@
 # Changelog
 
+## Telegram history-recovery foundation
+
+- Added an adapter-neutral, privacy-minimal normalized message contract that reuses the existing
+  participation and POP classifiers without changing live Bot API processing.
+- Added dormant schema-v14 history-recovery sources, fixed-boundary runs, derived inbox items,
+  checkpoints, and an independent `telegram_mtproto_history_recovery` lease name.
+- No Telethon dependency, Telegram connection, authentication, replay, or production activation
+  is included in this foundation.
+
 ## Bot API singleton safety
 
 - Added an additive schema-v13 SQLite lease that is acquired before Telegram polling.
