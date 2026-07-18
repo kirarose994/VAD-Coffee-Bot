@@ -32,6 +32,22 @@ def get_connection(path: Path | None = None):
         connection.close()
 
 
+@contextmanager
+def get_readonly_connection(path: Path | None = None):
+    """Open the operational database with SQLite-enforced read-only access."""
+
+    target = Path(path or DATABASE_PATH).resolve().as_posix()
+    connection = sqlite3.connect(f"file:{target}?mode=ro", uri=True)
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA query_only = ON")
+        connection.execute("PRAGMA busy_timeout = 5000")
+        yield connection
+    finally:
+        connection.close()
+
+
 def initialize_database(path: Path | None = None):
     with get_connection(path) as db:
         db.executescript("""
@@ -923,6 +939,27 @@ def people_for_ids(telegram_ids, path=None):
     with get_connection(path) as db:
         people=[_person_identity(db,user_id) for user_id in set(telegram_ids)]
     return sorted(people,key=lambda row:(row["display_name"].casefold(),row["telegram_id"]))
+
+
+def creator_identities_for_ids(telegram_ids, path=None):
+    """Resolve immutable IDs against creator/member identity without database writes."""
+
+    with get_readonly_connection(path) as connection:
+        identities=[]
+        for telegram_id in set(int(value) for value in telegram_ids):
+            identity=_person_identity(connection,telegram_id)
+            creator=connection.execute("SELECT * FROM creators WHERE telegram_id=?",
+                (telegram_id,)).fetchone()
+            archived=bool(creator and creator["deleted_at"])
+            status=creator["status"] if creator else None
+            approved_name=(_usable_person_name(creator["display_name"],telegram_id)
+                if creator and status=="active" and not archived else None)
+            identity.update({"creator_matched":bool(creator),"creator_status":status,
+                "creator_archived":archived,
+                "eligible_for_recovery":bool(creator and status=="active" and not archived),
+                "approved_creator_name":approved_name})
+            identities.append(identity)
+    return sorted(identities,key=lambda row:(row["display_name"].casefold(),row["telegram_id"]))
 
 
 def list_creators(path=None):

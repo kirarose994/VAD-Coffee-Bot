@@ -54,6 +54,7 @@ Thumbs.db
 !.env.example
 *.session
 *.session-journal
+pop_history_report*.json
 *.db
 *.db-shm
 *.db-wal
