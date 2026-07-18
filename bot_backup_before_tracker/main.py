@@ -101,4 +101,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(
+        "Historical archive only; this launcher is intentionally disabled. "
+        "Start the production bot with: cd bot && python main.py"
+    )

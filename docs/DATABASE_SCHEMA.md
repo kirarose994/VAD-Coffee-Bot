@@ -1,9 +1,10 @@
 # Database Schema
 
-SQLite schema version 10 is initialized and migrated by `database.initialize_database()`.
+SQLite schema version 13 is initialized and migrated by `database.initialize_database()`.
 
-Version 10 adds operation-specific transport incident metadata (`operation`, `escalated_at`, and
-`resolution_reason`) without rewriting existing incidents or operational history.
+Version 13 adds the `process_leases` singleton table without rewriting existing incidents or
+operational history. Version 12 introduced POP reliability and outage-recovery metadata; version
+10 added operation-specific transport incident metadata.
 
 | Table | Purpose |
 |---|---|
@@ -19,6 +20,7 @@ Version 10 adds operation-specific transport incident metadata (`operation`, `es
 | `message_templates`, `template_revisions` | Reusable messaging and edit history |
 | `resources` | Configurable Help Center content |
 | `system_state` | Health markers and audited operational configuration overrides |
+| `process_leases` | Expiring ownership and heartbeat for the single Bot API poller |
 | `support_requests`, `support_messages` | Private creator-bound support history |
 | `delivery_failures` | Durable routing failures with safe references and retry state |
 | `bot_users` | People who privately started the bot; this does not assign a role |
@@ -26,6 +28,18 @@ Version 10 adds operation-specific transport incident metadata (`operation`, `es
 
 Telegram ID is the creator/member primary key, so duplicate creator identities cannot exist.
 Foreign keys, unique indexes, WAL mode, and a busy timeout protect consistency.
+
+## Version 13 migration
+
+Startup creates `process_leases` idempotently. Its primary key permits one row per lease name;
+the active poller stores a unique instance ID, acquisition/heartbeat/expiry timestamps, and a
+sanitized startup-source label. Acquisition uses an immediate SQLite write transaction so two
+near-simultaneous processes cannot both win. Heartbeat and release operations require the current
+instance ID, preventing an expired process from modifying a successor's lease.
+
+Rollback to version 12 code is non-destructive: older code ignores `process_leases`. Because
+version 12 has no singleton enforcement, rollback requires operators to verify manually that only
+one polling process is active.
 
 ## Version 9 migration
 

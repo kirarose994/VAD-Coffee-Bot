@@ -5,7 +5,9 @@
 `bot/main.py` loads environment configuration, initializes SQLite, overlays audited
 owner-managed settings, registers handlers, and starts one Telegram long-polling process.
 `.replit` runs `cd bot && python main.py`; the repository-root `main.py` is a convenience
-wrapper.
+wrapper. Before Telegram is contacted, startup atomically acquires an expiring SQLite singleton
+lease. The lease coordinates only processes that share the same database file; hosting must still
+prevent independent Autoscale filesystems from running multiple pollers.
 
 ## Modules
 
@@ -20,4 +22,5 @@ wrapper.
 - `operations.py` implements guided operational forms and queues.
 - `presentation.py` formats human-readable Eastern Time timelines and audit entries.
 
-Active code has no dependency on `bot_backup_before_tracker/`.
+Active code has no dependency on `bot_backup_before_tracker/`. Its historical executable entry
+points are intentionally disabled.

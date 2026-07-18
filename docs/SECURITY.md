@@ -16,8 +16,12 @@
   retain submitted URLs, captions, descriptions, or image files, and links are never fetched.
 - Split evidence is correlated only by immutable creator ID, exact numeric location, week, and a
   five-minute window; evidence from different creators cannot be combined.
-- Startup has one polling consumer with pending-update deletion disabled. Evidence, update, alert,
-  and Owner-summary claims are database-deduplicated across restarts.
+- Startup acquires the schema-v13 `telegram_bot_api_poller` lease before contacting Telegram.
+  Atomic acquisition, owner-token heartbeats, expiry, and owner-checked release prevent two
+  processes sharing one SQLite file from polling simultaneously. Lease verification fails closed.
+- The lease does not coordinate separate Autoscale filesystems or copied databases. Singleton
+  hosting is still required. Pending-update deletion remains disabled, and evidence, update,
+  alert, and Owner-summary claims remain database-deduplicated across restarts.
 - Telegram does not reliably report arbitrary group-message deletion or provide general
   historical-message lookup to ordinary bots. An inconclusive 24-hour preservation check creates
   a deduplicated Admin review item, never an automatic accusation, warning, or strike. Confirmed
