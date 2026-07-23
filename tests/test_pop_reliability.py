@@ -30,7 +30,7 @@ def message(**changes):
     values = dict(
         text=None, caption=None, entities=(), caption_entities=(), photo=None,
         sticker=None, animation=None, video=None, voice=None, audio=None,
-        document=None, chat_id=-300, message_thread_id=11, message_id=90,
+        document=None, story=None, reply_to_story=None, chat_id=-300, message_thread_id=11, message_id=90,
         date=THURSDAY, edit_date=None, reply_text=AsyncMock(),
     )
     values.update(changes)
@@ -56,6 +56,10 @@ class ProofClassificationTests(unittest.TestCase):
 
     def test_photo_with_caption_qualifies(self):
         self.assertEqual(classify_pop_proof(message(photo=[object()], caption="weekly screenshot")), "photo")
+
+    def test_forwarded_story_qualifies_but_a_story_reply_does_not(self):
+        self.assertEqual(classify_pop_proof(message(story=object())), "forwarded_story")
+        self.assertIsNone(classify_pop_proof(message(reply_to_story=object())))
 
     def test_plain_and_described_urls_qualify(self):
         self.assertEqual(classify_pop_proof(message(text="https://example.com/proof")), "link")
@@ -110,7 +114,8 @@ class ObserverReliabilityTests(unittest.IsolatedAsyncioTestCase):
         return submit_pop
 
     async def test_correct_photo_and_link_qualify(self):
-        for msg in (message(photo=[object()]),message(text="Proof: https://example.com/item")):
+        for msg in (message(photo=[object()]), message(story=object()),
+                    message(text="Proof: https://example.com/item")):
             with self.subTest(text=msg.text):
                 submit=await self.run_observe(msg)
                 submit.assert_called_once()
@@ -247,6 +252,16 @@ class TimingAndRecoveryTests(unittest.TestCase):
         with db.get_connection(self.path) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM pop_submissions").fetchone()[0],1)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM pop_evidence").fetchone()[0],2)
+
+    def test_reposted_forwarded_story_keeps_one_weekly_credit(self):
+        at=THURSDAY.replace(day=17,hour=9).isoformat()
+        first=db.record_pop_evidence(20,"2026-W29",20,-300,11,"forwarded_story","late",
+            source_message_at=at,observed_at=at,path=self.path)
+        repost=db.record_pop_evidence(20,"2026-W29",21,-300,11,"forwarded_story","late",
+            source_message_at=(THURSDAY.replace(day=17,hour=10)).isoformat(),observed_at=at,path=self.path)
+        self.assertTrue(first["created"]);self.assertFalse(repost["created"])
+        with db.get_connection(self.path) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM pop_submissions").fetchone()[0],1)
 
     def test_split_evidence_window_never_crosses_creator_identity(self):
         at=THURSDAY.isoformat()

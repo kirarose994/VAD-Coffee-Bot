@@ -37,7 +37,8 @@ class NormalizedMessageContractTests(unittest.TestCase):
             caption_entities=entities, photo=[object()] if media.photo else None,
             document=document, animation=object() if media.animation else None,
             video=object() if media.video else None, voice=object() if media.voice else None,
-            audio=object() if media.audio else None, sticker=object() if media.sticker else None)
+            audio=object() if media.audio else None, sticker=object() if media.sticker else None,
+            story=object() if media.forwarded_story else None)
 
     def test_fixture_decisions_match_existing_participation_and_pop_classifiers(self):
         fixtures = (
@@ -50,6 +51,7 @@ class NormalizedMessageContractTests(unittest.TestCase):
             self.fixture(message_id=94, text="represented Telegram link",
                 media=MediaIndicators(has_url_entity=True)),
             self.fixture(message_id=95, text="I posted my weekly POP to my story"),
+            self.fixture(message_id=96, media=MediaIndicators(forwarded_story=True)),
         )
         for fixture in fixtures:
             with self.subTest(message_id=fixture.message_id):

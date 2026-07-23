@@ -61,6 +61,10 @@ def message_has_url(message) -> bool:
 
 def classify_pop_candidate(message) -> PopProofDecision:
     """Classify proof without opening links or retaining submitted content."""
+    # Bot API represents a Story forwarded into the topic as ``Message.story``.
+    # A reply *to* a Story is deliberately not treated as submitted proof.
+    if getattr(message, "story", None):
+        return PopProofDecision("forwarded_story", reason="forwarded_story")
     if getattr(message, "photo", None):
         return PopProofDecision("photo",reason="photo")
     document=getattr(message,"document",None)
