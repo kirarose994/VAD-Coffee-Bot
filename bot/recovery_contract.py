@@ -31,6 +31,7 @@ class MediaIndicators:
     voice: bool = False
     audio: bool = False
     sticker: bool = False
+    forwarded_story: bool = False
     has_url_entity: bool = False
     duration_seconds: int | None = None
     identity_hash: str | None = None
@@ -50,7 +51,7 @@ class MediaIndicators:
     @property
     def any_media(self) -> bool:
         return any((self.photo, self.document, self.animation, self.video,
-                    self.voice, self.audio, self.sticker))
+                    self.voice, self.audio, self.sticker, self.forwarded_story))
 
 
 @dataclass(frozen=True)
@@ -107,7 +108,7 @@ class NormalizedMessageEnvelope:
 
 
 def _message_type(media: MediaIndicators, text: str | None, caption: str | None) -> str:
-    for kind in ("photo", "document", "animation", "video", "voice", "audio", "sticker"):
+    for kind in ("forwarded_story", "photo", "document", "animation", "video", "voice", "audio", "sticker"):
         if getattr(media, kind):
             return kind
     return "text" if text is not None else "caption" if caption is not None else "other"
@@ -139,6 +140,7 @@ def _existing_pop_message(message: AdapterMessage):
         voice=object() if media.voice else None,
         audio=object() if media.audio else None,
         sticker=object() if media.sticker else None,
+        story=object() if media.forwarded_story else None,
     )
 
 

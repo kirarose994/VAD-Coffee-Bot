@@ -139,6 +139,14 @@ class ScopeAndReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(row["qualified_media"])
         self.assertEqual(row["pop_decision"],"qualified")
 
+    async def test_forwarded_story_is_qualified_without_retaining_story_content(self):
+        story_media=type("MessageMediaStory",(),{})()
+        report=await run(FakeClient([message(1,START,media=story_media)]))
+        row=report["messages"][0]
+        self.assertEqual(row["media_type"],"forwarded_story")
+        self.assertEqual(row["pop_proof_type"],"forwarded_story")
+        self.assertTrue(row["qualified_media"])
+
 
 if __name__ == "__main__":
     unittest.main()

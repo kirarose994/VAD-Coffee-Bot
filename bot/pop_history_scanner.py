@@ -128,6 +128,9 @@ def _has_url_entity(message: Any) -> bool:
 
 
 def _media(message: Any) -> MediaIndicators:
+    # Telethon represents a forwarded Story as MessageMediaStory. The scanner
+    # keeps only this type indicator, never Story content.
+    forwarded_story = type(getattr(message, "media", None)).__name__ == "MessageMediaStory"
     photo = bool(getattr(message, "photo", None))
     voice = bool(getattr(message, "voice", None))
     audio = bool(getattr(message, "audio", None)) and not voice
@@ -150,7 +153,7 @@ def _media(message: Any) -> MediaIndicators:
     return MediaIndicators(
         photo=photo, document=document, document_mime_type=mime_type,
         document_extension=extension, animation=animation, video=video,
-        voice=voice, audio=audio, sticker=sticker,
+        voice=voice, audio=audio, sticker=sticker, forwarded_story=forwarded_story,
         has_url_entity=_has_url_entity(message), duration_seconds=duration,
     )
 
@@ -258,6 +261,7 @@ async def scan_pop_history(
                 "has_link": bool(media.has_url_entity or _URL_SHAPE.search(body)),
                 "qualified_media": proof_type in {
                     "photo", "image_document", "animation", "video", "voice", "audio",
+                    "forwarded_story",
                 },
                 "ambiguous_evidence": envelope.derived.pop_decision == "needs_review",
                 "pop_decision": envelope.derived.pop_decision,
