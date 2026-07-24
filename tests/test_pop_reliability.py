@@ -171,7 +171,8 @@ class PreservationDatabaseTests(unittest.TestCase):
         with db.get_connection(self.path) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM audit_events WHERE action='pop_preservation_unavailable'").fetchone()[0],1)
         counts=db.needs_attention_counts("2026-W29",self.path,THURSDAY)
-        self.assertEqual(counts["preservation_reviews"],1)
+        self.assertEqual(counts["preservation_reviews"],0)
+        self.assertEqual(db.pop_preservation_review_rows(self.path),[])
 
     def test_new_proof_status_is_complete_with_preservation_pending(self):
         self.assertEqual(db.creator_current_pop_status(20,THURSDAY,path=self.path),
@@ -187,6 +188,8 @@ class PreservationDatabaseTests(unittest.TestCase):
         self.assertTrue(db.claim_pop_preservation_alert(self.submission,self.path))
         self.assertFalse(db.claim_pop_preservation_alert(self.submission,self.path))
         self.assertEqual(db.creator_current_pop_status(20,THURSDAY,path=self.path),"needs_review")
+        self.assertEqual(db.needs_attention_counts("2026-W29",self.path,THURSDAY)["preservation_reviews"],1)
+        self.assertEqual([row["id"] for row in db.pop_preservation_review_rows(self.path)],[self.submission])
 
     def test_version_ten_records_migrate_without_false_verification_claim(self):
         legacy=Path(self.tmp.name)/"version10.db";connection=sqlite3.connect(legacy)

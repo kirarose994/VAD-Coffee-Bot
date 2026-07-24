@@ -998,7 +998,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if submission["status"]=="pending":
             actions += [("✅ Approve",f"pop_decide_approved_{submission_id}"),("🔴 Reject",f"pop_decide_rejected_{submission_id}"),
                 ("🟡 Request Resubmission",f"pop_decide_resubmission_requested_{submission_id}")]
-        if submission["preservation_status"] in {"pending_24h","unable_to_verify"}:
+        if submission["preservation_status"] == "pending_24h":
             actions += [("✅ Confirm Preserved",f"pop_preserve_preserved_{submission_id}"),
                 ("⚠️ Confirm Early Removal",f"pop_preserve_early_{submission_id}")]
         source=datetime.fromisoformat(submission["source_message_at"] or submission["submitted_at"])

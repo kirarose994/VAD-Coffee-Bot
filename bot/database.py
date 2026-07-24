@@ -1206,7 +1206,7 @@ def dashboard_metrics(week_key, path=None):
             "pending_sick": scalar("SELECT COUNT(*) FROM absence_requests WHERE status='pending' AND absence_type='sick' AND deleted_at IS NULL"),
             "pending_pop": scalar("SELECT COUNT(*) FROM pop_submissions WHERE week_key=? AND status='pending' AND deleted_at IS NULL",(week_key,)),
             "preservation_reviews": scalar("""SELECT COUNT(*) FROM pop_submissions
-              WHERE preservation_status IN ('unable_to_verify','early_removed')
+              WHERE preservation_status='early_removed'
               AND deleted_at IS NULL"""),
             "missing_pop": 0,
             "active_warnings": scalar("SELECT COUNT(*) FROM creator_warnings WHERE status IN ('active','acknowledged') AND warning_type='warning'"),
@@ -1269,7 +1269,7 @@ def pop_status_report(now=None, due_weekday=3, cutoff_time="23:59", timezone_nam
                 item["effective_status"] = item["creator_status"] = item["manual_status"]
             elif item["id"] is not None and item["needs_review_reason"]:
                 item["effective_status"] = item["creator_status"] = "submitted_needs_review"
-            elif item["id"] is not None and item["preservation_status"] in {"unable_to_verify","early_removed"}:
+            elif item["id"] is not None and item["preservation_status"] == "early_removed":
                 item["creator_status"] = "needs_review"
                 item["effective_status"] = "submitted_needs_review"
             elif item["id"] is not None and item["timing_status"] in {"on_time","late"}:
@@ -1446,7 +1446,7 @@ def needs_attention_counts(week_key, path=None, now=None, due_weekday=3, cutoff_
             "away_notices": scalar("SELECT COUNT(*) FROM absence_requests WHERE status='pending' AND deleted_at IS NULL"),
             "pop_reviews": pop["awaiting_review"],
             "preservation_reviews": scalar("""SELECT COUNT(*) FROM pop_submissions
-              WHERE preservation_status IN ('unable_to_verify','early_removed')
+              WHERE preservation_status='early_removed'
               AND deleted_at IS NULL"""),
             "missing_pop": pop["missing"],
             "near_two_days": sum(42 <= row["hours"] < 72 for row in attention),
@@ -1885,7 +1885,7 @@ def pop_preservation_review_rows(path=None):
         rows=db.execute("""SELECT p.*,c.display_name,c.username FROM pop_submissions p
           JOIN creators c ON c.telegram_id=p.telegram_id
           WHERE p.deleted_at IS NULL
-          AND p.preservation_status IN ('unable_to_verify','early_removed')
+          AND p.preservation_status='early_removed'
           ORDER BY p.preservation_checked_at DESC,p.id DESC""").fetchall()
         return [_resolved_person_row(db,row) for row in rows]
 

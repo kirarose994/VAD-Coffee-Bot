@@ -83,6 +83,13 @@ class LateDatabaseTests(unittest.TestCase):
         stored=db.get_pop_submission(first["submission_id"],self.path)
         self.assertEqual(stored["message_id"],1);self.assertEqual(stored["source_message_at"],earlier.isoformat())
 
+    def test_inconclusive_preservation_does_not_hide_qualifying_late_status(self):
+        result=self.record(datetime(2026,7,17,1,32,tzinfo=ET))
+        self.assertTrue(db.mark_pop_preservation_unavailable(
+            result["submission_id"],"2026-07-18T02:00:00-04:00",self.path))
+        row=db.pop_status_report_for_week(WEEK,path=self.path)[0]
+        self.assertEqual(row["effective_status"],"late")
+
     def test_late_alert_claim_is_once_per_creator_week(self):
         result=self.record(datetime(2026,7,17,1,32,tzinfo=ET))
         self.assertIsNotNone(db.claim_late_pop_alert(result["submission_id"],self.path))
