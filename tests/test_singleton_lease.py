@@ -154,7 +154,7 @@ class PollerStartupTests(unittest.TestCase):
             self.assertEqual(bot_main.main(),0)
         self.assertEqual(calls,["acquire","verify","poll"])
         release.assert_called_once()
-        app.job_queue.run_repeating.assert_called_once()
+        self.assertEqual(app.job_queue.run_repeating.call_count,2)
 
 
 class PollerHeartbeatJobTests(unittest.IsolatedAsyncioTestCase):
@@ -173,6 +173,23 @@ class PollerHeartbeatJobTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(bot_main,"heartbeat_process_lease",side_effect=sqlite3.OperationalError("locked")):
             await bot_main.poller_lease_heartbeat_job(ctx)
         app.stop_running.assert_called_once_with()
+
+
+class PollingLivenessJobTests(unittest.IsolatedAsyncioTestCase):
+    async def test_inactive_updater_stops_workflow_for_lease_recovery(self):
+        app=SimpleNamespace(updater=SimpleNamespace(running=False),stop_running=Mock())
+        await bot_main.polling_liveness_job(SimpleNamespace(application=app))
+        app.stop_running.assert_called_once_with()
+
+    async def test_active_updater_keeps_workflow_running(self):
+        app=SimpleNamespace(running=True,updater=SimpleNamespace(running=True),stop_running=Mock())
+        await bot_main.polling_liveness_job(SimpleNamespace(application=app))
+        app.stop_running.assert_not_called()
+
+    async def test_orderly_shutdown_does_not_trigger_liveness_recovery(self):
+        app=SimpleNamespace(running=False,updater=SimpleNamespace(running=False),stop_running=Mock())
+        await bot_main.polling_liveness_job(SimpleNamespace(application=app))
+        app.stop_running.assert_not_called()
 
 
 if __name__ == "__main__":

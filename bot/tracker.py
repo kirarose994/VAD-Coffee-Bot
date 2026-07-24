@@ -2,6 +2,7 @@
 
 from datetime import date, datetime, time, timedelta, timezone
 import hashlib
+import logging
 import json
 from html import escape
 
@@ -157,6 +158,8 @@ async def record_update_observation(update: Update, ctx: ContextTypes.DEFAULT_TY
     source_at=_pop_observed_at(update,message,config(ctx).timezone) if message else None
     kind=_update_type(update) if message else "callback_query" if getattr(update,"callback_query",None) else "other"
     db.claim_processed_update(getattr(update,"update_id",None),kind,source_at)
+    logging.getLogger(__name__).info("Telegram update received kind=%s update_id=%s",kind,
+        getattr(update,"update_id",None))
 
 
 async def pop_report_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

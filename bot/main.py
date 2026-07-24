@@ -129,6 +129,20 @@ async def poller_lease_heartbeat_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ctx.application.stop_running()
 
 
+async def polling_liveness_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Restart safely if scheduler jobs outlive Telegram's polling updater."""
+    if not getattr(ctx.application,"running",True):
+        return
+    updater = getattr(ctx.application,"updater",None)
+    if updater is not None and getattr(updater,"running",False):
+        return
+    logging.getLogger(__name__).critical(
+        "Telegram polling liveness failed; updater is inactive while the workflow is running. "
+        "Stopping to release the singleton lease for automatic recovery"
+    )
+    ctx.application.stop_running()
+
+
 def register_application_handlers(app: Application) -> None:
     register_navigation(app)
     register_scoped_command_handlers(app)
@@ -196,6 +210,7 @@ def main() -> int:
 
     polling_started_at = datetime.now(ZoneInfo("America/New_York")).isoformat()
     log_startup_identity(logger,instance_id,source,True,polling_started_at)
+    logger.info("Telegram polling lease claimed instance_id=%s",instance_id)
     try:
         recovery_run_id=begin_recovery_run(polling_started_at)
         apply_persisted_settings(config)
@@ -212,19 +227,25 @@ def main() -> int:
             first=POLLER_LEASE_HEARTBEAT_SECONDS,
             name="bot-api-poller-singleton-heartbeat",
         )
+        app.job_queue.run_repeating(
+            polling_liveness_job,
+            interval=POLLER_LEASE_HEARTBEAT_SECONDS,
+            first=POLLER_LEASE_HEARTBEAT_SECONDS,
+            name="bot-api-poller-liveness",
+        )
         # Verify ownership again immediately before the first Telegram request.
         if not heartbeat_process_lease(
             POLLER_LEASE_NAME, instance_id, POLLER_LEASE_TTL_SECONDS,
         ):
             logger.critical("Singleton lease was lost before polling; startup aborted")
             return 2
-        logger.info("Bot is running. Press Ctrl-C to stop.")
+        logger.info("Telegram polling starting instance_id=%s allowed_updates=message,edited_message,callback_query",instance_id)
         # The pending queue is the only safe short-outage recovery source. Never
         # discard it and never run a second getUpdates consumer.
         app.run_polling(allowed_updates=["message", "edited_message", "callback_query"], drop_pending_updates=False)
         return 0
     except Exception as exc:
-        logger.critical("Bot startup or polling stopped with %s",type(exc).__name__)
+        logger.exception("Bot startup or polling stopped with %s",type(exc).__name__)
         raise
     finally:
         try:
