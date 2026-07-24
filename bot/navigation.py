@@ -638,7 +638,24 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = "💙 Away Notices\n\n" + ("\n\n".join(
             f"#{r['id']} · {r['display_name']}\n{r['start_date']} → {r['end_date']}\n💙 Acknowledge with /absence_queue"
             for r in rows[:10]) or "💙 No Away Notices need review.")
-        return await _show(query,text[:3900],menu_markup(ctx,[],"admin"))
+        return await _show(query,text[:3900],menu_markup(ctx,[("➕ Create Away Notice","away_admin_create"),("End/Cancel Approved Notice","away_admin_end")],"admin"))
+    if action == "away_admin_create":
+        if not (has_permission(user_id,cfg,"review_vacations") or has_permission(user_id,cfg,"review_sick_days")):
+            return await _show(query,"This Away Notice action isn’t included in your access.",home_markup(ctx,user_id))
+        ctx.user_data["admin_away_draft"]={"actor_id":user_id};ctx.user_data["guided_input"]="admin_away_creator_search"
+        return await _show(query,"➕ Create Away Notice\n\nSearch for an active approved creator by displayed name. The selected record uses that creator’s immutable Telegram ID.",menu_markup(ctx,[],"away_queue"))
+    if action == "away_admin_end":
+        rows=[]
+        for row in db.approved_absence_requests():
+            permission="review_vacations" if row["absence_type"]=="vacation" else "review_sick_days"
+            if has_permission(user_id,cfg,permission):rows.append((f"{row['display_name'][:28]} · {row['start_date']}–{row['end_date']}",f"away_admin_end_select_{row['id']}"))
+        return await _show(query,"End/Cancel Approved Notice\n\nSelect a current or future approved notice. Historical details remain preserved.",menu_markup(ctx,rows,"away_queue"))
+    if action.startswith("away_admin_end_select_"):
+        raw=action.removeprefix("away_admin_end_select_")
+        request=db.get_absence_request(int(raw)) if raw.isdigit() else None;permission="review_vacations" if request and request["absence_type"]=="vacation" else "review_sick_days"
+        if not request or request["status"]!="approved" or not has_permission(user_id,cfg,permission):return await _show(query,"That approved notice is unavailable.",menu_markup(ctx,[],"away_admin_end"))
+        ctx.user_data["admin_away_cancel_draft"]={"actor_id":user_id,"request_id":request["id"]};ctx.user_data["guided_input"]="admin_away_cancel_reason"
+        return await _show(query,f"End Away Notice\n\nCreator: {db.get_creator(request['telegram_id'])['display_name']}\nCategory: {request['absence_category'] or request['absence_type']}\nDates: {request['start_date']} through {request['end_date']}\nStatus: Approved\n\nEnter a short cancellation reason. Sensitive details are not required.",menu_markup(ctx,[],"away_admin_end"))
     if action == "participation_queue":
         if not has_permission(user_id,cfg,"view_creator_reports"):
             return await _show(query,"Participation reports aren’t included in your access.",home_markup(ctx,user_id))

@@ -23,6 +23,14 @@ def _clean(text, limit=1000):
 def _render_template(body, name, reason=""):
     return body.replace("{name}",name).replace("{reason}",reason)
 
+ADMIN_AWAY_CATEGORIES={"vacation_trip":("vacation","review_vacations","Vacation or trip"),"other":("vacation","review_vacations","Other time away"),"not_feeling_well":("sick","review_sick_days","Not feeling well"),"personal_day":("sick","review_sick_days","Personal day"),"emergency":("sick","review_sick_days","Emergency")}
+def admin_away_authorized(actor,cfg,category):
+    item=ADMIN_AWAY_CATEGORIES.get(category);return bool(item and has_permission(actor,cfg,item[1]))
+def admin_away_notification(start,end):
+    return f"An Away Notice was entered for you by an Admin for {start} through {end}. During this period, applicable participation and Weekly POP expectations will be excused. You do not need to share any personal details. Contact an Admin if the dates need to be changed."
+def _clear_admin_away(ctx):
+    for key in ("admin_away_draft","admin_away_nonce","admin_away_search_nonce","admin_away_category_nonce","guided_input"):ctx.user_data.pop(key,None)
+
 
 def _token(ctx, key):
     token = secrets.token_urlsafe(8)
@@ -86,6 +94,57 @@ async def absence_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         target_telegram_id=update.effective_user.id,related_request_id=request_id)
 
 
+async def admin_away_callback(update,ctx):
+    query=update.callback_query; parts=(query.data or "").split(":")
+    if len(parts)!=3:return await query.answer("Invalid Away Notice action.",show_alert=True)
+    _,nonce,action=parts;draft=ctx.user_data.get("admin_away_draft");cfg,actor=ctx.bot_data["config"],update.effective_user.id
+    if not draft or draft.get("actor_id")!=actor or nonce!=ctx.user_data.get("admin_away_nonce") or not admin_away_authorized(actor,cfg,draft.get("category")):
+        return await query.answer("This confirmation expired or is unavailable.",show_alert=True)
+    if action=="note":ctx.user_data["guided_input"]="admin_away_note";await query.answer();return await query.edit_message_text("Send an optional short note now. Personal details are not required.")
+    if action=="skip":draft["note"]="";action="review"
+    if action=="cancel":_clear_admin_away(ctx);await query.answer();return await query.edit_message_text("Away Notice cancelled. Nothing was saved.")
+    if action=="review":
+        nonce=secrets.token_urlsafe(12);ctx.user_data["admin_away_nonce"]=nonce; creator=db.get_creator(draft["telegram_id"])
+        await query.answer();return await query.edit_message_text(f"Review Admin-Entered Away Notice\n\nCreator: {creator['display_name']}\nDates: {draft['start_date']} through {draft['end_date']}\nNote: {draft.get('note') or 'No note'}\n\nEntered by Admin on behalf of creator.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Confirm and approve",callback_data=f"adminaway:{nonce}:confirm"),InlineKeyboardButton("❌ Cancel",callback_data=f"adminaway:{nonce}:cancel")]]))
+    if action!="confirm":return await query.answer("Invalid Away Notice action.",show_alert=True)
+    ctx.user_data.pop("admin_away_nonce",None)
+    try:request_id=db.create_admin_absence_notice(draft["telegram_id"],draft["absence_type"],draft["start_date"],draft["end_date"],draft.get("note"),draft["category"],actor)
+    except ValueError as exc:_clear_admin_away(ctx);await query.answer("Not saved.",show_alert=True);return await query.edit_message_text(f"No Away Notice was saved: {exc}.")
+    _clear_admin_away(ctx);await query.answer("Approved");await query.edit_message_text(f"Away Notice #{request_id} was approved and recorded.")
+    try:await ctx.bot.send_message(draft["telegram_id"],admin_away_notification(draft["start_date"],draft["end_date"]));db.record_audit(actor,"absence_on_behalf_creator_notified","absence_request",request_id,draft["telegram_id"],related_request_id=request_id)
+    except Exception:db.record_audit(actor,"absence_on_behalf_creator_notification_failed","absence_request",request_id,draft["telegram_id"],related_request_id=request_id,result="error")
+
+async def admin_away_search_callback(update,ctx):
+    q=update.callback_query;parts=(q.data or "").split(":")
+    if len(parts)!=3 or parts[1]!=ctx.user_data.pop("admin_away_search_nonce",None):return await q.answer("Selection expired.",show_alert=True)
+    draft=ctx.user_data.get("admin_away_draft");cfg,actor=ctx.bot_data["config"],update.effective_user.id
+    if not draft or draft.get("actor_id")!=actor:return await q.answer("Draft unavailable.",show_alert=True)
+    creator=db.get_creator(int(parts[2]))
+    if not creator or creator["status"]!="active":return await q.answer("Only active approved creators can be selected.",show_alert=True)
+    draft["telegram_id"]=creator["telegram_id"];nonce=secrets.token_urlsafe(12);ctx.user_data["admin_away_category_nonce"]=nonce
+    buttons=[[InlineKeyboardButton(label,callback_data=f"adminawaycategory:{nonce}:{cat}")] for cat,(_,perm,label) in ADMIN_AWAY_CATEGORIES.items() if has_permission(actor,cfg,perm)]
+    await q.answer();return await q.edit_message_text(f"Creator selected: {creator['display_name']}\n\nChoose a category.",reply_markup=InlineKeyboardMarkup(buttons))
+
+async def admin_away_category_callback(update,ctx):
+    q=update.callback_query;parts=(q.data or "").split(":")
+    if len(parts)!=3 or parts[1]!=ctx.user_data.pop("admin_away_category_nonce",None):return await q.answer("Selection expired.",show_alert=True)
+    draft=ctx.user_data.get("admin_away_draft");cfg,actor=ctx.bot_data["config"],update.effective_user.id;category=parts[2]
+    if not draft or draft.get("actor_id")!=actor or not admin_away_authorized(actor,cfg,category):return await q.answer("Category unavailable.",show_alert=True)
+    draft["category"]=category;draft["absence_type"]=ADMIN_AWAY_CATEGORIES[category][0];ctx.user_data["guided_input"]="admin_away_dates";await q.answer();return await q.edit_message_text("Enter start and end dates as YYYY-MM-DD YYYY-MM-DD. Maximum range: 366 days.")
+
+async def admin_away_cancel_callback(update,ctx):
+    q=update.callback_query;parts=(q.data or "").split(":");draft=ctx.user_data.get("admin_away_cancel_draft");cfg,actor=ctx.bot_data["config"],update.effective_user.id
+    if len(parts)!=3 or not draft or draft.get("actor_id")!=actor or parts[1]!=ctx.user_data.get("admin_away_cancel_nonce"):return await q.answer("Cancellation expired.",show_alert=True)
+    request=db.get_absence_request(draft["request_id"]);permission="review_vacations" if request and request["absence_type"]=="vacation" else "review_sick_days"
+    if not request or not has_permission(actor,cfg,permission):return await q.answer("This cancellation is unavailable.",show_alert=True)
+    if parts[2]=="cancel":ctx.user_data.pop("admin_away_cancel_draft",None);ctx.user_data.pop("admin_away_cancel_nonce",None);await q.answer();return await q.edit_message_text("Cancellation abandoned. No record was changed.")
+    if parts[2]!="confirm":return await q.answer("Invalid cancellation action.",show_alert=True)
+    ctx.user_data.pop("admin_away_cancel_nonce",None)
+    try:changed=db.cancel_approved_absence(request["id"],actor,draft["reason"])
+    except ValueError:changed=False
+    ctx.user_data.pop("admin_away_cancel_draft",None);await q.answer("Cancellation recorded" if changed else "No change recorded")
+    return await q.edit_message_text("Approved Away Notice ended and retained in history." if changed else "No change was recorded.")
+
 async def absence_queue(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id, cfg = update.effective_user.id, ctx.bot_data["config"]
     requested_type = ctx.args[0] if ctx.args and ctx.args[0] in {"vacation", "sick"} else None
@@ -120,7 +179,9 @@ async def review_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.answer("This review button expired or was already used.", show_alert=True)
         return await query.edit_message_text("Review not recorded. Refresh the queue.")
     cfg, user_id = ctx.bot_data["config"], update.effective_user.id
-    if not (has_permission(user_id, cfg, "review_vacations") or has_permission(user_id, cfg, "review_sick_days")):
+    request = db.get_absence_request(request_id)
+    permission = "review_vacations" if request and request["absence_type"] == "vacation" else "review_sick_days"
+    if not request or not has_permission(user_id, cfg, permission):
         return await query.answer("You are not authorized.", show_alert=True)
     confirm = _token(ctx, "review_confirm_nonce")
     ctx.user_data["review_draft"] = (request_id, decision)
@@ -263,6 +324,30 @@ async def contact_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def guided_contact_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     guided = ctx.user_data.get("guided_input")
+    if guided in {"admin_away_creator_search","admin_away_dates","admin_away_note","admin_away_cancel_reason"}:
+        cfg,actor=ctx.bot_data["config"],update.effective_user.id;draft=ctx.user_data.get("admin_away_draft")
+        if guided=="admin_away_cancel_reason":
+            cancel=ctx.user_data.get("admin_away_cancel_draft")
+            if not cancel or cancel.get("actor_id")!=actor:return await update.effective_message.reply_text("Cancellation draft expired. No change was made.")
+            reason=_clean(update.effective_message.text,1000)
+            if not reason:return await update.effective_message.reply_text("Provide a short cancellation reason.")
+            cancel["reason"]=reason;ctx.user_data.pop("guided_input",None);nonce=secrets.token_urlsafe(12);ctx.user_data["admin_away_cancel_nonce"]=nonce
+            return await update.effective_message.reply_text("Confirm ending this approved notice. History remains preserved; future POP excuses are removed while a Thursday cycle already underway remains excused.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ End Away Notice",callback_data=f"adminawaycancel:{nonce}:confirm"),InlineKeyboardButton("❌ Cancel",callback_data=f"adminawaycancel:{nonce}:cancel")]]))
+        if not draft or draft.get("actor_id")!=actor:_clear_admin_away(ctx);return await update.effective_message.reply_text("Away Notice draft expired. Nothing was saved.")
+        if guided=="admin_away_creator_search":
+            needle=_clean(update.effective_message.text,100).casefold();rows=[r for r in db.list_creators() if r["status"]=="active" and needle in r["display_name"].casefold()]
+            ctx.user_data.pop("guided_input",None);nonce=secrets.token_urlsafe(12);ctx.user_data["admin_away_search_nonce"]=nonce
+            buttons=[[InlineKeyboardButton(r["display_name"][:55],callback_data=f"adminawaysearch:{nonce}:{r['telegram_id']}")] for r in rows[:20]]
+            return await update.effective_message.reply_text("Select an active approved creator." if rows else "No active approved creator matched that name.",reply_markup=InlineKeyboardMarkup(buttons) if buttons else None)
+        if not admin_away_authorized(actor,cfg,draft.get("category")):_clear_admin_away(ctx);return await update.effective_message.reply_text("Your category permission is unavailable.")
+        if guided=="admin_away_dates":
+            parts=update.effective_message.text.split()
+            try:start,end=date.fromisoformat(parts[0]),date.fromisoformat(parts[1]);assert len(parts)==2 and end>=start and (end-start).days<=366
+            except (ValueError,IndexError,AssertionError):return await update.effective_message.reply_text("Enter YYYY-MM-DD YYYY-MM-DD only, with a maximum range of 366 days.")
+            draft["start_date"],draft["end_date"]=start.isoformat(),end.isoformat();ctx.user_data.pop("guided_input",None);nonce=secrets.token_urlsafe(12);ctx.user_data["admin_away_nonce"]=nonce
+            return await update.effective_message.reply_text("Optional note. Personal details are not required.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Add note",callback_data=f"adminaway:{nonce}:note"),InlineKeyboardButton("Skip note",callback_data=f"adminaway:{nonce}:skip")]]))
+        draft["note"]=_clean(update.effective_message.text,1000);ctx.user_data.pop("guided_input",None);nonce=secrets.token_urlsafe(12);ctx.user_data["admin_away_nonce"]=nonce
+        return await update.effective_message.reply_text("Review the Away Notice.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Continue",callback_data=f"adminaway:{nonce}:review")]]))
     if guided == "pop_reconciliation_timestamp":
         cfg,actor=ctx.bot_data["config"],update.effective_user.id
         if role_for(actor,cfg) is not Role.OWNER:
@@ -723,6 +808,10 @@ def register_operations(app):
     app.add_handler(CommandHandler("template_preview", template_preview))
     app.add_handler(CommandHandler("template_update", template_update))
     app.add_handler(CallbackQueryHandler(absence_callback, pattern=r"^absence:"))
+    app.add_handler(CallbackQueryHandler(admin_away_callback, pattern=r"^adminaway:"))
+    app.add_handler(CallbackQueryHandler(admin_away_search_callback, pattern=r"^adminawaysearch:"))
+    app.add_handler(CallbackQueryHandler(admin_away_category_callback, pattern=r"^adminawaycategory:"))
+    app.add_handler(CallbackQueryHandler(admin_away_cancel_callback, pattern=r"^adminawaycancel:"))
     app.add_handler(CallbackQueryHandler(review_callback, pattern=r"^review:"))
     app.add_handler(CallbackQueryHandler(review_confirm_callback, pattern=r"^reviewconfirm:"))
     app.add_handler(CallbackQueryHandler(announcement_callback, pattern=r"^announce:"))

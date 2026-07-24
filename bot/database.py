@@ -979,6 +979,69 @@ def create_absence_request(telegram_id, absence_type, start_date, end_date, note
         return request_id
 
 
+def _apply_absence_approval(db, row, actor_id, now):
+    availability = "vacation" if row["absence_type"] == "vacation" else "sick"
+    today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    if row["start_date"] <= today <= row["end_date"]:
+        db.execute("""UPDATE creators SET previous_availability=availability,availability=?,availability_since=?,
+          availability_changed_by=?,availability_expires_at=?,availability_reason=? WHERE telegram_id=?""",
+          (availability,now,actor_id,row["end_date"],f"approved absence #{row['id']}",row["telegram_id"]))
+    cursor, end_day = date.fromisoformat(row["start_date"]), date.fromisoformat(row["end_date"])
+    while cursor <= end_day:
+        if cursor.weekday() == 3:
+            year, week, _ = cursor.isocalendar(); key=f"{year}-W{week:02d}"
+            db.execute("INSERT OR IGNORE INTO pop_excuses(telegram_id,week_key,absence_request_id,created_at,created_by) VALUES(?,?,?,?,?)",
+                       (row["telegram_id"],key,row["id"],now,actor_id))
+            audit_event(db,actor_id,"pop_excused","pop_requirement",target_telegram_id=row["telegram_id"],new_value={"week_key":key},related_request_id=row["id"])
+        cursor += date.resolution
+
+
+def create_admin_absence_notice(telegram_id, absence_type, start_date, end_date, note, category, actor_id, path=None):
+    if absence_type not in {"vacation","sick"}: raise ValueError("Invalid absence type")
+    start,end=date.fromisoformat(start_date),date.fromisoformat(end_date)
+    if end < start or (end-start).days > 366: raise ValueError("Invalid absence range")
+    now=utc_now()
+    with get_connection(path) as db:
+        creator=db.execute("SELECT 1 FROM creators WHERE telegram_id=? AND status='active' AND deleted_at IS NULL",(telegram_id,)).fetchone()
+        if not creator: raise ValueError("Creator is not active")
+        overlap=db.execute("""SELECT id FROM absence_requests WHERE telegram_id=? AND status IN ('pending','approved')
+          AND deleted_at IS NULL AND start_date<=? AND end_date>=? LIMIT 1""",(telegram_id,end_date,start_date)).fetchone()
+        if overlap: raise ValueError("Overlapping absence notice")
+        snapshot={"type":absence_type,"category":category,"start_date":start_date,"end_date":end_date,
+                  "note":(note or "")[:1000],"entry_mode":"admin_on_behalf","entered_by":actor_id}
+        cur=db.execute("""INSERT INTO absence_requests(telegram_id,absence_type,absence_category,start_date,end_date,note,status,submitted_at,reviewed_at,reviewed_by,original_snapshot)
+          VALUES(?,?,?,?,?,?, 'approved', ?,?,?,?)""",(telegram_id,absence_type,category,start_date,end_date,(note or "")[:1000],now,now,actor_id,json.dumps(snapshot,sort_keys=True)))
+        request_id=cur.lastrowid; row=db.execute("SELECT * FROM absence_requests WHERE id=?",(request_id,)).fetchone()
+        _apply_absence_approval(db,row,actor_id,now)
+        audit_event(db,actor_id,"absence_entered_on_behalf","absence_request",request_id,telegram_id,
+                    new_value={"absence_type":absence_type,"category":category,"start_date":start_date,"end_date":end_date,"entry_mode":"admin_on_behalf"},related_request_id=request_id)
+        audit_event(db,actor_id,"absence_approved","absence_request",request_id,telegram_id,previous_value="pending",new_value="approved",related_request_id=request_id)
+        return request_id
+
+
+def cancel_approved_absence(request_id, actor_id, reason, path=None, today=None):
+    reason=(reason or "").strip()[:1000]
+    if not reason: raise ValueError("Cancellation reason is required")
+    today=today or datetime.now(ZoneInfo("America/New_York")).date()
+    if isinstance(today,str): today=date.fromisoformat(today)
+    now=utc_now()
+    with get_connection(path) as db:
+        row=db.execute("SELECT * FROM absence_requests WHERE id=? AND status='approved' AND deleted_at IS NULL",(request_id,)).fetchone()
+        if not row:return False
+        db.execute("UPDATE absence_requests SET status='cancelled',reviewed_at=?,reviewed_by=?,review_reason=? WHERE id=?",(now,actor_id,reason,request_id))
+        for excuse in db.execute("SELECT id,week_key FROM pop_excuses WHERE absence_request_id=?",(request_id,)).fetchall():
+            year,week=(int(part) for part in excuse["week_key"].split("-W"))
+            if date.fromisocalendar(year,week,4) > today: db.execute("DELETE FROM pop_excuses WHERE id=?",(excuse["id"],))
+        active=db.execute("SELECT 1 FROM absence_requests WHERE telegram_id=? AND status='approved' AND deleted_at IS NULL AND start_date<=? AND end_date>=?",(row["telegram_id"],today.isoformat(),today.isoformat())).fetchone()
+        if not active:
+            creator=db.execute("SELECT availability,previous_availability FROM creators WHERE telegram_id=?",(row["telegram_id"],)).fetchone()
+            if creator and creator["availability"] in {"vacation","sick"}:
+                restored=creator["previous_availability"] if creator["previous_availability"] in {"available","unavailable"} else "unavailable"
+                db.execute("UPDATE creators SET availability=?,availability_since=?,availability_changed_by=?,availability_expires_at=NULL,availability_reason='absence cancelled' WHERE telegram_id=?",(restored,now,actor_id,row["telegram_id"]))
+        audit_event(db,actor_id,"absence_cancelled","absence_request",request_id,row["telegram_id"],previous_value="approved",new_value="cancelled",reason=reason,related_request_id=request_id)
+        return True
+
+
 def list_absence_requests(status="pending", absence_type=None, path=None):
     with get_connection(path) as db:
         sql = "SELECT a.*,c.display_name FROM absence_requests a JOIN creators c ON c.telegram_id=a.telegram_id WHERE a.deleted_at IS NULL AND a.status=?"
@@ -987,6 +1050,14 @@ def list_absence_requests(status="pending", absence_type=None, path=None):
             sql += " AND a.absence_type=?"
             params.append(absence_type)
         rows=db.execute(sql + " ORDER BY a.submitted_at", params).fetchall()
+        return [_resolved_person_row(db,row) for row in rows]
+
+
+def approved_absence_requests(path=None):
+    today=datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    with get_connection(path) as db:
+        rows=db.execute("""SELECT a.*,c.display_name FROM absence_requests a JOIN creators c ON c.telegram_id=a.telegram_id
+          WHERE a.deleted_at IS NULL AND a.status='approved' AND a.end_date>=? ORDER BY a.end_date,a.id""",(today,)).fetchall()
         return [_resolved_person_row(db,row) for row in rows]
 
 
@@ -1014,23 +1085,11 @@ def review_absence(request_id, decision, actor_id, reason=None, path=None):
             db.execute("UPDATE absence_requests SET status=?,reviewed_at=?,reviewed_by=?,review_reason=? WHERE id=?",
                        (decision,now,actor_id,(reason or "")[:1000],request_id))
             if decision == "approved":
-                availability = "vacation" if row["absence_type"] == "vacation" else "sick"
-                eastern_today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
-                if row["start_date"] <= eastern_today <= row["end_date"]:
-                    db.execute("""UPDATE creators SET previous_availability=availability,availability=?,availability_since=?,
-                      availability_changed_by=?,availability_expires_at=?,availability_reason=? WHERE telegram_id=?""",
-                      (availability,now,actor_id,row["end_date"],f"approved absence #{request_id}",row["telegram_id"]))
-                start_day, end_day = date.fromisoformat(row["start_date"]), date.fromisoformat(row["end_date"])
-                cursor = start_day
-                while cursor <= end_day:
-                    if cursor.weekday() == 3:
-                        iso_year, iso_week, _ = cursor.isocalendar()
-                        key = f"{iso_year}-W{iso_week:02d}"
-                        db.execute("INSERT OR IGNORE INTO pop_excuses(telegram_id,week_key,absence_request_id,created_at,created_by) VALUES(?,?,?,?,?)",
-                                   (row["telegram_id"],key,request_id,now,actor_id))
-                        audit_event(db,actor_id,"pop_excused","pop_requirement",target_telegram_id=row["telegram_id"],
-                                    new_value={"week_key":key},related_request_id=request_id)
-                    cursor += date.resolution
+                _apply_absence_approval(db,row,actor_id,now)
+                audit_event(db, actor_id, f"absence_{decision}", "absence_request", request_id,
+                    row["telegram_id"], previous_value="pending", new_value=decision,
+                    reason=reason, related_request_id=request_id)
+                return True
         audit_event(db, actor_id, f"absence_{decision}", "absence_request", request_id,
                     row["telegram_id"], previous_value="pending", new_value=decision,
                     reason=reason, related_request_id=request_id)
