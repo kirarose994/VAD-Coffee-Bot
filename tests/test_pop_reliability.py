@@ -166,9 +166,10 @@ class PreservationDatabaseTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in due],[self.submission])
         self.assertTrue(db.mark_pop_preservation_unavailable(self.submission,"2026-07-17T12:01:00-04:00",self.path))
         self.assertFalse(db.mark_pop_preservation_unavailable(self.submission,"2026-07-17T12:02:00-04:00",self.path))
-        self.assertTrue(db.claim_pop_preservation_alert(self.submission,self.path))
         self.assertFalse(db.claim_pop_preservation_alert(self.submission,self.path))
         self.assertEqual(db.get_pop_submission(self.submission,self.path)["preservation_status"],"unable_to_verify")
+        with db.get_connection(self.path) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM audit_events WHERE action='pop_preservation_unavailable'").fetchone()[0],1)
         counts=db.needs_attention_counts("2026-W29",self.path,THURSDAY)
         self.assertEqual(counts["preservation_reviews"],1)
 
@@ -211,18 +212,16 @@ class PreservationDatabaseTests(unittest.TestCase):
 
 
 class PreservationJobTests(unittest.IsolatedAsyncioTestCase):
-    async def test_inconclusive_check_routes_review_without_accusation(self):
+    async def test_inconclusive_check_is_audited_without_admin_tracker_alert(self):
         row={"id":7,"telegram_id":20,"display_name":"Creator","week_key":"2026-W29",
             "submitted_at":"2026-07-16T12:00:00-04:00"}
         ctx=SimpleNamespace(bot_data={"config":config()},bot=SimpleNamespace())
         with patch("tracker.db.pop_preservation_due",return_value=[row]), \
-             patch("tracker.db.mark_pop_preservation_unavailable",return_value=True), \
-             patch("tracker.db.claim_pop_preservation_alert",return_value=True), \
+             patch("tracker.db.mark_pop_preservation_unavailable",return_value=True) as unavailable, \
              patch("tracker.send_routed",new_callable=AsyncMock) as routed:
             await pop_preservation_job(ctx)
-        body=routed.call_args.args[3]
-        self.assertIn("inconclusive",body.casefold())
-        self.assertIn("not evidence of early removal",body.casefold())
+        unavailable.assert_called_once()
+        routed.assert_not_awaited()
 
 
 class TimingAndRecoveryTests(unittest.TestCase):

@@ -1871,11 +1871,11 @@ def set_pop_preservation_status(submission_id, status, actor_id, note="", path=N
 
 
 def claim_pop_preservation_alert(submission_id, path=None):
-    """Claim at most one preservation alert for a submission across restarts."""
+    """Claim at most one affirmative early-removal alert across restarts."""
     with get_connection(path) as db:
         cur=db.execute("""UPDATE pop_submissions SET preservation_alerted_at=?
           WHERE id=? AND preservation_alerted_at IS NULL
-          AND preservation_status IN ('unable_to_verify','early_removed')""",
+          AND preservation_status='early_removed'""",
           (utc_now(),submission_id))
         return bool(cur.rowcount)
 

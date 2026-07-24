@@ -378,12 +378,16 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if late:
                     source=datetime.fromisoformat(late["source_message_at"])
                     await send_routed(ctx.bot,cfg,"pop_review",
-                        "🟠 Late POP recorded\n\n"
+                        "🟠 POP Submitted During Grace Period\n\n"
                         f"Creator: {escape(late['display_name'])}\n"
-                        f"Posted: {posted_time(source,cfg.timezone_name)}\n"
-                        f"Late by: {format_lateness(source,cfg.pop_due_weekday,cfg.pop_cutoff_time,cfg.timezone_name)}\n"
+                        f"Submitted: {posted_time(source,cfg.timezone_name)}\n"
                         f"Week: {late['week_key']}\n\n"
-                        "The proof was still recorded. This is a heads-up only; no warning or strike was created automatically.",
+                        f"Delay: {format_lateness(source,cfg.pop_due_weekday,cfg.pop_cutoff_time,cfg.timezone_name)}\n"
+                        "Status: Accepted\n\n"
+                        "This submission was received during the Friday grace period and was recorded successfully.\n\n"
+                        "Grace period: POP is due Thursday at 11:59 PM Eastern. Submissions received through Friday at 11:59 PM Eastern are late but accepted and receive credit.\n\n"
+                        "Preservation requirement: The submitted POP should remain available for at least 24 hours from the original posting time.\n\n"
+                        "Action for admins: None required. This notice is informational only. No warning or strike was created automatically.",
                         target_telegram_id=late["telegram_id"],related_submission_id=late["id"],
                         payload_summary=f"Late POP heads-up for submission {late['id']}")
             if result["created"]:
@@ -594,23 +598,10 @@ async def daily_owner_summary_job(ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def pop_preservation_job(ctx: ContextTypes.DEFAULT_TYPE):
-    """Create one calm Admin review item after each proof's 24-hour window."""
+    """Audit inconclusive preservation checks without treating them as removal evidence."""
     cfg=config(ctx);now=datetime.now(cfg.timezone)
     for row in db.pop_preservation_due(now):
-        if not db.mark_pop_preservation_unavailable(row["id"],now.isoformat()):
-            continue
-        if not db.claim_pop_preservation_alert(row["id"]):
-            continue
-        submitted=datetime.fromisoformat(row["submitted_at"]).astimezone(cfg.timezone)
-        stamp=f"{submitted.strftime('%A, %B')} {submitted.day} at {submitted.strftime('%I').lstrip('0')}:{submitted.strftime('%M %p')} ET"
-        await send_routed(ctx.bot,cfg,"pop_review",
-            "🟡 POP preservation review needed\n"
-            f"{escape(row['display_name'])}\n"
-            f"Week: {row['week_key']}\nProof recorded: {stamp}\n"
-            "Telegram could not automatically confirm whether the original post remained available for 24 hours. "
-            "This is inconclusive and is not evidence of early removal. Please review manually.",
-            target_telegram_id=row["telegram_id"],related_submission_id=row["id"],
-            payload_summary=f"POP preservation review for submission {row['id']}")
+        db.mark_pop_preservation_unavailable(row["id"],now.isoformat())
 
 
 async def telegram_recovery_job(ctx: ContextTypes.DEFAULT_TYPE):

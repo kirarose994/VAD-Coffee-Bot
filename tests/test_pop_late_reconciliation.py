@@ -182,7 +182,18 @@ class LateAlertDeliveryTests(unittest.IsolatedAsyncioTestCase):
              patch("tracker.db.claim_late_pop_alert",return_value=late),patch("tracker.send_routed",new_callable=AsyncMock) as routed:
             await observe(update,context)
         body=routed.await_args.args[3]
-        self.assertEqual(body,"🟠 Late POP recorded\n\nCreator: Creator\nPosted: Friday at 1:32 AM ET\nLate by: 1 hour 33 minutes\nWeek: 2026-W29\n\nThe proof was still recorded. This is a heads-up only; no warning or strike was created automatically.")
+        self.assertIn("POP Submitted During Grace Period",body)
+        self.assertIn("Creator: Creator",body)
+        self.assertIn("Submitted: Friday at 1:32 AM ET",body)
+        self.assertIn("Week: 2026-W29",body)
+        self.assertIn("Delay: 1 hour 33 minutes",body)
+        self.assertIn("Status: Accepted",body)
+        self.assertIn("Friday grace period",body)
+        self.assertIn("due Thursday at 11:59 PM Eastern",body)
+        self.assertIn("through Friday at 11:59 PM Eastern",body)
+        self.assertIn("remain available for at least 24 hours from the original posting time",body)
+        self.assertIn("None required",body)
+        self.assertIn("No warning or strike was created automatically",body)
 
 
 class OwnerReconciliationAuthorizationTests(unittest.IsolatedAsyncioTestCase):
