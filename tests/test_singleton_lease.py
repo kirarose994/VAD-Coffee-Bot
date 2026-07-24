@@ -199,5 +199,25 @@ class PollingLivenessJobTests(unittest.IsolatedAsyncioTestCase):
         app.stop_running.assert_not_called()
 
 
+class HandlerLifecycleLoggingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_start_lifecycle_logs_no_message_content(self):
+        update=SimpleNamespace(update_id=10,effective_message=SimpleNamespace(text="/start secret"),callback_query=None)
+        with self.assertLogs("main",level="INFO") as captured:
+            await bot_main.log_handler_begin(update,SimpleNamespace())
+            await bot_main.log_handler_complete(update,SimpleNamespace())
+        joined="\n".join(captured.output)
+        self.assertIn("kind=start update_id=10",joined)
+        self.assertNotIn("secret",joined)
+
+    async def test_callback_lifecycle_does_not_log_callback_payload(self):
+        update=SimpleNamespace(update_id=11,effective_message=None,callback_query=SimpleNamespace(data="sensitive-callback"))
+        with self.assertLogs("main",level="INFO") as captured:
+            await bot_main.log_handler_begin(update,SimpleNamespace())
+            await bot_main.log_handler_complete(update,SimpleNamespace())
+        joined="\n".join(captured.output)
+        self.assertIn("kind=callback_query update_id=11",joined)
+        self.assertNotIn("sensitive-callback",joined)
+
+
 if __name__ == "__main__":
     unittest.main()

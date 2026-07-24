@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, os.path.dirname(__file__))
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, TypeHandler
 
 from config import Config
 from database import (DATABASE_PATH, acquire_process_lease, begin_recovery_run,
@@ -156,7 +156,32 @@ async def polling_liveness_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     ctx.application.stop_running()
 
 
+def _traced_update_kind(update: Update) -> str | None:
+    """Identify only lifecycle events that are useful without logging user content."""
+    message = getattr(update,"effective_message",None)
+    if message and (getattr(message,"text",None) or "").split(maxsplit=1)[0].split("@",1)[0] == "/start":
+        return "start"
+    if getattr(update,"callback_query",None) is not None:
+        return "callback_query"
+    return None
+
+
+async def log_handler_begin(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    kind = _traced_update_kind(update)
+    if kind:
+        logging.getLogger(__name__).info("Telegram handler begin kind=%s update_id=%s",kind,
+            getattr(update,"update_id",None))
+
+
+async def log_handler_complete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    kind = _traced_update_kind(update)
+    if kind:
+        logging.getLogger(__name__).info("Telegram handler complete kind=%s update_id=%s",kind,
+            getattr(update,"update_id",None))
+
+
 def register_application_handlers(app: Application) -> None:
+    app.add_handler(TypeHandler(Update,log_handler_begin),group=-1000)
     register_navigation(app)
     register_scoped_command_handlers(app)
     register_operations(app)
@@ -164,6 +189,7 @@ def register_application_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("groupid", groupid_command))
     app.add_handler(CommandHandler("topicid", topicid_command))
     app.add_error_handler(error_handler)
+    app.add_handler(TypeHandler(Update,log_handler_complete),group=1000)
 
 
 async def startup_readiness_notice(app: Application) -> None:
