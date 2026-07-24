@@ -1263,7 +1263,9 @@ def pop_status_report(now=None, due_weekday=3, cutoff_time="23:59", timezone_nam
                 cutoff_time=cutoff_time,timezone_name=timezone_name)
             if item["excused"]:
                 item["effective_status"] = item["creator_status"] = "excused"
-            elif item["manual_reconciliation_id"] is not None:
+            elif (item["manual_reconciliation_id"] is not None and not
+                  (item["id"] is not None and item["timing_status"] == "late" and
+                   item["needs_review_reason"] is None and item["manual_status"] == "missing")):
                 item["effective_status"] = item["creator_status"] = item["manual_status"]
             elif item["id"] is not None and item["needs_review_reason"]:
                 item["effective_status"] = item["creator_status"] = "submitted_needs_review"

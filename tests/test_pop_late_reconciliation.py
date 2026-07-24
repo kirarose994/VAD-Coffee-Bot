@@ -152,6 +152,15 @@ class ManualReconciliationTests(unittest.TestCase):
         self.assertEqual(original["timing_status"],"on_time");self.assertEqual(original["message_id"],1)
         self.assertEqual(db.pop_status_report_for_week(WEEK,path=self.path)[0]["effective_status"],"missing")
 
+    def test_qualifying_late_evidence_cannot_also_display_as_missing(self):
+        source=datetime(2026,7,17,1,32,tzinfo=ET).isoformat()
+        submission=db.record_pop_evidence(20,WEEK,1,-300,11,"photo","late",
+            source_message_at=source,observed_at=source,path=self.path)
+        saved=self.save("missing",key="late-overwrite",overwrite=True)
+        self.assertTrue(saved["saved"])
+        self.assertEqual(db.get_pop_submission(submission["submission_id"],self.path)["timing_status"],"late")
+        self.assertEqual(db.pop_status_report_for_week(WEEK,path=self.path)[0]["effective_status"],"late")
+
     def test_manual_status_must_match_original_timestamp(self):
         friday=datetime(2026,7,17,0,15,tzinfo=ET).isoformat()
         result=self.save("on_time",friday)
