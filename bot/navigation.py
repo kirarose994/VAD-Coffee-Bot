@@ -64,6 +64,14 @@ def _pop_status_list_text(status, rows, cfg):
     return "\n".join(lines)[:3900]
 
 
+def _pop_status_rows(rows, status):
+    """Return one display category without allowing qualifying proof into Missing."""
+    qualifying_ids={row["telegram_id"] for row in rows
+        if row.get("effective_status") in {"on_time","late"}}
+    return [row for row in rows if row.get("effective_status") == status
+        and not (status == "missing" and row["telegram_id"] in qualifying_ids)]
+
+
 def _pop_reconciliation_preview(draft,cfg):
     creator=db.get_creator(draft["telegram_id"]);status=draft["status"]
     labels={"on_time":"On Time","late":"Late","excused":"Excused",
@@ -955,11 +963,11 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         period = current_period(now,*_pop_args(cfg))
         rows = db.pop_status_report(now,*_pop_args(cfg))
         pending = [r for r in rows if r["submission_status"] == "pending"]
-        on_time = [r for r in rows if r["effective_status"] == "on_time"]
-        late = [r for r in rows if r["effective_status"] == "late"]
-        excused = [r for r in rows if r["effective_status"] == "excused"]
-        needs_review = [r for r in rows if r["effective_status"] == "submitted_needs_review"]
-        missing = [r for r in rows if r["effective_status"] == "missing"]
+        on_time = _pop_status_rows(rows,"on_time")
+        late = _pop_status_rows(rows,"late")
+        excused = _pop_status_rows(rows,"excused")
+        needs_review = _pop_status_rows(rows,"submitted_needs_review")
+        missing = _pop_status_rows(rows,"missing")
         preservation = db.pop_preservation_review_rows()
         due = f"{period.due_at.strftime('%A, %b')} {period.due_at.day} at {period.due_at.strftime('%I').lstrip('0')}:{period.due_at.strftime('%M %p')} ET"
         lines = ["📸 Thursday POP Review",f"Due: {due}",f"On Time: {len(on_time)}",f"Late: {len(late)}",
@@ -983,8 +991,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         status=action.removeprefix("pop_status_")
         if status not in {"on_time","late","excused","missing"}:
             return await _show(query,"That POP status view is unavailable.",menu_markup(ctx,[],"pop_queue"))
-        rows=[row for row in db.pop_status_report(datetime.now(cfg.timezone),*_pop_args(cfg))
-              if row["effective_status"] == status]
+        rows=_pop_status_rows(db.pop_status_report(datetime.now(cfg.timezone),*_pop_args(cfg)),status)
         return await _show(query,_pop_status_list_text(status,rows,cfg),menu_markup(ctx,[],"pop_queue"))
     if action.startswith("pop_select_"):
         if not has_permission(user_id,cfg,"review_pop"): return await _show(query,"POP review isn’t included in your access.",home_markup(ctx,user_id))

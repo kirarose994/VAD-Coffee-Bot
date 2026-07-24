@@ -117,5 +117,22 @@ class PopStatusViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue({"✅ On Time (0)", "🟠 Late (0)", "💙 Excused (0)", "🔴 Missing (0)"}.issubset(labels))
 
 
+    async def test_qualifying_late_creator_is_excluded_from_missing_view(self):
+        query = SimpleNamespace(data="op:n:pop_queue", answer=AsyncMock(),
+            edit_message_text=AsyncMock(), message=SimpleNamespace())
+        update = SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=1), effective_chat=None)
+        ctx = SimpleNamespace(user_data={"menu_nonce": "n"}, bot_data={"config": config()})
+        late=pop_row(10,"late",name="Lia");missing=pop_row(10,"missing",name="Lia")
+        late["submission_status"]=missing["submission_status"]=None
+        with patch("navigation.db.pop_status_report",return_value=[late,missing]), \
+             patch("navigation.db.pop_preservation_review_rows",return_value=[]):
+            await callback(update,ctx)
+        text=query.edit_message_text.await_args.args[0]
+        self.assertIn("Late: 1",text)
+        self.assertIn("Missing: 0",text)
+        labels=[button.text for row in query.edit_message_text.await_args.kwargs["reply_markup"].inline_keyboard for button in row]
+        self.assertIn("🔴 Missing (0)",labels)
+
+
 if __name__ == "__main__":
     unittest.main()
