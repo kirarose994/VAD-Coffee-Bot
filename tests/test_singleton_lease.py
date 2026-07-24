@@ -159,7 +159,7 @@ class PollerStartupTests(unittest.TestCase):
 
 class PollerHeartbeatJobTests(unittest.IsolatedAsyncioTestCase):
     async def test_lost_lease_stops_polling_without_telegram_alert(self):
-        app=SimpleNamespace(bot_data={"process_instance_id":"one"},stop_running=Mock())
+        app=SimpleNamespace(bot_data={"process_instance_id":"one"},updater=SimpleNamespace(running=True),stop_running=Mock())
         ctx=SimpleNamespace(application=app)
         with patch.object(bot_main,"heartbeat_process_lease",return_value=False):
             await bot_main.poller_lease_heartbeat_job(ctx)
@@ -168,10 +168,17 @@ class PollerHeartbeatJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(app.bot_data["poller_lease_lost"])
 
     async def test_heartbeat_database_error_stops_polling(self):
-        app=SimpleNamespace(bot_data={"process_instance_id":"one"},stop_running=Mock())
+        app=SimpleNamespace(bot_data={"process_instance_id":"one"},updater=SimpleNamespace(running=True),stop_running=Mock())
         ctx=SimpleNamespace(application=app)
         with patch.object(bot_main,"heartbeat_process_lease",side_effect=sqlite3.OperationalError("locked")):
             await bot_main.poller_lease_heartbeat_job(ctx)
+        app.stop_running.assert_called_once_with()
+
+    async def test_inactive_updater_cannot_renew_lease(self):
+        app=SimpleNamespace(bot_data={"process_instance_id":"one"},updater=SimpleNamespace(running=False),stop_running=Mock())
+        with patch.object(bot_main,"heartbeat_process_lease") as heartbeat:
+            await bot_main.poller_lease_heartbeat_job(SimpleNamespace(application=app))
+        heartbeat.assert_not_called()
         app.stop_running.assert_called_once_with()
 
 

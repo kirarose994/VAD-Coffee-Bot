@@ -110,6 +110,14 @@ async def poller_lease_heartbeat_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Keep the poller lease alive; stop polling immediately if ownership is lost."""
     if ctx.application.bot_data.get("poller_lease_lost"):
         return
+    updater = getattr(ctx.application,"updater",None)
+    if not getattr(ctx.application,"running",True) or updater is None or not getattr(updater,"running",False):
+        logging.getLogger(__name__).critical(
+            "Telegram polling is inactive before lease renewal; stopping without extending the lease pid=%s",
+            os.getpid(),
+        )
+        ctx.application.stop_running()
+        return
     instance_id = ctx.application.bot_data["process_instance_id"]
     try:
         owned = heartbeat_process_lease(
@@ -127,6 +135,11 @@ async def poller_lease_heartbeat_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "Singleton lease ownership was lost; stopping Telegram polling"
         )
         ctx.application.stop_running()
+        return
+    logging.getLogger(__name__).info(
+        "Polling lease heartbeat renewed instance_id=%s pid=%s updater_running=%s",
+        instance_id,os.getpid(),bool(getattr(updater,"running",False)),
+    )
 
 
 async def polling_liveness_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
