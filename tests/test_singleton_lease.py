@@ -218,6 +218,22 @@ class HandlerLifecycleLoggingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("kind=callback_query update_id=11",joined)
         self.assertNotIn("sensitive-callback",joined)
 
+    async def test_lifecycle_kind_handles_empty_media_and_service_updates_safely(self):
+        cases=[
+            SimpleNamespace(update_id=1,effective_message=SimpleNamespace(text=""),callback_query=None),
+            SimpleNamespace(update_id=2,effective_message=SimpleNamespace(text="   "),callback_query=None),
+            SimpleNamespace(update_id=3,effective_message=SimpleNamespace(text=None),callback_query=None),
+            SimpleNamespace(update_id=4,effective_message=SimpleNamespace(text=None,caption="caption",photo=object()),callback_query=None),
+            SimpleNamespace(update_id=5,effective_message=SimpleNamespace(text=None,caption="caption",edit_date=1),callback_query=None),
+            SimpleNamespace(update_id=6,effective_message=SimpleNamespace(text=None,new_chat_members=[]),callback_query=None),
+            SimpleNamespace(update_id=7,effective_message=SimpleNamespace(text="/start@BotName"),callback_query=None),
+        ]
+        self.assertEqual([bot_main._traced_update_kind(update) for update in cases],
+                         [None,None,None,None,None,None,"start"])
+        for update in cases:
+            await bot_main.log_handler_begin(update,SimpleNamespace())
+            await bot_main.log_handler_complete(update,SimpleNamespace())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -158,26 +158,38 @@ async def polling_liveness_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 def _traced_update_kind(update: Update) -> str | None:
     """Identify only lifecycle events that are useful without logging user content."""
-    message = getattr(update,"effective_message",None)
-    if message and (getattr(message,"text",None) or "").split(maxsplit=1)[0].split("@",1)[0] == "/start":
-        return "start"
-    if getattr(update,"callback_query",None) is not None:
-        return "callback_query"
+    try:
+        message = getattr(update,"effective_message",None)
+        text = getattr(message,"text",None) if message is not None else None
+        tokens = text.split(maxsplit=1) if isinstance(text,str) else ()
+        if tokens and tokens[0].split("@",1)[0] == "/start":
+            return "start"
+        if getattr(update,"callback_query",None) is not None:
+            return "callback_query"
+    except Exception:
+        # Lifecycle observability must never affect Telegram update handling.
+        return None
     return None
 
 
 async def log_handler_begin(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    kind = _traced_update_kind(update)
-    if kind:
-        logging.getLogger(__name__).info("Telegram handler begin kind=%s update_id=%s",kind,
-            getattr(update,"update_id",None))
+    try:
+        kind = _traced_update_kind(update)
+        if kind:
+            logging.getLogger(__name__).info("Telegram handler begin kind=%s update_id=%s",kind,
+                getattr(update,"update_id",None))
+    except Exception:
+        return
 
 
 async def log_handler_complete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    kind = _traced_update_kind(update)
-    if kind:
-        logging.getLogger(__name__).info("Telegram handler complete kind=%s update_id=%s",kind,
-            getattr(update,"update_id",None))
+    try:
+        kind = _traced_update_kind(update)
+        if kind:
+            logging.getLogger(__name__).info("Telegram handler complete kind=%s update_id=%s",kind,
+                getattr(update,"update_id",None))
+    except Exception:
+        return
 
 
 def register_application_handlers(app: Application) -> None:
