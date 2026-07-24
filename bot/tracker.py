@@ -523,6 +523,46 @@ async def inactivity_job(ctx: ContextTypes.DEFAULT_TYPE):
                 target_telegram_id=row["telegram_id"])
 
 
+POP_THURSDAY_REMINDER_TIME = time(10, 0)
+POP_FRIDAY_REMINDER_TIME = time(12, 0)
+POP_FRIDAY_REMINDER_TEXT = (
+    "Hi! Life gets busy, and it looks like we haven’t recorded your Weekly POP yet. "
+    "You can still submit it in the POP topic. Please remember to leave your post up for "
+    "the required time."
+)
+
+
+async def pop_reminder_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """Send one gentle POP reminder per creator/week without changing POP state."""
+    cfg = config(ctx)
+    now = datetime.now(cfg.timezone)
+    local_time = now.timetz().replace(tzinfo=None)
+    if now.weekday() == 3 and local_time >= POP_THURSDAY_REMINDER_TIME:
+        eligible_statuses = {"due_today"}
+        notification_kind = "pop_thursday_reminder"
+        body = ("Hi! This is a friendly reminder to submit your Weekly POP in the POP topic today. "
+                "If an approved Away Notice applies, you are already excused.")
+    elif now.weekday() == 4 and local_time >= POP_FRIDAY_REMINDER_TIME:
+        eligible_statuses = {"missing"}
+        notification_kind = "pop_friday_reminder"
+        body = POP_FRIDAY_REMINDER_TEXT
+    else:
+        return
+    rows = db.pop_status_report(now, cfg.pop_due_weekday, cfg.pop_cutoff_time, cfg.timezone_name)
+    for row in rows:
+        if row["effective_status"] not in eligible_statuses:
+            continue
+        if not db.claim_notification(row["telegram_id"], row["week_key"], notification_kind):
+            continue
+        try:
+            await ctx.bot.send_message(row["telegram_id"], body)
+            db.record_audit(None, f"{notification_kind}_delivered", "notification",
+                target_telegram_id=row["telegram_id"])
+        except Exception:
+            db.record_audit(None, f"{notification_kind}_delivery_failed", "notification",
+                target_telegram_id=row["telegram_id"], result="error")
+
+
 async def daily_owner_summary_job(ctx: ContextTypes.DEFAULT_TYPE):
     """Optional and disabled by default; delivery is deduplicated per owner and Eastern date."""
     cfg = config(ctx)
@@ -659,6 +699,7 @@ def register_handlers(app):
     app.job_queue.run_once(startup_recovery_job,when=105,name="startup-pop-recovery")
     app.job_queue.run_repeating(runtime_heartbeat_job,interval=30,first=15,name="runtime-heartbeat")
     app.job_queue.run_repeating(inactivity_job, interval=1800, first=150, name="inactivity-monitor")
+    app.job_queue.run_repeating(pop_reminder_job, interval=900, first=180, name="pop-reminder-monitor")
     app.job_queue.run_repeating(pop_preservation_job,interval=900,first=180,name="pop-preservation-monitor")
     # A repeating check allows Owner settings to take effect without rescheduling jobs.
     app.job_queue.run_repeating(daily_admin_brief_job, interval=900, first=180, name="daily-admin-brief")
