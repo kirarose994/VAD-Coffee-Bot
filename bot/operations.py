@@ -14,9 +14,9 @@ from permissions import Role, has_permission, role_for
 from pop_policy import format_lateness, posted_time, submission_timing
 from runtime_config import persist_setting
 from routing import send_routed
-from missing_pop_workflow import (handle_missing_pop_excuse_text,
+from missing_pop_workflow import (handle_missing_pop_excuse_text,handle_missing_pop_external_text,
     missing_pop_case_callback,missing_pop_confirm_callback,
-    missing_pop_excuse_confirm_callback)
+    missing_pop_excuse_confirm_callback,missing_pop_external_callback)
 
 
 def _clean(text, limit=1000):
@@ -329,6 +329,8 @@ async def guided_contact_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     guided = ctx.user_data.get("guided_input")
     if guided == "missing_pop_excuse":
         return await handle_missing_pop_excuse_text(update,ctx)
+    if guided == "missing_pop_external_strike":
+        return await handle_missing_pop_external_text(update,ctx)
     if guided in {"admin_away_creator_search","admin_away_dates","admin_away_note","admin_away_cancel_reason"}:
         cfg,actor=ctx.bot_data["config"],update.effective_user.id;draft=ctx.user_data.get("admin_away_draft")
         if guided=="admin_away_cancel_reason":
@@ -826,4 +828,5 @@ def register_operations(app):
     app.add_handler(CallbackQueryHandler(missing_pop_case_callback, pattern=r"^mpop:"))
     app.add_handler(CallbackQueryHandler(missing_pop_confirm_callback, pattern=r"^mpconfirm:"))
     app.add_handler(CallbackQueryHandler(missing_pop_excuse_confirm_callback, pattern=r"^mpexcuse:"))
+    app.add_handler(CallbackQueryHandler(missing_pop_external_callback, pattern=r"^mpmanual:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,guided_contact_text),group=5)

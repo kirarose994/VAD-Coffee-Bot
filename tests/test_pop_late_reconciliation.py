@@ -116,7 +116,7 @@ class ManualReconciliationTests(unittest.TestCase):
 
     def test_schema_thirteen_is_additive_and_does_not_store_lateness_duration(self):
         with db.get_connection(self.path) as connection:
-            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()[0],16)
+            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()[0],17)
             tables={row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             submission_columns={row[1] for row in connection.execute("PRAGMA table_info(pop_submissions)")}
             manual_columns={row[1] for row in connection.execute("PRAGMA table_info(pop_manual_reconciliations)")}

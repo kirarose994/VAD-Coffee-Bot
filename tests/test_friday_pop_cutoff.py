@@ -77,7 +77,7 @@ class RetentionAndReminderDatabaseTests(unittest.TestCase):
             before=connection.execute("SELECT display_name FROM creators WHERE telegram_id=1").fetchone()[0]
         db.initialize_database(self.path);db.initialize_database(self.path)
         with db.get_connection(self.path) as connection:
-            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()[0],16)
+            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()[0],17)
             self.assertEqual(connection.execute("SELECT display_name FROM creators WHERE telegram_id=1").fetchone()[0],before)
             self.assertIsNotNone(connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='pop_reminder_deliveries'").fetchone())
 

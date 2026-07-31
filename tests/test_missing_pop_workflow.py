@@ -159,5 +159,38 @@ class MissingPopWorkflowTests(unittest.IsolatedAsyncioTestCase):
         value=workflow.case_callback(dict(self.current()),"s")
         self.assertLessEqual(len(value.encode()),64);self.assertEqual(value,f"mpop:{self.case['id']}:1:{WEEK}:s")
 
+    async def test_external_strike_is_owner_only_and_requires_confirmation(self):
+        data=workflow.case_callback(dict(self.current()),"x")
+        denied=update(data,10);await workflow.missing_pop_case_callback(denied,self.ctx)
+        self.assertTrue(denied.callback_query.answer.await_args.kwargs["show_alert"]);self.assertEqual(self.counts(),(0,0))
+        opened=update(data,9);await workflow.missing_pop_case_callback(opened,self.ctx)
+        self.assertEqual(self.counts(),(0,0));self.assertIn("RECORD EXISTING MANUAL",opened.callback_query.edit_message_text.await_args.args[0])
+        nonce=self.ctx.user_data["missing_pop_external_strike"]["nonce"]
+        await workflow.missing_pop_external_callback(update(f"mpmanual:{nonce}:begin"),self.ctx)
+        issuer=SimpleNamespace(effective_user=SimpleNamespace(id=9),effective_message=SimpleNamespace(text="Alex",reply_text=AsyncMock()))
+        await workflow.handle_missing_pop_external_text(issuer,self.ctx)
+        stamp=SimpleNamespace(effective_user=SimpleNamespace(id=9),effective_message=SimpleNamespace(text="2026-07-31 09:30",reply_text=AsyncMock()))
+        await workflow.handle_missing_pop_external_text(stamp,self.ctx)
+        await workflow.missing_pop_external_callback(update(f"mpmanual:{nonce}:proof_yes"),self.ctx)
+        note=SimpleNamespace(effective_user=SimpleNamespace(id=9),effective_message=SimpleNamespace(text="Owner reviewed screenshot",reply_text=AsyncMock()))
+        await workflow.handle_missing_pop_external_text(note,self.ctx)
+        self.assertEqual(self.counts(),(0,0))
+        with patch("missing_pop_workflow.refresh_case_card",AsyncMock(return_value=True)):
+            await workflow.missing_pop_external_callback(update(f"mpmanual:{nonce}:record"),self.ctx)
+        row=dict(self.current())
+        self.assertEqual((row["resolution_type"],row["external_issued_by"],row["recorded_by"],row["external_proof_reviewed"]),
+            ("strike_issued_external","Alex",9,1))
+        self.assertEqual(self.counts(),(1,1));self.bot.send_message.assert_not_awaited()
+        self.assertNotIn("missing_pop_external_strike",self.ctx.user_data)
+
+    async def test_external_strike_second_or_stale_attempt_is_blocked_without_notice(self):
+        case=dict(self.current())
+        first=db.record_external_missing_pop_strike(case["id"],1,WEEK,9,"Alex","2026-07-31T09:30:00-04:00",path=self.path)
+        second=db.record_external_missing_pop_strike(case["id"],1,WEEK,9,"Alex","2026-07-31T09:30:00-04:00",path=self.path)
+        self.assertTrue(first["ok"]);self.assertEqual(second["reason"],"official_strike_exists")
+        stale=update(workflow.case_callback(self.current(),"x"));await workflow.missing_pop_case_callback(stale,self.ctx)
+        self.assertTrue(stale.callback_query.answer.await_args.kwargs["show_alert"]);self.bot.send_message.assert_not_awaited()
+        self.assertIn("Existing manual POP strike recorded",workflow.render_case(dict(self.current())))
+
 
 if __name__=="__main__":unittest.main()

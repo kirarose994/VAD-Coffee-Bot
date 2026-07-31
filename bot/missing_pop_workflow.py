@@ -8,12 +8,12 @@ from zoneinfo import ZoneInfo
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 import database as db
-from permissions import has_permission
+from permissions import Role, has_permission, role_for
 from routing import destination, send_routed
 
 
 STATE_TTL_SECONDS=900
-ACTION_CODES={"s","e","h","c","p","r"}
+ACTION_CODES={"s","e","h","c","p","r","x"}
 
 
 def _clean(value,limit=500):
@@ -68,6 +68,7 @@ def case_markup(case):
         [InlineKeyboardButton("🔎 View POP History",callback_data=case_callback(case,"h")),
          InlineKeyboardButton("📩 Contact Creator",callback_data=case_callback(case,"c"))],
         [InlineKeyboardButton("⏳ Leave Pending",callback_data=case_callback(case,"p"))],
+        [InlineKeyboardButton("📝 Record Existing Manual Strike · Owner Only",callback_data=case_callback(case,"x"))],
     ])
 
 
@@ -93,6 +94,17 @@ def render_case(case,timezone_name="America/New_York"):
         except (TypeError,ValueError):handled=case["resolved_at"]
     if case["status"]=="strike_issued":
         count=db.official_pop_strike_count(case["telegram_id"])
+        if case.get("resolution_type")=="strike_issued_external":
+            external="Not recorded"
+            if case.get("external_notice_at"):
+                try:external=_eastern_timestamp(case["external_notice_at"],timezone_name)
+                except (TypeError,ValueError):external=_clean(case["external_notice_at"],100)
+            return ("✅ POP CASE RESOLVED\n\n"
+                f"Creator: {name}\nPOP Week: {_week_label(case['week_key'])}\n"
+                "Resolution: Existing manual POP strike recorded\n"
+                f"Strike Level: {strike_level(count)}\nOriginally Issued By: {_clean(case.get('external_issued_by'),100) or 'Not recorded'}\n"
+                f"Recorded By: {actor_label(case.get('recorded_by') or case.get('resolved_by'))}\n"
+                f"External Notice Time: {external}\nCreator Notified: Previously notified manually\nCase Status: Closed")
         notified="Yes" if case["creator_notified"] else "No — Manual delivery required"
         error=f"\nDelivery Reference: {_clean(case.get('notification_error'),120)}" if case.get("notification_error") else ""
         return ("✅ POP CASE RESOLVED\n\n"
@@ -170,6 +182,11 @@ def _authorized(update,ctx):
     return actor,has_permission(actor,ctx.bot_data["config"],"review_pop")
 
 
+def _owner_authorized(update,ctx):
+    actor=getattr(getattr(update,"effective_user",None),"id",None)
+    return actor,role_for(actor,ctx.bot_data["config"]) is Role.OWNER
+
+
 def _parse_case_action(data):
     parts=(data or "").split(":")
     if len(parts)!=5 or parts[0]!="mpop" or parts[4] not in ACTION_CODES:return None
@@ -213,6 +230,22 @@ async def missing_pop_case_callback(update,ctx):
     case=_case_matches(parsed)
     if not case:return await query.answer("This case is unavailable.",show_alert=True)
     action=parsed[3];cfg=ctx.bot_data["config"]
+    if action=="x":
+        actor,is_owner=_owner_authorized(update,ctx)
+        if not is_owner:return await query.answer("Only an Owner can record an externally issued strike.",show_alert=True)
+        if case["status"]!="pending":return await query.answer("This case has already been resolved.",show_alert=True)
+        await query.answer()
+        nonce=_confirmation_state(ctx,"missing_pop_external_strike",case,actor)
+        ctx.user_data["missing_pop_external_strike"]["recording_owner_name"]=_clean(
+            getattr(getattr(update,"effective_user",None),"full_name",None),100) or f"Owner {actor}"
+        markup=InlineKeyboardMarkup([[InlineKeyboardButton("Continue",callback_data=f"mpmanual:{nonce}:begin"),
+            InlineKeyboardButton("Cancel",callback_data=f"mpmanual:{nonce}:cancel")]])
+        return await query.edit_message_text("📝 RECORD EXISTING MANUAL POP STRIKE\n\n"
+            "This records an official POP strike that was already issued outside the bot.\n\n"
+            "• It will not send another strike notice.\n• It will close the missing-POP case.\n"
+            "• It will create the durable official strike record and audit trail.\n"
+            "• Use it only after verifying that the manual notice was actually sent.\n\n"
+            f"Creator: {_clean(case['display_name'],100)}\nPOP Week: {_week_label(case['week_key'])}",reply_markup=markup)
     if action=="r":
         if case["status"]!="strike_issued" or case["creator_notified"]:return await query.answer("This notice is not retryable.",show_alert=True)
         retry=db.retry_missing_pop_notification(case["id"],actor_id=actor)
@@ -259,6 +292,93 @@ async def missing_pop_case_callback(update,ctx):
         await ctx.bot.send_message(actor,"\n".join(lines)[:3900]);return
     username=f"https://t.me/{case['username']}" if case.get("username") else "No username link available"
     return await query.answer(f"Contact information\n{username}\nTelegram ID: {case['telegram_id']}\nContacting the creator does not change this case.",show_alert=True)
+
+
+def _external_state(ctx,nonce,actor):
+    state=ctx.user_data.get("missing_pop_external_strike")
+    return state if state and state.get("nonce")==nonce and state.get("actor_id")==actor and state.get("expires_at",0)>=time.time() else None
+
+
+async def missing_pop_external_callback(update,ctx):
+    query=update.callback_query;parts=(query.data or "").split(":")
+    actor,is_owner=_owner_authorized(update,ctx)
+    if not is_owner or len(parts)!=3 or parts[0]!="mpmanual":
+        return await query.answer("This Owner action is unavailable.",show_alert=True)
+    state=_external_state(ctx,parts[1],actor)
+    if not state:
+        ctx.user_data.pop("missing_pop_external_strike",None);ctx.user_data.pop("guided_input",None)
+        return await query.answer("This confirmation expired or was already used.",show_alert=True)
+    action=parts[2]
+    case=db.get_missing_pop_case(state["case_id"])
+    if not case or case["telegram_id"]!=state["telegram_id"] or case["week_key"]!=state["week_key"]:
+        ctx.user_data.pop("missing_pop_external_strike",None)
+        return await query.answer("This case changed and was not modified.",show_alert=True)
+    if action=="cancel":
+        ctx.user_data.pop("missing_pop_external_strike",None);ctx.user_data.pop("guided_input",None)
+        await query.answer()
+        return await query.edit_message_text(render_case(case,ctx.bot_data["config"].timezone_name),reply_markup=case_markup(case))
+    if case["status"]!="pending":
+        ctx.user_data.pop("missing_pop_external_strike",None)
+        await query.answer("This case has already been resolved.",show_alert=True)
+        return await refresh_case_card(ctx.bot,ctx.bot_data["config"],case)
+    if action=="begin":
+        state["phase"]="issuer";ctx.user_data["guided_input"]="missing_pop_external_strike"
+        await query.answer()
+        return await query.edit_message_text("Enter the name of the Admin who originally sent the external notice (100 characters maximum), or send Cancel.")
+    if action in {"proof_yes","proof_no"} and state.get("phase")=="proof":
+        state["proof_reviewed"]=action=="proof_yes";state["phase"]="note";ctx.user_data["guided_input"]="missing_pop_external_strike"
+        await query.answer()
+        return await query.edit_message_text("Enter an optional short note (500 characters maximum), or send Skip. Do not include private message content.")
+    if action=="record" and state.get("phase")=="confirm":
+        ctx.user_data.pop("missing_pop_external_strike",None);ctx.user_data.pop("guided_input",None)
+        await query.answer()
+        result=db.record_external_missing_pop_strike(case["id"],case["telegram_id"],case["week_key"],actor,
+            state["original_issuer"],state["external_notice_at"],state.get("note","") ,state["proof_reviewed"])
+        current=db.get_missing_pop_case(case["id"])
+        if not result["ok"]:
+            return await query.edit_message_text(_blocked_text(result["reason"])+"\n\n"+render_case(current,ctx.bot_data["config"].timezone_name),reply_markup=case_markup(current))
+        await refresh_case_card(ctx.bot,ctx.bot_data["config"],current)
+        return await query.edit_message_text(render_case(current,ctx.bot_data["config"].timezone_name))
+    return await query.answer("This step is unavailable or expired.",show_alert=True)
+
+
+async def handle_missing_pop_external_text(update,ctx):
+    actor,is_owner=_owner_authorized(update,ctx);state=ctx.user_data.get("missing_pop_external_strike")
+    if not is_owner or not state or state.get("actor_id")!=actor or state.get("expires_at",0)<time.time():
+        ctx.user_data.pop("missing_pop_external_strike",None);ctx.user_data.pop("guided_input",None)
+        return await update.effective_message.reply_text("This Owner action expired. Nothing changed.")
+    raw=(update.effective_message.text or "").strip()
+    if raw.casefold()=="cancel":
+        ctx.user_data.pop("missing_pop_external_strike",None);ctx.user_data.pop("guided_input",None)
+        return await update.effective_message.reply_text("Manual strike recording cancelled. Nothing changed.")
+    phase=state.get("phase")
+    if phase=="issuer":
+        issuer=_clean(raw,100)
+        if not issuer:return await update.effective_message.reply_text("Enter the original issuing Admin's name, or send Cancel.")
+        state["original_issuer"]=issuer;state["phase"]="time"
+        return await update.effective_message.reply_text("Enter the approximate Eastern notice time as YYYY-MM-DD HH:MM (for example, 2026-07-31 09:30), or send Cancel.")
+    if phase=="time":
+        try:
+            moment=datetime.strptime(raw,"%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("America/New_York"))
+        except ValueError:
+            return await update.effective_message.reply_text("Use YYYY-MM-DD HH:MM in Eastern Time, or send Cancel.")
+        state["external_notice_at"]=moment.isoformat();state["phase"]="proof";ctx.user_data.pop("guided_input",None)
+        markup=InlineKeyboardMarkup([[InlineKeyboardButton("Yes — Proof Reviewed",callback_data=f"mpmanual:{state['nonce']}:proof_yes"),
+            InlineKeyboardButton("No",callback_data=f"mpmanual:{state['nonce']}:proof_no")]])
+        return await update.effective_message.reply_text("Was proof of the manually issued notice reviewed?",reply_markup=markup)
+    if phase=="note":
+        state["note"]="" if raw.casefold()=="skip" else _clean(raw,500)
+        if raw.casefold()!="skip" and not state["note"]:return await update.effective_message.reply_text("Enter a short note, Skip, or Cancel.")
+        state["phase"]="confirm";ctx.user_data.pop("guided_input",None)
+        case=db.get_missing_pop_case(state["case_id"])
+        markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Record Existing Strike",callback_data=f"mpmanual:{state['nonce']}:record"),
+            InlineKeyboardButton("❌ Cancel",callback_data=f"mpmanual:{state['nonce']}:cancel")]])
+        return await update.effective_message.reply_text("🚨 FINAL OWNER CONFIRMATION\n\n"
+            f"Creator: {_clean(case['display_name'],100)}\nPOP Week: {_week_label(case['week_key'])}\n"
+            f"Originally Issued By: {state['original_issuer']}\nExternal Notice Time: {_eastern_timestamp(state['external_notice_at'],'America/New_York')}\n"
+            f"Recorded By: {state['recording_owner_name']}\nProof Reviewed: {'Yes' if state['proof_reviewed'] else 'No'}\n\n"
+            "Recording this will close the case and will not send another creator notice.",reply_markup=markup)
+    return await update.effective_message.reply_text("This Owner action expired. Nothing changed.")
 
 
 async def missing_pop_confirm_callback(update,ctx):
