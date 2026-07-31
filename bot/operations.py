@@ -14,6 +14,9 @@ from permissions import Role, has_permission, role_for
 from pop_policy import format_lateness, posted_time, submission_timing
 from runtime_config import persist_setting
 from routing import send_routed
+from missing_pop_workflow import (handle_missing_pop_excuse_text,
+    missing_pop_case_callback,missing_pop_confirm_callback,
+    missing_pop_excuse_confirm_callback)
 
 
 def _clean(text, limit=1000):
@@ -324,6 +327,8 @@ async def contact_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def guided_contact_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     guided = ctx.user_data.get("guided_input")
+    if guided == "missing_pop_excuse":
+        return await handle_missing_pop_excuse_text(update,ctx)
     if guided in {"admin_away_creator_search","admin_away_dates","admin_away_note","admin_away_cancel_reason"}:
         cfg,actor=ctx.bot_data["config"],update.effective_user.id;draft=ctx.user_data.get("admin_away_draft")
         if guided=="admin_away_cancel_reason":
@@ -818,4 +823,7 @@ def register_operations(app):
     app.add_handler(CallbackQueryHandler(timeline_callback, pattern=r"^timeline:"))
     app.add_handler(CallbackQueryHandler(template_callback, pattern=r"^template:"))
     app.add_handler(CallbackQueryHandler(guided_contact_callback, pattern=r"^contactflow:"))
+    app.add_handler(CallbackQueryHandler(missing_pop_case_callback, pattern=r"^mpop:"))
+    app.add_handler(CallbackQueryHandler(missing_pop_confirm_callback, pattern=r"^mpconfirm:"))
+    app.add_handler(CallbackQueryHandler(missing_pop_excuse_confirm_callback, pattern=r"^mpexcuse:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,guided_contact_text),group=5)

@@ -52,6 +52,16 @@ def current_period(now: datetime, due_weekday=3, cutoff_time="23:59", timezone_n
     return PopPeriod(f"{year}-W{week:02d}",monday,due_at)
 
 
+def latest_completed_period(now: datetime, due_weekday=3, cutoff_time="23:59",
+                            timezone_name="America/New_York") -> PopPeriod:
+    """Return the latest week whose Friday grace period has fully closed."""
+    zone=ZoneInfo(timezone_name);local=now.astimezone(zone)
+    period=current_period(local,due_weekday,cutoff_time,timezone_name)
+    if local > period.due_at + timedelta(days=1):
+        return period
+    return current_period(local-timedelta(days=7),due_weekday,cutoff_time,timezone_name)
+
+
 def calculate_status(now: datetime, *, submission_status=None, excused=False,
                      registered_at=None, due_weekday=3, cutoff_time="23:59",
                      timezone_name="America/New_York") -> str:
