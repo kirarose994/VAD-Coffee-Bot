@@ -18,7 +18,7 @@ must never be routed to the Main or Sellers community chat. Failures create audi
 Needs Attention items.
 
 Immediate alerts are reserved for three-day participation follow-up, new registrations,
-Away Notices needing attention, post-deadline POP exceptions, actionable warnings or strikes,
+Away Notices needing attention, Friday-noon missing-POP review, actionable warnings or strikes,
 new or escalated support, routing/delivery failure, critical health failure, and Owner Review.
 Healthy participation and ordinary POP receipts remain quiet and appear in queues and summaries.
 

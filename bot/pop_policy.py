@@ -5,11 +5,17 @@ from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 
+POP_TIMEZONE_NAME="America/New_York"
+POP_DUE_WEEKDAY=3
+
+
 @dataclass(frozen=True)
 class PopPeriod:
     week_key: str
     week_start: datetime
+    early_opens_at: datetime
     due_at: datetime
+    grace_at: datetime
 
 
 LABELS = {
@@ -23,7 +29,7 @@ LABELS = {
     "resubmission_requested": "🟡 Resubmission requested",
     "rejected": "🔴 Missing",
     "complete_preservation_pending": "✅ Complete — preservation pending",
-    "complete_preserved": "✅ Complete — 24-hour requirement satisfied",
+    "complete_preserved": "✅ Complete — retention requirement satisfied",
     "needs_review": "🟡 Needs review",
     "on_time": "✅ On Time",
     "late": "🟠 Late",
@@ -31,33 +37,26 @@ LABELS = {
 }
 
 
-def _cutoff(value: str) -> time:
-    try:
-        hour, minute = map(int, value.split(":", 1))
-        return time(hour, minute)
-    except (TypeError, ValueError):
-        return time(23, 59)
-
-
 def current_period(now: datetime, due_weekday=3, cutoff_time="23:59", timezone_name="America/New_York") -> PopPeriod:
-    zone = ZoneInfo(timezone_name)
+    zone = ZoneInfo(POP_TIMEZONE_NAME)
     local = now.astimezone(zone)
     monday = (local - timedelta(days=local.weekday())).replace(hour=0,minute=0,second=0,microsecond=0)
-    due_day = monday + timedelta(days=int(due_weekday))
-    cutoff = _cutoff(cutoff_time)
-    # A minute-based setting describes the whole selected minute.  The default
-    # 23:59 cutoff therefore includes Thursday 11:59:59.999999 PM ET.
+    due_day = monday + timedelta(days=POP_DUE_WEEKDAY)
+    cutoff = time(23,59)
+    # Policy deadlines include the complete displayed minute in Eastern Time.
     due_at = due_day.replace(hour=cutoff.hour,minute=cutoff.minute,second=59,microsecond=999999)
+    early_opens_at=(due_day-timedelta(days=1)).replace(hour=0,minute=0,second=0,microsecond=0)
+    grace_at=(due_day+timedelta(days=1)).replace(hour=11,minute=59,second=59,microsecond=999999)
     year, week, _ = monday.isocalendar()
-    return PopPeriod(f"{year}-W{week:02d}",monday,due_at)
+    return PopPeriod(f"{year}-W{week:02d}",monday,early_opens_at,due_at,grace_at)
 
 
 def latest_completed_period(now: datetime, due_weekday=3, cutoff_time="23:59",
                             timezone_name="America/New_York") -> PopPeriod:
     """Return the latest week whose Friday grace period has fully closed."""
-    zone=ZoneInfo(timezone_name);local=now.astimezone(zone)
+    zone=ZoneInfo(POP_TIMEZONE_NAME);local=now.astimezone(zone)
     period=current_period(local,due_weekday,cutoff_time,timezone_name)
-    if local > period.due_at + timedelta(days=1):
+    if local > period.grace_at:
         return period
     return current_period(local-timedelta(days=7),due_weekday,cutoff_time,timezone_name)
 
@@ -66,19 +65,20 @@ def calculate_status(now: datetime, *, submission_status=None, excused=False,
                      registered_at=None, due_weekday=3, cutoff_time="23:59",
                      timezone_name="America/New_York") -> str:
     period = current_period(now,due_weekday,cutoff_time,timezone_name)
-    local = now.astimezone(ZoneInfo(timezone_name))
+    local = now.astimezone(ZoneInfo(POP_TIMEZONE_NAME))
     if excused or submission_status == "excused": return "excused"
     if submission_status == "pending": return "awaiting_review"
     if submission_status == "approved": return "submitted"
     if submission_status == "resubmission_requested": return "resubmission_requested"
     if registered_at:
         try:
-            if datetime.fromisoformat(registered_at).astimezone(ZoneInfo(timezone_name)) > period.due_at:
+            if datetime.fromisoformat(registered_at).astimezone(ZoneInfo(POP_TIMEZONE_NAME)) > period.due_at:
                 return "not_due"
         except (TypeError,ValueError):
             pass
-    if local.date() < period.due_at.date(): return "not_due"
-    if local.date() == period.due_at.date() and local <= period.due_at: return "due_today"
+    if local < period.due_at.replace(hour=0,minute=0,second=0,microsecond=0): return "not_due"
+    if local <= period.due_at: return "due_today"
+    if local <= period.grace_at: return "still_needed"
     return "missing"
 
 
@@ -90,10 +90,21 @@ def submission_timing(source_at: datetime, due_weekday=3, cutoff_time="23:59",
                       timezone_name="America/New_York") -> tuple[str, str]:
     """Return the source message's canonical week and ET timing classification."""
     period = current_period(source_at,due_weekday,cutoff_time,timezone_name)
-    local = source_at.astimezone(ZoneInfo(timezone_name))
-    if local.date() < period.due_at.date():
+    local = source_at.astimezone(ZoneInfo(POP_TIMEZONE_NAME))
+    if local < period.early_opens_at:
         return period.week_key,"not_yet_due"
-    return period.week_key, "on_time" if local <= period.due_at else "late"
+    if local <= period.due_at:
+        return period.week_key,"on_time"
+    if local <= period.grace_at:
+        return period.week_key,"late"
+    return period.week_key,"after_cutoff"
+
+
+def retention_hours(source_at: datetime, due_weekday=3,
+                    timezone_name="America/New_York") -> int:
+    """Return the retention requirement for the source post in Eastern Time."""
+    local=source_at.astimezone(ZoneInfo(POP_TIMEZONE_NAME))
+    return 48 if local.weekday()==POP_DUE_WEEKDAY-1 else 24
 
 
 def lateness_minutes(source_at: datetime, due_weekday=3, cutoff_time="23:59",
@@ -104,7 +115,7 @@ def lateness_minutes(source_at: datetime, due_weekday=3, cutoff_time="23:59",
     remains on time.  Human-facing lateness is measured from the named clock minute,
     so Friday 00:15 is displayed as 16 minutes after a Thursday 23:59 cutoff.
     """
-    zone = ZoneInfo(timezone_name)
+    zone = ZoneInfo(POP_TIMEZONE_NAME)
     local = source_at.astimezone(zone)
     period = current_period(local,due_weekday,cutoff_time,timezone_name)
     if local <= period.due_at:
@@ -124,6 +135,6 @@ def format_lateness(source_at: datetime, due_weekday=3, cutoff_time="23:59",
 
 
 def posted_time(source_at: datetime, timezone_name="America/New_York") -> str:
-    local=source_at.astimezone(ZoneInfo(timezone_name))
+    local=source_at.astimezone(ZoneInfo(POP_TIMEZONE_NAME))
     hour=local.strftime("%I").lstrip("0") or "0"
     return f"{local.strftime('%A')} at {hour}:{local.strftime('%M %p')} ET"

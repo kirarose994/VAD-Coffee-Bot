@@ -8,7 +8,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from pop_policy import (calculate_status, current_period, format_lateness,
-    lateness_minutes, submission_timing)
+    lateness_minutes, retention_hours, submission_timing)
 
 DATABASE_PATH = Path(__file__).with_name("vad_tracker.db")
 
@@ -56,6 +56,12 @@ def initialize_database(path: Path | None = None):
           id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER NOT NULL,
           cycle_at TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('warning','alert')),
           sent_at TEXT NOT NULL, UNIQUE(telegram_id, cycle_at, kind),
+          FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id)
+        );
+        CREATE TABLE IF NOT EXISTS pop_reminder_deliveries (
+          telegram_id INTEGER NOT NULL, week_key TEXT NOT NULL,
+          reminder_type TEXT NOT NULL, claimed_at TEXT NOT NULL,
+          PRIMARY KEY(telegram_id,week_key,reminder_type),
           FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id)
         );
         CREATE TABLE IF NOT EXISTS pop_submissions (
@@ -434,7 +440,7 @@ def initialize_database(path: Path | None = None):
         """)
         _migrate_legacy_schema(db)
         _seed_message_templates(db)
-        db.execute("UPDATE schema_version SET version=15")
+        db.execute("UPDATE schema_version SET version=16")
 
 
 DEFAULT_MESSAGE_TEMPLATES = {
@@ -1613,7 +1619,7 @@ def recent_pop_week_keys(now=None, due_weekday=3, cutoff_time="23:59",
     keys=[]
     for offset in range(max(1,count)+1):
         period=current_period(now-timedelta(weeks=offset),due_weekday,cutoff_time,timezone_name)
-        if now.astimezone(ZoneInfo(timezone_name))>period.due_at and period.week_key not in keys:
+        if now.astimezone(ZoneInfo(timezone_name))>period.grace_at and period.week_key not in keys:
             keys.append(period.week_key)
         if len(keys)>=max(1,count):break
     return keys
@@ -1958,6 +1964,20 @@ def claim_notification(telegram_id, cycle_at, kind, path=None):
             return False
 
 
+def claim_pop_reminder(telegram_id,week_key,reminder_type,path=None):
+    """Durably claim one weekly POP reminder stage for one immutable identity."""
+    with get_connection(path) as db:
+        try:
+            db.execute("""INSERT INTO pop_reminder_deliveries
+              (telegram_id,week_key,reminder_type,claimed_at) VALUES(?,?,?,?)""",
+              (telegram_id,week_key,reminder_type,utc_now()))
+            audit_event(db,None,f"{reminder_type}_created","notification",
+                target_telegram_id=telegram_id,new_value={"week_key":week_key})
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
 def record_pop_evidence(telegram_id, week_key, message_id, chat_id, thread_id, proof_type,
                         timing_status, *, source_message_at, observed_at=None, update_id=None,
                         recovered_after_outage=False, needs_review_reason=None,
@@ -1984,7 +2004,8 @@ def record_pop_evidence(telegram_id, week_key, message_id, chat_id, thread_id, p
         canonical_proof="combined" if combined_qualified else proof_type
         canonical_review_reason=None if combined_qualified else needs_review_reason
         if not canonical:
-            due_at=(datetime.fromisoformat(source_message_at)+timedelta(hours=24)).isoformat()
+            source=datetime.fromisoformat(source_message_at)
+            due_at=(source+timedelta(hours=retention_hours(source))).isoformat()
             db.execute("""INSERT INTO pop_submissions
               (telegram_id,week_key,message_id,chat_id,thread_id,proof_type,submitted_at,
                preservation_status,preservation_due_at,timing_status,source_message_at,observed_at,
@@ -2000,7 +2021,8 @@ def record_pop_evidence(telegram_id, week_key, message_id, chat_id, thread_id, p
         else:
             submission_id=canonical["id"]
             if datetime.fromisoformat(source_message_at)<datetime.fromisoformat(canonical["source_message_at"] or canonical["submitted_at"]):
-                due_at=(datetime.fromisoformat(source_message_at)+timedelta(hours=24)).isoformat()
+                source=datetime.fromisoformat(source_message_at)
+                due_at=(source+timedelta(hours=retention_hours(source))).isoformat()
                 db.execute("""UPDATE pop_submissions SET message_id=?,chat_id=?,thread_id=?,proof_type=?,
                   submitted_at=?,source_message_at=?,preservation_due_at=?,timing_status=?,
                   recovered_after_outage=MAX(recovered_after_outage,?),needs_review_reason=?,
@@ -2125,7 +2147,7 @@ def record_runtime_heartbeat(path=None):
 
 
 def pop_preservation_due(now=None, path=None):
-    """Return new proofs whose 24-hour check is due, including resolved identity."""
+    """Return new proofs whose policy retention check is due, including resolved identity."""
     now = (now or datetime.now(ZoneInfo("America/New_York"))).isoformat()
     with get_connection(path) as db:
         rows = db.execute("""SELECT p.*,c.display_name,c.username FROM pop_submissions p
@@ -2152,7 +2174,7 @@ def mark_pop_preservation_unavailable(submission_id, checked_at=None, path=None)
         row=db.execute("SELECT telegram_id FROM pop_submissions WHERE id=?",(submission_id,)).fetchone()
         audit_event(db,None,"pop_preservation_unavailable","pop_submission",submission_id,
             row["telegram_id"],new_value="unable_to_verify",
-            reason="Inconclusive Telegram API result; Admin review required",
+            reason="Inconclusive Telegram API result retained for audit only",
             related_submission_id=submission_id)
         return True
 

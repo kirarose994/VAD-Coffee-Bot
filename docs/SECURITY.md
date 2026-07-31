@@ -23,8 +23,8 @@
   hosting is still required. Pending-update deletion remains disabled, and evidence, update,
   alert, and Owner-summary claims remain database-deduplicated across restarts.
 - Telegram does not reliably report arbitrary group-message deletion or provide general
-  historical-message lookup to ordinary bots. An inconclusive 24-hour preservation check creates
-  a deduplicated Admin review item, never an automatic accusation, warning, or strike. Confirmed
+  historical-message lookup to ordinary bots. An inconclusive policy-retention check remains
+  audit-only and never creates an accusation, warning, or strike. Confirmed
   early removal requires direct Admin evidence and an explicit confirmation.
 - Recovery confidence is conservative: no prior heartbeat is **Unknown**, and an outage beyond
   the conservative queue window is **Partial**. Neither state is presented as complete recovery.

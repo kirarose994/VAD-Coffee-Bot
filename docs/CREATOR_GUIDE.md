@@ -18,15 +18,16 @@ creator may be connected as one proof. Multiple posts do not create duplicate cr
 earliest valid posting time is retained.
 
 The original Telegram posting time is shown in Eastern Time. Thursday proof is **On Time**;
-proof first posted Friday or later is **Late**. Late proof still counts as submitted and shows
-the exact time after the configured Thursday deadline. It never becomes Missing merely because
+proof first posted Friday between 12:00 a.m. and 11:59 a.m. ET is **Late**. Proof submitted at Friday noon or later does not receive automatic credit and requires Admin reconciliation or excusal. Late proof still counts as submitted and shows
+the exact time after the fixed Thursday 11:59 p.m. ET deadline. It never becomes Missing merely because
 it was late. Reconnecting later does not change the original posting time. If a covering approved
 Away Notice exists, **Excused** remains authoritative even when proof is posted voluntarily.
 
-Your status may show **Complete — preservation pending**, **Complete — 24-hour requirement
+Wednesday proof is accepted early and must remain posted for at least 48 hours. Thursday and accepted Friday proof must remain posted for at least 24 hours.
+
+Your status may show **Complete — preservation pending**, **Complete — retention requirement
 satisfied**, or **Needs review**. Telegram does not reliably tell ordinary bots whenever a group
-message is deleted, so an inconclusive preservation check is sent to an Admin for calm manual
-review and is not treated as proof that you removed anything.
+message is deleted, so an inconclusive preservation check remains in the audit history and is not treated as proof that you removed anything.
 
 Contact an Admin creates a private support request after preview and confirmation. My Support
 Requests shows only requests tied to your immutable Telegram ID.

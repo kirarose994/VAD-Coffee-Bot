@@ -1,15 +1,19 @@
 # POP Engine
 
 Community Snapshot, queues, reports, notifications, and the Daily Admin Brief all use the same
-Eastern Time POP policy. “Missing” is impossible before the configured Thursday cutoff. An
-immediate Admin exception is generated only after that deadline and is deduplicated by creator
-and POP period.
+fixed America/New_York POP policy. Wednesday proof is accepted early with a 48-hour retention
+requirement. Thursday proof is On Time through 11:59 p.m. ET with a 24-hour retention
+requirement. Friday proof is Late only from 12:00 a.m. through 11:59 a.m. ET and also requires
+24 hours of retention. At Friday noon, an unresolved creator becomes Missing and enters Admin
+review; no strike is automatic.
 
 POP accepts proof only from approved creators in the configured POP Group and POP Topic.
 Submission credit is unique per creator and weekly period. Proof enters Pending/Awaiting
 Review and records submission and review actors.
 
-`pop_policy.py` is the only deadline calculator. Before the due date: Not Due Yet. On the due
-date before cutoff: Due Today/Still Needed. After the Eastern cutoff: Missing. Submitted,
-Awaiting Review, and Excused override deadline labels. Approved Away Notices may create a POP
-excuse. POP processing is separate from participation and never grants engagement credit.
+`pop_policy.py` is the only deadline calculator. Before Wednesday: Not Due Yet. Wednesday is the
+early window, Thursday is Due Today, Friday morning is Still Needed, and Friday noon begins
+Missing. Proof received at noon Friday or later is not credited automatically and requires an
+authorized reconciliation or excusal. Submitted, Awaiting Review, and Excused override deadline
+labels. Approved Away Notices may create a POP excuse. POP processing is separate from
+participation and never grants engagement credit.

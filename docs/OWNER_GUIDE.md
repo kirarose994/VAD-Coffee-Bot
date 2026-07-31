@@ -33,11 +33,17 @@ without opening, fetching, or storing the submitted URL. Weekly uniqueness keeps
 qualifying record.
 
 The preservation monitor runs every 15 minutes and persists its state in SQLite so restarts do
-not duplicate review items. Because Telegram does not reliably expose arbitrary message deletion
-or historical-message lookup to ordinary bots, a due check becomes **Unable to verify — Admin
-review required** instead of an accusation. Admins may confirm preservation or, after directly
-verifying reliable evidence and confirming the protected action, record early removal. Each
-uncertain or confirmed-removal alert is claimed once.
+not duplicate review items. Wednesday proof requires 48 hours of retention; Thursday and
+accepted Friday-morning proof require 24 hours. Because Telegram does not reliably expose
+arbitrary message deletion or historical-message lookup to ordinary bots, an inconclusive check
+is retained in the audit history but is not an actionable preservation review. Only affirmative
+early-removal evidence appears for Admin action.
+
+Creators without qualifying proof receive durably deduplicated private reminders Thursday at
+10:00 a.m. and 8:00 p.m. ET and Friday at 8:00 a.m. ET. Approved proof, excusals, Away Notices,
+inactive status, and archived status suppress reminders. The first normal scheduler run at or
+after Friday noon evaluates the current week, creates or reuses missing-POP cases, and posts the
+Admin review summary and cards without issuing a strike.
 
 ## POP outage recovery
 

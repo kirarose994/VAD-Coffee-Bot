@@ -10,7 +10,8 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).parents[1] / "bot"))
 
 from navigation import callback
-from tracker import POP_FRIDAY_REMINDER_TEXT, pop_reminder_job
+from tracker import (POP_THURSDAY_EVENING_REMINDER_TEXT,
+    POP_THURSDAY_MORNING_REMINDER_TEXT, pop_reminder_job)
 
 
 ET = ZoneInfo("America/New_York")
@@ -42,7 +43,8 @@ class PopReminderTests(unittest.IsolatedAsyncioTestCase):
         ctx = SimpleNamespace(bot_data={"config": config()}, bot=bot)
         with patch("tracker.datetime", FixedDateTime), \
              patch("tracker.db.pop_status_report", return_value=rows), \
-             patch("tracker.db.claim_notification", side_effect=claims) as claim, \
+             patch("tracker.db.approved_absence_on",return_value=None), \
+             patch("tracker.db.claim_pop_reminder", side_effect=claims) as claim, \
              patch("tracker.db.record_audit"):
             await pop_reminder_job(ctx)
         return bot, claim
@@ -55,28 +57,31 @@ class PopReminderTests(unittest.IsolatedAsyncioTestCase):
         ], [True])
         bot.send_message.assert_awaited_once()
         self.assertEqual(bot.send_message.await_args.args[0], 10)
-        self.assertEqual(claim.call_args.args, (10, "2026-W30", "pop_thursday_reminder"))
+        bot.send_message.assert_awaited_once_with(10,POP_THURSDAY_MORNING_REMINDER_TEXT)
+        self.assertEqual(claim.call_args.args, (10, "2026-W30", "pop_thursday_morning"))
 
-    async def test_friday_reminder_is_private_missing_only_and_deduplicated(self):
-        FixedDateTime.current = datetime(2026, 7, 24, 12, 0, tzinfo=ET)
-        rows = [pop_row(10, "missing"), pop_row(11, "excused"), pop_row(12, "late")]
+    async def test_friday_reminder_is_private_still_needed_only_and_deduplicated(self):
+        FixedDateTime.current = datetime(2026, 7, 24, 8, 0, tzinfo=ET)
+        rows = [pop_row(10, "still_needed"), pop_row(11, "excused"), pop_row(12, "late")]
         bot, claim = await self.run_job(rows, [True])
-        bot.send_message.assert_awaited_once_with(10, POP_FRIDAY_REMINDER_TEXT)
-        self.assertEqual(claim.call_args.args, (10, "2026-W30", "pop_friday_reminder"))
+        self.assertIn("FINAL POP REMINDER",bot.send_message.await_args.args[1])
+        self.assertIn("approximately 4 hours left",bot.send_message.await_args.args[1])
+        self.assertEqual(claim.call_args.args, (10, "2026-W30", "pop_friday_final"))
         self.assertEqual(bot.send_message.await_count, 1)
 
     async def test_repeated_scheduler_pass_does_not_repeat_a_friday_reminder(self):
-        FixedDateTime.current = datetime(2026, 7, 24, 12, 0, tzinfo=ET)
+        FixedDateTime.current = datetime(2026, 7, 24, 8, 0, tzinfo=ET)
         bot = SimpleNamespace(send_message=AsyncMock())
         ctx = SimpleNamespace(bot_data={"config": config()}, bot=bot)
         with patch("tracker.datetime", FixedDateTime), \
-             patch("tracker.db.pop_status_report", return_value=[pop_row(10, "missing")]), \
-             patch("tracker.db.claim_notification", side_effect=[True, False]) as claim, \
+             patch("tracker.db.pop_status_report", return_value=[pop_row(10, "still_needed")]), \
+             patch("tracker.db.approved_absence_on",return_value=None), \
+             patch("tracker.db.claim_pop_reminder", side_effect=[True, False]) as claim, \
              patch("tracker.db.record_audit"):
             await pop_reminder_job(ctx)
             await pop_reminder_job(ctx)
         self.assertEqual(claim.call_count, 2)
-        bot.send_message.assert_awaited_once_with(10, POP_FRIDAY_REMINDER_TEXT)
+        self.assertEqual(bot.send_message.await_count,1)
 
     async def test_reminders_wait_for_their_fixed_eastern_times(self):
         FixedDateTime.current = datetime(2026, 7, 23, 9, 59, tzinfo=ET)
@@ -84,11 +89,25 @@ class PopReminderTests(unittest.IsolatedAsyncioTestCase):
         bot.send_message.assert_not_awaited()
         claim.assert_not_called()
 
-    async def test_friday_reminder_waits_until_noon_eastern(self):
-        FixedDateTime.current = datetime(2026, 7, 24, 11, 59, tzinfo=ET)
+    async def test_friday_reminder_stops_at_noon_eastern(self):
+        FixedDateTime.current = datetime(2026, 7, 24, 12, 0, tzinfo=ET)
         bot, claim = await self.run_job([pop_row(10, "missing")], [])
         bot.send_message.assert_not_awaited()
         claim.assert_not_called()
+
+    async def test_thursday_evening_uses_distinct_stage(self):
+        FixedDateTime.current=datetime(2026,7,23,20,0,tzinfo=ET)
+        bot,claim=await self.run_job([pop_row(10,"due_today")],[True])
+        bot.send_message.assert_awaited_once_with(10,POP_THURSDAY_EVENING_REMINDER_TEXT)
+        self.assertEqual(claim.call_args.args,(10,"2026-W30","pop_thursday_evening"))
+
+    async def test_approved_away_notice_blocks_reminder(self):
+        FixedDateTime.current=datetime(2026,7,23,10,0,tzinfo=ET)
+        bot=SimpleNamespace(send_message=AsyncMock());ctx=SimpleNamespace(bot_data={"config":config()},bot=bot)
+        with patch("tracker.datetime",FixedDateTime),patch("tracker.db.pop_status_report",return_value=[pop_row(10,"due_today")]), \
+             patch("tracker.db.approved_absence_on",return_value={"id":1}),patch("tracker.db.claim_pop_reminder") as claim:
+            await pop_reminder_job(ctx)
+        bot.send_message.assert_not_awaited();claim.assert_not_called()
 
 
 class PopStatusViewTests(unittest.IsolatedAsyncioTestCase):
