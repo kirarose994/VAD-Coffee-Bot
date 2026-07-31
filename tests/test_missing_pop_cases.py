@@ -176,7 +176,7 @@ class MissingPopCaseTests(unittest.TestCase):
         self.assertIn("missing_pop_notification_retried", actions)
         self.assertIn("missing_pop_notification_delivered", actions)
 
-    def test_schema_v14_upgrades_to_v15_additively_and_idempotently(self):
+    def test_schema_v14_upgrades_to_v16_additively_and_idempotently(self):
         db.add_warning(1,"warning","Preserved moderation warning",9,self.path)
         db.record_pop_evidence(1,self.WEEK,500,-100,7,"photo","on_time",
             source_message_at="2026-07-23T12:00:00-04:00",path=self.path)
@@ -194,7 +194,7 @@ class MissingPopCaseTests(unittest.TestCase):
             indexes={row[1] for row in connection.execute("PRAGMA index_list(missing_pop_cases)")}
             case_sql=connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='missing_pop_cases'").fetchone()[0]
             strike_sql=connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='official_pop_strikes'").fetchone()[0]
-            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()[0],15)
+            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()[0],16)
             self.assertTrue({"missing_pop_cases","official_pop_strikes","missing_pop_evaluations"}.issubset(tables))
             self.assertIn("missing_pop_cases_status",indexes)
             self.assertIn("UNIQUE(telegram_id,week_key)",case_sql.replace(" ",""))

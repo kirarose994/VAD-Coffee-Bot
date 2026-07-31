@@ -13,7 +13,7 @@ import database as db
 from config import RESOURCE_DEFAULTS
 from permissions import Membership, Role, has_permission, role_for, roles_for
 from pop_policy import (current_period, format_lateness, label as pop_label,
-    latest_completed_period, posted_time)
+    latest_completed_period, posted_time, retention_hours)
 from presentation import audit_entry, friendly_timestamp, system_error_detail, timeline_entry
 from runtime_config import persist_setting
 from routing import ROUTES, routing_summary, send_routed
@@ -989,7 +989,8 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         missing = _pop_status_rows(rows,"missing")
         preservation = db.pop_preservation_review_rows()
         due = f"{period.due_at.strftime('%A, %b')} {period.due_at.day} at {period.due_at.strftime('%I').lstrip('0')}:{period.due_at.strftime('%M %p')} ET"
-        lines = ["📸 Thursday POP Review",f"Due: {due}",f"On Time: {len(on_time)}",f"Late: {len(late)}",
+        lines = ["📸 Thursday POP Review",f"Due: {due}","Final grace deadline: Friday at 11:59 AM ET",
+            f"On Time: {len(on_time)}",f"Late: {len(late)}",
             f"Excused: {len(excused)}",f"Needs Review: {len(needs_review)}",f"Missing: {len(missing)}",
             f"Waiting for proof review: {len(pending)}",f"Preservation review: {len(preservation)}"]
         lines += [f"\n🟠 {r['display_name']} · {posted_time(datetime.fromisoformat(r['source_message_at']),cfg.timezone_name)}"
@@ -1035,8 +1036,10 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         submission_id=int(action.removeprefix("pop_select_"));submission=db.get_pop_submission(submission_id)
         if not submission: return await _show(query,"That POP submission is unavailable.",menu_markup(ctx,[],"pop_queue"))
         creator=db.get_creator(submission["telegram_id"])
-        preservation_labels={"pending_24h":"Pending 24-hour verification","preserved":"Preserved for 24 hours",
-            "early_removed":"Early removal confirmed","unable_to_verify":"Unable to verify — Admin review required",
+        source=datetime.fromisoformat(submission["source_message_at"] or submission["submitted_at"])
+        required_hours=retention_hours(source,*_pop_args(cfg)[0:1],cfg.timezone_name)
+        preservation_labels={"pending_24h":f"Pending {required_hours}-hour verification","preserved":f"Preserved for {required_hours} hours",
+            "early_removed":"Early removal confirmed","unable_to_verify":"Unable to verify — audit only",
             "legacy_record":"Legacy record"}
         actions=[]
         if submission["status"]=="pending":
@@ -1045,7 +1048,6 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if submission["preservation_status"] == "pending_24h":
             actions += [("✅ Confirm Preserved",f"pop_preserve_preserved_{submission_id}"),
                 ("⚠️ Confirm Early Removal",f"pop_preserve_early_{submission_id}")]
-        source=datetime.fromisoformat(submission["source_message_at"] or submission["submitted_at"])
         timing=(f"\nTiming: Late · {format_lateness(source,*_pop_args(cfg))} late" if submission["timing_status"]=="late"
             else f"\nTiming: {str(submission['timing_status'] or 'Unknown').replace('_',' ').title()}")
         reference=f"chat {submission['chat_id']} / message {submission['message_id']}"
@@ -1057,22 +1059,30 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if raw.startswith("confirm_early_"):
             submission_id=int(raw.removeprefix("confirm_early_"));submission=db.get_pop_submission(submission_id)
             if not submission:return await _show(query,"That POP submission is unavailable.",menu_markup(ctx,[],"pop_queue"))
-            changed=db.set_pop_preservation_status(submission_id,"early_removed",user_id,"Admin directly confirmed removal before 24 hours")
+            source=datetime.fromisoformat(submission["source_message_at"] or submission["submitted_at"])
+            required_hours=retention_hours(source,*_pop_args(cfg)[0:1],cfg.timezone_name)
+            changed=db.set_pop_preservation_status(submission_id,"early_removed",user_id,f"Admin directly confirmed removal before {required_hours} hours")
             if changed and db.claim_pop_preservation_alert(submission_id):
                 creator=db.get_creator(submission["telegram_id"])
                 await send_routed(ctx.bot,cfg,"pop_review",
                     f"⚠️ Early POP removal confirmed\n{creator['display_name']}\n"
                     f"Week: {submission['week_key']}\nProof recorded: {friendly_timestamp(submission['submitted_at'],timezone_name=getattr(cfg,'timezone_name','America/New_York'))}\n"
-                    "An Admin directly confirmed that the proof was removed before the 24-hour requirement.",
+                    f"An Admin directly confirmed that the proof was removed before the {required_hours}-hour requirement.",
                     target_telegram_id=submission["telegram_id"],related_submission_id=submission_id,
                     payload_summary=f"Confirmed early POP removal for submission {submission_id}")
             return await _show(query,"Early removal was recorded and audited." if changed else "That preservation result was already recorded.",menu_markup(ctx,[],"pop_queue"))
         status,submission_raw=raw.rsplit("_",1);submission_id=int(submission_raw)
         if status=="early":
-            return await _show(query,"⚠️ Confirm Early Removal\n\nUse this only when you directly confirmed that the original POP post was removed before 24 hours. An unavailable or inconclusive Telegram result is not proof of removal.",
+            submission=db.get_pop_submission(submission_id)
+            source=datetime.fromisoformat(submission["source_message_at"] or submission["submitted_at"]) if submission else None
+            required_hours=retention_hours(source,*_pop_args(cfg)[0:1],cfg.timezone_name) if source else 24
+            return await _show(query,f"⚠️ Confirm Early Removal\n\nUse this only when you directly confirmed that the original POP post was removed before {required_hours} hours. An unavailable or inconclusive Telegram result is not proof of removal.",
                 menu_markup(ctx,[("⚠️ Confirm Early Removal",f"pop_preserve_confirm_early_{submission_id}")],f"pop_select_{submission_id}"))
-        changed=db.set_pop_preservation_status(submission_id,"preserved",user_id,"Admin confirmed proof remained available for 24 hours") if status=="preserved" else False
-        return await _show(query,"✅ The 24-hour preservation requirement is satisfied." if changed else "That preservation result was already recorded.",menu_markup(ctx,[],"pop_queue"))
+        submission=db.get_pop_submission(submission_id)
+        source=datetime.fromisoformat(submission["source_message_at"] or submission["submitted_at"]) if submission else None
+        required_hours=retention_hours(source,*_pop_args(cfg)[0:1],cfg.timezone_name) if source else 24
+        changed=db.set_pop_preservation_status(submission_id,"preserved",user_id,f"Admin confirmed proof remained available for {required_hours} hours") if status=="preserved" else False
+        return await _show(query,f"✅ The {required_hours}-hour preservation requirement is satisfied." if changed else "That preservation result was already recorded.",menu_markup(ctx,[],"pop_queue"))
     if action.startswith("pop_decide_"):
         if not has_permission(user_id,cfg,"review_pop"): return await _show(query,"POP review isn’t included in your access.",home_markup(ctx,user_id))
         raw=action.removeprefix("pop_decide_");status,submission_raw=raw.rsplit("_",1);submission_id=int(submission_raw)
@@ -1728,16 +1738,19 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await _show(query,message,menu_markup(ctx,[],"daily_brief_settings"))
     if action in {"settings_warning","settings_alert","settings_pop","settings_summary"}:
         if role is not Role.OWNER: return await _show(query,"Settings are owner-only.",home_markup(ctx,user_id))
+        if action=="settings_pop":
+            return await _show(query,"📸 Weekly POP schedule\n\nEarly: Wednesday, with 48-hour retention\nOn Time: Thursday through 11:59 p.m. ET\nLate grace period: Friday through 11:59 a.m. ET\nMissing evaluation: Friday at 12:00 p.m. ET\n\nThis policy is fixed and cannot be changed from runtime settings.",menu_markup(ctx,[],"settings"))
         choices = {
             "settings_warning":[("36 hours","setting_warning_36"),("48 hours","setting_warning_48")],
             "settings_alert":[("72 hours","setting_alert_72"),("96 hours","setting_alert_96")],
-            "settings_pop":[("Thursday 6 PM","setting_pop_18:00"),("Thursday 11:59 PM","setting_pop_23:59")],
             "settings_summary":[("Enable","setting_summary_on"),("Disable","setting_summary_off")],
         }
         return await _show(query,"Choose a new value. The change affects this running process and will be audited.",menu_markup(ctx,choices[action],"settings"))
     if action.startswith("setting_"):
         if role is not Role.OWNER: return await _show(query,"Settings are owner-only.",home_markup(ctx,user_id))
         _,key,value = action.split("_",2)
+        if key=="pop":
+            return await _show(query,"The Weekly POP schedule is fixed: Thursday 11:59 p.m. ET regular deadline and Friday 11:59 a.m. ET final grace deadline.",menu_markup(ctx,[],"settings"))
         attrs = {"warning":"warning_hours","alert":"alert_hours","pop":"pop_cutoff_time","summary":"daily_owner_summary_enabled",
             "words":"meaningful_min_words","chars":"meaningful_min_characters","repeat":"repeat_window_days","timezone":"timezone_name"}
         attr = attrs.get(key)

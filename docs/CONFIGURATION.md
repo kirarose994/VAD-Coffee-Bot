@@ -17,8 +17,10 @@ is required for routine in-bot adjustments.
 
 `ADMIN_USER_IDS`, `ADMIN_PERMISSIONS_JSON`, `GIRLS_CHAT_ID`,
 `POP_CHAT_ID`, `POP_THREAD_ID`, `ADMIN_CHAT_ID`, `REPORTS_THREAD_ID`, routing topic IDs,
-`BUYER_GROUP_ID`, `TIMEZONE`, inactivity thresholds, POP deadline settings, and meaningful
-message thresholds.
+`BUYER_GROUP_ID`, `TIMEZONE`, inactivity thresholds, and meaningful message thresholds. Weekly
+POP calculations are fixed to America/New_York: Wednesday early, Thursday On Time through
+11:59 p.m., Friday Late through 11:59 a.m., and Missing review beginning Friday noon. Legacy POP
+deadline bootstrap values remain readable for compatibility but cannot change this policy.
 
 `PARTICIPATION_TOPIC_IDS` accepts comma-separated topic IDs. When `MAIN_CHAT_ID` is set and
 this list is empty, only non-topic General messages match; forum General must be detected and

@@ -7,7 +7,7 @@ from pathlib import Path
 import database as db
 
 EXPECTED_MAIN_CHAT_ID = -1003543892255
-CURRENT_SCHEMA_VERSION = 15
+CURRENT_SCHEMA_VERSION = 16
 REQUIRED_DOCS = ("OWNER_GUIDE.md", "SETUP_GUIDE.md", "QUICK_START_FOR_KIRA_AND_ALEX.md")
 
 
@@ -85,7 +85,11 @@ def readiness_items(config,path=None,now=None):
         _item("monitor","Participation monitor active","ready" if participation_verified else "unverified","Ready requires message access, a verified topic, an approved creator, and one successfully counted meaningful message.","test_center"),
         _item("two_day","Two-day reminders configured","ready" if getattr(config,"warning_hours",None) else "setup",f"Current threshold: {getattr(config,'warning_hours','not set')} hours.","settings_warning"),
         _item("three_day","Three-day alerts configured","ready" if getattr(config,"alert_hours",None) else "setup",f"Current threshold: {getattr(config,'alert_hours','not set')} hours.","settings_alert"),
-        _item("pop_deadline","Thursday POP deadline configured","ready" if getattr(config,"pop_cutoff_time",None) is not None else "setup",f"Current cutoff: {getattr(config,'pop_cutoff_time','not set')} ET.","settings_pop"),
+        _item("pop_deadline","Weekly POP schedule fixed","ready" if
+            (getattr(config,"timezone_name",None)=="America/New_York" and
+             int(getattr(config,"pop_due_weekday",3))==3 and
+             getattr(config,"pop_cutoff_time","23:59")=="23:59") else "problem",
+            "Wednesday early (48h); Thursday 11:59 p.m. ET regular deadline; Friday 11:59 a.m. ET final grace deadline; Friday noon Missing evaluation.","settings_pop"),
         _item("away_route","Away Notice routing working","ready" if away_route_verified else "unverified",
             "Verified by a successful real Away Notice delivery." if verified("last_route_success:away_notice") else "Run the safe Away Notice routing test.","test_away"),
         _item("support_route","Support routing working","ready" if verified("readiness:support_route_test") else "unverified","Run the safe Support routing test.","test_support"),

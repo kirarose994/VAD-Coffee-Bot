@@ -5,6 +5,7 @@ import hashlib
 import logging
 import json
 from html import escape
+from zoneinfo import ZoneInfo
 
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes, MessageHandler, TypeHandler, filters
@@ -12,8 +13,8 @@ from telegram.ext import CommandHandler, ContextTypes, MessageHandler, TypeHandl
 import database as db
 from engagement import classify, contains_promotional_spam
 from permissions import can_manage_sensitive, can_mutate, can_read, can_view_audit, has_permission, role_for
-from pop_policy import (format_lateness, label as pop_label, latest_completed_period,
-    posted_time, submission_timing)
+from pop_policy import (current_period, format_lateness, label as pop_label,
+    latest_completed_period, posted_time, retention_hours, submission_timing)
 from pop_reliability import classify_pop_candidate
 from routing import send_routed
 from briefing import daily_admin_brief_job
@@ -374,6 +375,13 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         db.set_system_state("pop:last_topic_update",observed_at)
         db.set_system_state("pop:last_observed_chat_id",msg.chat_id)
         db.set_system_state("pop:last_observed_thread_id",thread_id)
+        if (decision.proof_type or decision.needs_review) and timing=="after_cutoff":
+            db.record_audit(user.id,"pop_evidence_after_cutoff","pop_submission",
+                target_telegram_id=user.id,source_chat_id=msg.chat_id,source_thread_id=thread_id,
+                new_value={"week_key":period_week,"message_id":msg.message_id})
+            await msg.reply_text("The Friday 11:59 a.m. ET grace deadline has passed. This message did not automatically change your POP status. Please contact an Admin for reconciliation or an excusal.")
+            _record_creator_participation_diagnostic(cfg,creator,msg,"pop_after_cutoff")
+            return
         if (decision.proof_type or decision.needs_review) and timing!="not_yet_due":
             proof_type=decision.proof_type or "ambiguous_text"
             needs_review=decision.reason if decision.needs_review else None
@@ -396,15 +404,19 @@ async def observe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         f"Delay: {format_lateness(source,cfg.pop_due_weekday,cfg.pop_cutoff_time,cfg.timezone_name)}\n"
                         "Status: Accepted\n\n"
                         "This submission was received during the Friday grace period and was recorded successfully.\n\n"
-                        "Grace period: POP is due Thursday at 11:59 PM Eastern. Submissions received through Friday at 11:59 PM Eastern are late but accepted and receive credit.\n\n"
+                        "Grace period: POP is due Thursday at 11:59 PM Eastern. Submissions received through Friday at 11:59 AM Eastern are late but accepted and receive credit.\n\n"
                         "Preservation requirement: The submitted POP should remain available for at least 24 hours from the original posting time.\n\n"
                         "Action for admins: None required. This notice is informational only. No warning or strike was created automatically.",
                         target_telegram_id=late["telegram_id"],related_submission_id=late["id"],
                         payload_summary=f"Late POP heads-up for submission {late['id']}")
             if result["created"]:
-                qualifier=" and needs review" if needs_review else ""
-                recovery=" after the bot reconnected" if recovered else ""
-                await msg.reply_text(f"📸 Your Weekly POP was recorded{recovery}{qualifier}. Your original posting time was used.")
+                source=datetime.fromisoformat(source_at)
+                if decision.proof_type and retention_hours(source,cfg.pop_due_weekday,cfg.timezone_name)==48:
+                    await msg.reply_text("✅ EARLY POP RECEIVED\n\nYour POP was submitted early.\nBecause it was posted on Wednesday, please keep it live for at least 48 hours to satisfy the weekly POP requirement.")
+                else:
+                    qualifier=" and needs review" if needs_review else ""
+                    recovery=" after the bot reconnected" if recovered else ""
+                    await msg.reply_text(f"📸 Your Weekly POP was recorded{recovery}{qualifier}. Your original posting time was used.")
             _record_creator_participation_diagnostic(cfg,creator,msg,"pop_workflow_message")
             return
         # POP-topic conversation must never spill into participation tracking.
@@ -528,46 +540,62 @@ async def inactivity_job(ctx: ContextTypes.DEFAULT_TYPE):
                 f"🟠 Two-day participation flag\n{escape(creator['display_name'])}\nTelegram ID: {creator['telegram_id']}\n"
                 f"Last meaningful participation: {anchor}\nElapsed: {hours:.1f} hours\nAway Notice: None active.",
                 target_telegram_id=creator["telegram_id"])
-    # Missing POP becomes time-sensitive only after the centralized ET deadline.
-    pop_rows = (db.pop_status_report(datetime.now(cfg.timezone),cfg.pop_due_weekday,cfg.pop_cutoff_time,cfg.timezone_name)
-                if hasattr(cfg,"pop_due_weekday") else ())
-    for row in pop_rows:
-        if row["effective_status"] == "missing" and db.claim_notification(row["telegram_id"],row["week_key"],"pop_exception"):
-            await send_routed(ctx.bot,cfg,"pop_review",
-                f"🔴 Thursday POP needs attention\n{escape(row['display_name'])}\nThe deadline passed without POP or an applicable excusal.",
-                target_telegram_id=row["telegram_id"])
-
-
-POP_THURSDAY_REMINDER_TIME = time(10, 0)
-POP_FRIDAY_REMINDER_TIME = time(12, 0)
-POP_FRIDAY_REMINDER_TEXT = (
-    "Hi! Life gets busy, and it looks like we haven’t recorded your Weekly POP yet. "
-    "You can still submit it in the POP topic. Please remember to leave your post up for "
-    "the required time."
+POP_THURSDAY_MORNING_REMINDER_TIME=time(10,0)
+POP_THURSDAY_EVENING_REMINDER_TIME=time(20,0)
+POP_FRIDAY_FINAL_REMINDER_TIME=time(8,0)
+POP_FRIDAY_CUTOFF_TIME=time(12,0)
+POP_THURSDAY_MORNING_REMINDER_TEXT=(
+    "📣 POP IS DUE TODAY\n\nWe have not received your qualifying POP submission for this week.\n"
+    "POP is due by 11:59 p.m. Eastern Time tonight.\nPlease post the required VAD promotional material and submit qualifying proof in the POP section.\n"
+    "If you need the grace period, the final late deadline is Friday at 11:59 a.m. ET."
 )
+POP_THURSDAY_EVENING_REMINDER_TEXT=(
+    "⏰ POP DEADLINE APPROACHING\n\nWe still have not received your qualifying POP submission.\n"
+    "The regular deadline is tonight at 11:59 p.m. ET.\nAfter midnight, submissions will be marked Late. The final grace-period deadline is Friday at 11:59 a.m. ET."
+)
+
+
+def _remaining_grace_text(now,period):
+    minutes=max(0,int((period.grace_at-now).total_seconds()+59)//60)
+    hours,remainder=divmod(minutes,60);parts=[]
+    if hours:parts.append(f"{hours} hour{'s' if hours!=1 else ''}")
+    if remainder:parts.append(f"{remainder} minute{'s' if remainder!=1 else ''}")
+    return " ".join(parts) or "less than one minute"
+
+
+def friday_final_reminder_text(now,period):
+    return ("⏰ FINAL POP REMINDER\n\nWe have not received your qualifying POP submission for this week.\n"
+        "Your final grace-period deadline is today at 11:59 a.m. Eastern Time.\n"
+        f"You have approximately {_remaining_grace_text(now,period)} left.\n"
+        "Please post the required VAD promotional material and submit qualifying proof before the deadline.\n"
+        "After 11:59 a.m. ET, your POP will be marked Missing and sent to the admin team for review.\n"
+        "No strike has been issued automatically.")
 
 
 async def pop_reminder_job(ctx: ContextTypes.DEFAULT_TYPE):
     """Send one gentle POP reminder per creator/week without changing POP state."""
     cfg = config(ctx)
-    now = datetime.now(cfg.timezone)
+    now=datetime.now(ZoneInfo("America/New_York"))
     local_time = now.timetz().replace(tzinfo=None)
-    if now.weekday() == 3 and local_time >= POP_THURSDAY_REMINDER_TIME:
-        eligible_statuses = {"due_today"}
-        notification_kind = "pop_thursday_reminder"
-        body = ("Hi! This is a friendly reminder to submit your Weekly POP in the POP topic today. "
-                "If an approved Away Notice applies, you are already excused.")
-    elif now.weekday() == 4 and local_time >= POP_FRIDAY_REMINDER_TIME:
-        eligible_statuses = {"missing"}
-        notification_kind = "pop_friday_reminder"
-        body = POP_FRIDAY_REMINDER_TEXT
+    period=current_period(now,cfg.pop_due_weekday,cfg.pop_cutoff_time,"America/New_York")
+    if now.weekday()==3 and local_time>=POP_THURSDAY_EVENING_REMINDER_TIME:
+        eligible_statuses={"due_today"};notification_kind="pop_thursday_evening"
+        body=POP_THURSDAY_EVENING_REMINDER_TEXT
+    elif now.weekday()==3 and local_time>=POP_THURSDAY_MORNING_REMINDER_TIME:
+        eligible_statuses={"due_today"};notification_kind="pop_thursday_morning"
+        body=POP_THURSDAY_MORNING_REMINDER_TEXT
+    elif now.weekday()==4 and POP_FRIDAY_FINAL_REMINDER_TIME<=local_time<POP_FRIDAY_CUTOFF_TIME:
+        eligible_statuses={"still_needed"};notification_kind="pop_friday_final"
+        body=friday_final_reminder_text(now,period)
     else:
         return
-    rows = db.pop_status_report(now, cfg.pop_due_weekday, cfg.pop_cutoff_time, cfg.timezone_name)
+    rows=db.pop_status_report(now,cfg.pop_due_weekday,cfg.pop_cutoff_time,"America/New_York")
     for row in rows:
         if row["effective_status"] not in eligible_statuses:
             continue
-        if not db.claim_notification(row["telegram_id"], row["week_key"], notification_kind):
+        if db.approved_absence_on(row["telegram_id"],now.date()):
+            continue
+        if not db.claim_pop_reminder(row["telegram_id"],row["week_key"],notification_kind):
             continue
         try:
             await ctx.bot.send_message(row["telegram_id"], body)
@@ -583,6 +611,7 @@ def render_missing_pop_summary(result,cases):
     thursday=date.fromisocalendar(year,week,4)
     pending=[row for row in cases if row["status"]=="pending"]
     lines=["🚨 POP REVIEW REQUIRED",f"POP Week: {thursday.strftime('%B')} {thursday.day}, {thursday.year}",
+        "Regular Deadline: Thursday at 11:59 p.m. ET","Final Grace Deadline: Friday at 11:59 a.m. ET",
         f"Missing POP Cases: {len(pending)}",f"New Cases Created: {result['cases_newly_created']}",
         f"Already Under Review: {result.get('cases_already_under_review',result['cases_already_existing'])}","",
         "The following creators currently require review:"]
@@ -598,10 +627,10 @@ def render_missing_pop_summary(result,cases):
 
 async def missing_pop_case_job(ctx: ContextTypes.DEFAULT_TYPE, now=None):
     """Evaluate the latest grace-closed POP week on any later recurring run."""
-    cfg=config(ctx);now=now or datetime.now(cfg.timezone)
-    period=latest_completed_period(now,cfg.pop_due_weekday,cfg.pop_cutoff_time,cfg.timezone_name)
+    cfg=config(ctx);now=(now or datetime.now(ZoneInfo("America/New_York"))).astimezone(ZoneInfo("America/New_York"))
+    period=latest_completed_period(now,cfg.pop_due_weekday,cfg.pop_cutoff_time,"America/New_York")
     result=db.evaluate_missing_pop_week(period.week_key,now.isoformat(),cfg.pop_due_weekday,
-        cfg.pop_cutoff_time,cfg.timezone_name)
+        cfg.pop_cutoff_time,"America/New_York")
     cases=db.list_missing_pop_cases(period.week_key)
     if db.claim_missing_pop_summary(period.week_key):
         delivered,_=await send_routed(ctx.bot,cfg,"pop_review",render_missing_pop_summary(result,cases),

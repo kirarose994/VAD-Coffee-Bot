@@ -28,11 +28,12 @@ class PopDeadlineTests(unittest.TestCase):
     def test_thursday_before_cutoff_is_due_today_not_missing(self):
         self.assertEqual(calculate_status(self.at(2026,7,16,17),cutoff_time="18:00"),"due_today")
 
-    def test_thursday_after_cutoff_is_missing(self):
-        self.assertEqual(calculate_status(self.at(2026,7,16,19),cutoff_time="18:00"),"missing")
+    def test_runtime_override_cannot_move_fixed_thursday_cutoff(self):
+        self.assertEqual(calculate_status(self.at(2026,7,16,19),cutoff_time="18:00"),"due_today")
 
-    def test_friday_onward_is_missing(self):
-        self.assertEqual(calculate_status(self.at(2026,7,17)),"missing")
+    def test_friday_is_still_needed_until_noon_then_missing(self):
+        self.assertEqual(calculate_status(self.at(2026,7,17,8)),"still_needed")
+        self.assertEqual(calculate_status(self.at(2026,7,17,12)),"missing")
 
     def test_pending_submission_and_excuse_override_deadline(self):
         now=self.at(2026,7,17)
@@ -41,7 +42,7 @@ class PopDeadlineTests(unittest.TestCase):
 
     def test_creator_registered_after_cutoff_is_not_due_for_that_period(self):
         now=self.at(2026,7,17)
-        registered=self.at(2026,7,16,23).isoformat()
+        registered=self.at(2026,7,17,0).isoformat()
         self.assertEqual(calculate_status(now,registered_at=registered,cutoff_time="18:00"),"not_due")
 
     def test_deadline_is_dst_aware(self):

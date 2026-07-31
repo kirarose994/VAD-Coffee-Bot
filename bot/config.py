@@ -160,7 +160,7 @@ RESOURCE_DEFAULTS = {
     "engagement": ("Meaningful Participation", "Meaningful participation means contributing to genuine conversation that helps keep the community active and engaging. Respond thoughtfully, ask questions, join discussions, or otherwise add value. Greetings, check-ins, emojis, stickers, context-free photos, repeated messages, and promotional posts do not satisfy the participation requirement. The purpose is to help keep the community lively so members have a reason to come back."),
     "vacation": ("Away Notice Policy", "Let the community know when you will be away so participation and POP tracking remain fair. Participation is optional while you’re away. Meaningful messages will still count, but you will not be penalized for inactivity during your away period."),
     "sick": ("Personal-Day Privacy", "Share only dates and an optional note. Medical or other private details are never required."),
-    "pop": ("Thursday POP Instructions", "Submit proof in the configured Thursday POP topic."),
+    "pop": ("Weekly POP Instructions", "Qualifying proof may be submitted early on Wednesday and must remain live for 48 hours. Thursday proof is On Time through 11:59 p.m. ET. Friday proof is Late only through 11:59 a.m. ET and must remain live for 24 hours. At noon Friday, unresolved creators become Missing and require Admin reconciliation or excusal."),
     "faq": ("Frequently Asked Questions", "Contact an administrator if your question is not answered here."),
     "contact": ("Contact Admin", "Use Contact Admin from your Creator dashboard."),
     "admin_registrations": ("Review New Creators", "Review identity details, then approve or decline. The creator receives the result and the decision is audited."),
