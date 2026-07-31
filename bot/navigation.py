@@ -13,7 +13,7 @@ import database as db
 from config import RESOURCE_DEFAULTS
 from permissions import Membership, Role, has_permission, role_for, roles_for
 from pop_policy import (current_period, format_lateness, label as pop_label,
-    posted_time)
+    latest_completed_period, posted_time)
 from presentation import audit_entry, friendly_timestamp, system_error_detail, timeline_entry
 from runtime_config import persist_setting
 from routing import ROUTES, routing_summary, send_routed
@@ -978,6 +978,8 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "pop_queue" and has_permission(user_id,cfg,"review_pop"):
         now = datetime.now(cfg.timezone)
         period = current_period(now,*_pop_args(cfg))
+        completed_period = latest_completed_period(now,*_pop_args(cfg))
+        case_counts = db.missing_pop_case_counts(completed_period.week_key)
         rows = db.pop_status_report(now,*_pop_args(cfg))
         pending = [r for r in rows if r["submission_status"] == "pending"]
         on_time = _pop_status_rows(rows,"on_time")
@@ -1002,6 +1004,11 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             (f"💙 Excused ({len(excused)})", "pop_status_excused"),
             (f"🔴 Missing ({len(missing)})", "pop_status_missing"),
         ]
+        buttons += [
+            (f"Pending Review ({case_counts['pending_review']})", "pop_case_status_pending"),
+            (f"Strike Issued ({case_counts['strike_issued']})", "pop_case_status_strike_issued"),
+            (f"Resolved ({case_counts['resolved']})", "pop_case_status_resolved"),
+        ]
         buttons += [(r["display_name"][:40],f"pop_select_{r['id']}") for r in list(combined.values())[:20]]
         return await _show(query,"\n".join(lines)[:3900],menu_markup(ctx,buttons,"admin"))
     if action.startswith("pop_status_") and has_permission(user_id,cfg,"review_pop"):
@@ -1010,6 +1017,19 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return await _show(query,"That POP status view is unavailable.",menu_markup(ctx,[],"pop_queue"))
         rows=_pop_status_rows(db.pop_status_report(datetime.now(cfg.timezone),*_pop_args(cfg)),status)
         return await _show(query,_pop_status_list_text(status,rows,cfg),menu_markup(ctx,[],"pop_queue"))
+    if action.startswith("pop_case_status_") and has_permission(user_id,cfg,"review_pop"):
+        selected=action.removeprefix("pop_case_status_")
+        if selected not in {"pending","strike_issued","resolved"}:
+            return await _show(query,"That POP case view is unavailable.",menu_markup(ctx,[],"pop_queue"))
+        completed=latest_completed_period(datetime.now(cfg.timezone),*_pop_args(cfg))
+        cases=db.list_missing_pop_cases(completed.week_key)
+        statuses={"resolved","excused"} if selected=="resolved" else {selected}
+        cases=[case for case in cases if case["status"] in statuses]
+        title={"pending":"Pending Review","strike_issued":"Strike Issued","resolved":"Resolved"}[selected]
+        lines=[f"Thursday POP - {title}",f"Week: {completed.due_at.date().isoformat()}",""]
+        lines += [f"- {case['display_name']}" + (f" - @{case['username']}" if case.get('username') else "") for case in cases]
+        if not cases: lines.append(f"No creators are in {title} for this completed weekly cycle.")
+        return await _show(query,"\n".join(lines)[:3900],menu_markup(ctx,[],"pop_queue"))
     if action.startswith("pop_select_"):
         if not has_permission(user_id,cfg,"review_pop"): return await _show(query,"POP review isn’t included in your access.",home_markup(ctx,user_id))
         submission_id=int(action.removeprefix("pop_select_"));submission=db.get_pop_submission(submission_id)

@@ -12,12 +12,14 @@ from telegram.ext import CommandHandler, ContextTypes, MessageHandler, TypeHandl
 import database as db
 from engagement import classify, contains_promotional_spam
 from permissions import can_manage_sensitive, can_mutate, can_read, can_view_audit, has_permission, role_for
-from pop_policy import format_lateness, label as pop_label, posted_time, submission_timing
+from pop_policy import (format_lateness, label as pop_label, latest_completed_period,
+    posted_time, submission_timing)
 from pop_reliability import classify_pop_candidate
 from routing import send_routed
 from briefing import daily_admin_brief_job
 from constants import MIN_AUDIO_PARTICIPATION_SECONDS
 from telegram_io import retry_telegram
+from missing_pop_workflow import ensure_missing_pop_case_cards
 
 
 def config(ctx):
@@ -166,7 +168,13 @@ async def pop_report_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await require_permission(update, ctx, "view_creator_reports"): return
     cfg=config(ctx);now=datetime.now(cfg.timezone)
     rows=db.pop_status_report(now,getattr(cfg,"pop_due_weekday",3),getattr(cfg,"pop_cutoff_time","23:59"),getattr(cfg,"timezone_name","America/New_York"))
+    completed=latest_completed_period(now,getattr(cfg,"pop_due_weekday",3),getattr(cfg,"pop_cutoff_time","23:59"),getattr(cfg,"timezone_name","America/New_York"))
+    cases=db.list_missing_pop_cases(completed.week_key);counts=db.missing_pop_case_counts(completed.week_key)
     lines = ["Thursday POP Report"] + [f"{r['display_name']}: {pop_label(r['effective_status'])}" for r in rows]
+    lines += ["",f"Completed Week Review · {completed.week_key}",
+        f"Pending Review: {counts['pending_review']}",f"Strike Issued: {counts['strike_issued']}",f"Resolved: {counts['resolved']}"]
+    labels={"pending":"Pending Review","strike_issued":"Strike Issued","resolved":"Resolved","excused":"Resolved · Excused"}
+    lines += [f"{case['display_name']}: {labels[case['status']]}" for case in cases]
     await update.message.reply_text("\n".join(lines)[:4000])
 
 
@@ -570,6 +578,39 @@ async def pop_reminder_job(ctx: ContextTypes.DEFAULT_TYPE):
                 target_telegram_id=row["telegram_id"], result="error")
 
 
+def render_missing_pop_summary(result,cases):
+    year,week=(int(value) for value in result["week_key"].split("-W"))
+    thursday=date.fromisocalendar(year,week,4)
+    pending=[row for row in cases if row["status"]=="pending"]
+    lines=["🚨 POP REVIEW REQUIRED",f"POP Week: {thursday.strftime('%B')} {thursday.day}, {thursday.year}",
+        f"Missing POP Cases: {len(pending)}",f"New Cases Created: {result['cases_newly_created']}",
+        f"Already Under Review: {result.get('cases_already_under_review',result['cases_already_existing'])}","",
+        "The following creators currently require review:"]
+    if pending:
+        for row in pending:
+            username=f"@{row['username']}" if row["username"] else "no username"
+            lines.append(f"{row['display_name']} — {username}")
+        lines += ["","Admin action is required.","No official strikes have been issued automatically."]
+    else:
+        lines[-1]="✅ No creators require missing-POP review for this completed week."
+    return "\n".join(lines)[:3900]
+
+
+async def missing_pop_case_job(ctx: ContextTypes.DEFAULT_TYPE, now=None):
+    """Evaluate the latest grace-closed POP week on any later recurring run."""
+    cfg=config(ctx);now=now or datetime.now(cfg.timezone)
+    period=latest_completed_period(now,cfg.pop_due_weekday,cfg.pop_cutoff_time,cfg.timezone_name)
+    result=db.evaluate_missing_pop_week(period.week_key,now.isoformat(),cfg.pop_due_weekday,
+        cfg.pop_cutoff_time,cfg.timezone_name)
+    cases=db.list_missing_pop_cases(period.week_key)
+    if db.claim_missing_pop_summary(period.week_key):
+        delivered,_=await send_routed(ctx.bot,cfg,"pop_review",render_missing_pop_summary(result,cases),
+            payload_summary=f"Missing POP evaluation {period.week_key}")
+        db.record_missing_pop_summary_delivery(period.week_key,delivered)
+    result.update(await ensure_missing_pop_case_cards(ctx.bot,cfg,db.list_missing_pop_cases(period.week_key)))
+    return result
+
+
 async def daily_owner_summary_job(ctx: ContextTypes.DEFAULT_TYPE):
     """Optional and disabled by default; delivery is deduplicated per owner and Eastern date."""
     cfg = config(ctx)
@@ -694,6 +735,7 @@ def register_handlers(app):
     app.job_queue.run_repeating(runtime_heartbeat_job,interval=30,first=15,name="runtime-heartbeat")
     app.job_queue.run_repeating(inactivity_job, interval=1800, first=150, name="inactivity-monitor")
     app.job_queue.run_repeating(pop_reminder_job, interval=900, first=180, name="pop-reminder-monitor")
+    app.job_queue.run_repeating(missing_pop_case_job,interval=900,first=240,name="missing-pop-case-monitor")
     app.job_queue.run_repeating(pop_preservation_job,interval=900,first=180,name="pop-preservation-monitor")
     # A repeating check allows Owner settings to take effect without rescheduling jobs.
     app.job_queue.run_repeating(daily_admin_brief_job, interval=900, first=180, name="daily-admin-brief")
