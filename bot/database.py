@@ -214,7 +214,10 @@ def initialize_database(path: Path | None = None):
         CREATE INDEX IF NOT EXISTS missing_pop_cases_status ON missing_pop_cases(week_key,status);
         CREATE TABLE IF NOT EXISTS official_pop_strikes (
           telegram_id INTEGER NOT NULL, week_key TEXT NOT NULL, warning_id INTEGER NOT NULL,
-          created_at TEXT NOT NULL, PRIMARY KEY(telegram_id,week_key), UNIQUE(warning_id),
+          created_at TEXT NOT NULL, issuance_source TEXT NOT NULL DEFAULT 'bot',
+          recorded_by INTEGER, external_issued_by TEXT, external_notice_at TEXT,
+          external_note TEXT, external_proof_reviewed INTEGER,
+          PRIMARY KEY(telegram_id,week_key), UNIQUE(warning_id),
           FOREIGN KEY(telegram_id) REFERENCES creators(telegram_id),
           FOREIGN KEY(warning_id) REFERENCES creator_warnings(id));
         CREATE TABLE IF NOT EXISTS missing_pop_evaluations (
@@ -440,7 +443,7 @@ def initialize_database(path: Path | None = None):
         """)
         _migrate_legacy_schema(db)
         _seed_message_templates(db)
-        db.execute("UPDATE schema_version SET version=16")
+        db.execute("UPDATE schema_version SET version=17")
 
 
 DEFAULT_MESSAGE_TEMPLATES = {
@@ -581,6 +584,12 @@ def _migrate_legacy_schema(db):
         "notification_attempts": "INTEGER NOT NULL DEFAULT 0",
         "review_thread_id": "INTEGER", "review_card_claimed_at": "TEXT",
         "review_card_replaced_at": "TEXT",
+    })
+    _add_columns(db, "official_pop_strikes", {
+        "issuance_source": "TEXT NOT NULL DEFAULT 'bot'",
+        "recorded_by": "INTEGER", "external_issued_by": "TEXT",
+        "external_notice_at": "TEXT", "external_note": "TEXT",
+        "external_proof_reviewed": "INTEGER",
     })
     _add_columns(db, "system_incidents", {
         "operation": "TEXT", "escalated_at": "TEXT", "resolution_reason": "TEXT",
@@ -1224,14 +1233,20 @@ def create_missing_pop_case(telegram_id, week_key, path=None):
 
 def list_missing_pop_cases(week_key=None,path=None):
     with get_connection(path) as db:
-        sql="SELECT m.*,c.display_name,c.username FROM missing_pop_cases m JOIN creators c ON c.telegram_id=m.telegram_id";params=[]
+        sql="""SELECT m.*,c.display_name,c.username,o.issuance_source,o.recorded_by,
+          o.external_issued_by,o.external_notice_at,o.external_note,o.external_proof_reviewed
+          FROM missing_pop_cases m JOIN creators c ON c.telegram_id=m.telegram_id
+          LEFT JOIN official_pop_strikes o ON o.telegram_id=m.telegram_id AND o.week_key=m.week_key""";params=[]
         if week_key:sql+=" WHERE m.week_key=?";params=[week_key]
         return db.execute(sql+" ORDER BY m.created_at",params).fetchall()
 
 def get_missing_pop_case(case_id,path=None):
     with get_connection(path) as connection:
-        row=connection.execute("""SELECT m.*,c.display_name,c.username FROM missing_pop_cases m
-          JOIN creators c ON c.telegram_id=m.telegram_id WHERE m.id=?""",(case_id,)).fetchone()
+        row=connection.execute("""SELECT m.*,c.display_name,c.username,o.issuance_source,o.recorded_by,
+          o.external_issued_by,o.external_notice_at,o.external_note,o.external_proof_reviewed
+          FROM missing_pop_cases m JOIN creators c ON c.telegram_id=m.telegram_id
+          LEFT JOIN official_pop_strikes o ON o.telegram_id=m.telegram_id AND o.week_key=m.week_key
+          WHERE m.id=?""",(case_id,)).fetchone()
         return _resolved_person_row(connection,row) if row else None
 
 def claim_missing_pop_case_card(case_id,path=None):
@@ -1376,6 +1391,19 @@ def resolve_missing_pop_case(case_id, action, actor_id, reason=None, path=None):
         db.execute("UPDATE missing_pop_cases SET status='excused',resolution_type='excused',resolved_by=?,resolved_at=?,reviewed_by=?,reviewed_at=?,excusal_reason=? WHERE id=?",(actor_id,now,actor_id,now,(reason or "")[:1000],case_id))
         audit_event(db,actor_id,"missing_pop_case_excused","missing_pop_case",case_id,row["telegram_id"],new_value={"week_key":row["week_key"]},reason=reason);return True
 
+def _missing_pop_strike_block_reason(connection, row):
+    creator=connection.execute("SELECT status,deleted_at FROM creators WHERE telegram_id=?",(row["telegram_id"],)).fetchone()
+    evidence=connection.execute("SELECT 1 FROM pop_submissions WHERE telegram_id=? AND week_key=? AND timing_status IN ('on_time','late') AND needs_review_reason IS NULL AND deleted_at IS NULL",(row["telegram_id"],row["week_key"])).fetchone()
+    manual=connection.execute("SELECT status FROM pop_manual_reconciliations WHERE telegram_id=? AND week_key=? ORDER BY id DESC LIMIT 1",(row["telegram_id"],row["week_key"])).fetchone()
+    excuse=connection.execute("SELECT 1 FROM pop_excuses WHERE telegram_id=? AND week_key=?",(row["telegram_id"],row["week_key"])).fetchone()
+    year,week=(int(value) for value in row["week_key"].split("-W"));thursday=date.fromisocalendar(year,week,4).isoformat()
+    away=connection.execute("SELECT 1 FROM absence_requests WHERE telegram_id=? AND status='approved' AND deleted_at IS NULL AND start_date<=? AND end_date>=?",(row["telegram_id"],thursday,thursday)).fetchone()
+    return ("creator_ineligible" if not creator or creator["status"]!="active" or creator["deleted_at"] else
+        "qualifying_evidence" if evidence else
+        "manual_reconciliation" if manual and manual["status"] in {"on_time","late","excused"} else
+        "excused" if excuse else "approved_away_notice" if away else None)
+
+
 def issue_missing_pop_strike(case_id, actor_id, path=None):
     """Atomically recheck eligibility and create exactly one official weekly strike."""
     with get_connection(path) as db:
@@ -1388,13 +1416,7 @@ def issue_missing_pop_strike(case_id, actor_id, path=None):
             audit_event(db,actor_id,"missing_pop_duplicate_strike_blocked","missing_pop_case",case_id,row["telegram_id"],new_value={"week_key":row["week_key"],"warning_id":existing["warning_id"]},result="blocked");return {"ok":False,"reason":"official_strike_exists","case_id":case_id,"warning_id":existing["warning_id"]}
         if row["status"]!="pending":
             audit_event(db,actor_id,"missing_pop_strike_blocked","missing_pop_case",case_id,row["telegram_id"],new_value={"reason":"case_resolved","status":row["status"]},result="blocked");return {"ok":False,"reason":"case_resolved","case_id":case_id}
-        creator=db.execute("SELECT status,deleted_at FROM creators WHERE telegram_id=?",(row["telegram_id"],)).fetchone()
-        evidence=db.execute("SELECT 1 FROM pop_submissions WHERE telegram_id=? AND week_key=? AND timing_status IN ('on_time','late') AND needs_review_reason IS NULL AND deleted_at IS NULL",(row["telegram_id"],row["week_key"])).fetchone()
-        manual=db.execute("SELECT status FROM pop_manual_reconciliations WHERE telegram_id=? AND week_key=? ORDER BY id DESC LIMIT 1",(row["telegram_id"],row["week_key"])).fetchone()
-        excuse=db.execute("SELECT 1 FROM pop_excuses WHERE telegram_id=? AND week_key=?",(row["telegram_id"],row["week_key"])).fetchone()
-        year,week=(int(value) for value in row["week_key"].split("-W"));thursday=date.fromisocalendar(year,week,4).isoformat()
-        away=db.execute("SELECT 1 FROM absence_requests WHERE telegram_id=? AND status='approved' AND deleted_at IS NULL AND start_date<=? AND end_date>=?",(row["telegram_id"],thursday,thursday)).fetchone()
-        reason=("creator_ineligible" if not creator or creator["status"]!="active" or creator["deleted_at"] else "qualifying_evidence" if evidence else "manual_reconciliation" if manual and manual["status"] in {"on_time","late","excused"} else "excused" if excuse else "approved_away_notice" if away else None)
+        reason=_missing_pop_strike_block_reason(db,row)
         if reason:
             if reason in {"qualifying_evidence","manual_reconciliation"}:
                 db.execute("UPDATE missing_pop_cases SET status='resolved',resolution_type='manual_reconciliation',resolved_at=?,reviewed_at=? WHERE id=?",(utc_now(),utc_now(),case_id))
@@ -1404,6 +1426,62 @@ def issue_missing_pop_strike(case_id, actor_id, path=None):
         db.execute("INSERT INTO official_pop_strikes(telegram_id,week_key,warning_id,created_at) VALUES(?,?,?,?)",(row["telegram_id"],row["week_key"],cur.lastrowid,now))
         db.execute("UPDATE missing_pop_cases SET status='strike_issued',resolution_type='strike',resolved_by=?,resolved_at=?,reviewed_by=?,reviewed_at=?,strike_warning_id=?,creator_notified=0,notification_status='pending',notification_updated_at=? WHERE id=?",(actor_id,now,actor_id,now,cur.lastrowid,now,case_id))
         audit_event(db,actor_id,"missing_pop_strike_confirmed","missing_pop_case",case_id,row["telegram_id"],new_value={"week_key":row["week_key"],"warning_id":cur.lastrowid});return {"ok":True,"reason":"strike_issued","case_id":case_id,"warning_id":cur.lastrowid}
+
+
+def record_external_missing_pop_strike(case_id, expected_telegram_id, expected_week_key,
+        actor_id, original_issuer, external_notice_at, note="", proof_reviewed=False, path=None):
+    """Record one already-delivered official POP strike without contacting Telegram."""
+    issuer=" ".join((original_issuer or "").split())[:100]
+    sanitized_note=" ".join((note or "").replace("<","").replace(">","").split())[:500]
+    try:
+        notice_at=datetime.fromisoformat(external_notice_at)
+        if notice_at.tzinfo is None:raise ValueError
+        external_notice_at=notice_at.astimezone(ZoneInfo("America/New_York")).isoformat()
+    except (TypeError,ValueError):
+        return {"ok":False,"reason":"invalid_external_notice_time","case_id":case_id}
+    if not issuer:return {"ok":False,"reason":"original_issuer_required","case_id":case_id}
+    with get_connection(path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row=connection.execute("SELECT * FROM missing_pop_cases WHERE id=?",(case_id,)).fetchone()
+        if not row or row["telegram_id"]!=expected_telegram_id or row["week_key"]!=expected_week_key:
+            audit_event(connection,actor_id,"missing_pop_external_strike_blocked","missing_pop_case",case_id,
+                expected_telegram_id,new_value={"reason":"case_identity_mismatch"},result="blocked")
+            return {"ok":False,"reason":"case_identity_mismatch","case_id":case_id}
+        existing=connection.execute("SELECT warning_id FROM official_pop_strikes WHERE telegram_id=? AND week_key=?",(row["telegram_id"],row["week_key"])).fetchone()
+        if existing:
+            audit_event(connection,actor_id,"missing_pop_external_duplicate_blocked","missing_pop_case",case_id,
+                row["telegram_id"],new_value={"week_key":row["week_key"],"warning_id":existing["warning_id"]},result="blocked")
+            return {"ok":False,"reason":"official_strike_exists","case_id":case_id,"warning_id":existing["warning_id"]}
+        if row["status"]!="pending":
+            audit_event(connection,actor_id,"missing_pop_external_strike_blocked","missing_pop_case",case_id,
+                row["telegram_id"],new_value={"reason":"case_resolved","status":row["status"]},result="blocked")
+            return {"ok":False,"reason":"case_resolved","case_id":case_id}
+        reason=_missing_pop_strike_block_reason(connection,row)
+        if reason:
+            if reason in {"qualifying_evidence","manual_reconciliation"}:
+                now=utc_now()
+                connection.execute("UPDATE missing_pop_cases SET status='resolved',resolution_type='manual_reconciliation',resolved_at=?,reviewed_at=? WHERE id=?",(now,now,case_id))
+                audit_event(connection,actor_id,"missing_pop_case_manually_reconciled","missing_pop_case",case_id,row["telegram_id"],new_value={"week_key":row["week_key"],"reason":reason})
+            audit_event(connection,actor_id,"missing_pop_external_strike_blocked","missing_pop_case",case_id,
+                row["telegram_id"],new_value={"week_key":row["week_key"],"reason":reason},result="blocked")
+            return {"ok":False,"reason":reason,"case_id":case_id}
+        now=utc_now()
+        warning=connection.execute("INSERT INTO creator_warnings(telegram_id,warning_type,reason,issued_at,issued_by,template_key,notes) VALUES(?,?,?,?,?,?,?)",
+            (row["telegram_id"],"strike",f"missed_pop:{row['week_key']}:external",external_notice_at,actor_id,"pop_missed",
+             f"Externally issued by {issuer}"+(f"; {sanitized_note}" if sanitized_note else "")))
+        connection.execute("""INSERT INTO official_pop_strikes
+            (telegram_id,week_key,warning_id,created_at,issuance_source,recorded_by,external_issued_by,
+             external_notice_at,external_note,external_proof_reviewed) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (row["telegram_id"],row["week_key"],warning.lastrowid,now,"external",actor_id,issuer,
+             external_notice_at,sanitized_note or None,1 if proof_reviewed else 0))
+        connection.execute("""UPDATE missing_pop_cases SET status='strike_issued',resolution_type='strike_issued_external',
+            resolved_by=?,resolved_at=?,reviewed_by=?,reviewed_at=?,strike_warning_id=?,creator_notified=1,
+            notification_status='not_started',notification_error=NULL,notification_updated_at=NULL WHERE id=?""",
+            (actor_id,now,actor_id,now,warning.lastrowid,case_id))
+        audit_event(connection,actor_id,"missing_pop_external_strike_recorded","missing_pop_case",case_id,row["telegram_id"],
+            new_value={"week_key":row["week_key"],"warning_id":warning.lastrowid,"original_issuer":issuer,
+                "external_notice_at":external_notice_at,"proof_reviewed":bool(proof_reviewed),"note":sanitized_note or None})
+        return {"ok":True,"reason":"external_strike_recorded","case_id":case_id,"warning_id":warning.lastrowid}
 
 def record_missing_pop_notification(case_id, delivered, error=None, path=None, actor_id=None):
     with get_connection(path) as db:

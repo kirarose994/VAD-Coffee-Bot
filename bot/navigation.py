@@ -357,7 +357,12 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     parts = (query.data or "").split(":", 2)
     if len(parts) != 3 or parts[0] != "op" or parts[1] != ctx.user_data.get("menu_nonce"):
         await query.answer("This button expired or was already used.", show_alert=True)
-        return await _show(query, "That action expired. Choose from your current home menu.", home_markup(ctx, update.effective_user.id))
+        try:
+            return await _show(query, "That action expired. Choose from your current home menu.", home_markup(ctx, update.effective_user.id))
+        except Exception:
+            # A stale Telegram message may already be deleted or unchanged. The
+            # callback was answered; an observability-only edit must not escalate.
+            return None
     await query.answer()
     action = parts[2]
     user_id = update.effective_user.id
@@ -1023,7 +1028,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if selected not in {"pending","strike_issued","resolved"}:
             return await _show(query,"That POP case view is unavailable.",menu_markup(ctx,[],"pop_queue"))
         completed=latest_completed_period(datetime.now(cfg.timezone),*_pop_args(cfg))
-        cases=db.list_missing_pop_cases(completed.week_key)
+        cases=[dict(case) for case in db.list_missing_pop_cases(completed.week_key)]
         statuses={"resolved","excused"} if selected=="resolved" else {selected}
         cases=[case for case in cases if case["status"] in statuses]
         title={"pending":"Pending Review","strike_issued":"Strike Issued","resolved":"Resolved"}[selected]

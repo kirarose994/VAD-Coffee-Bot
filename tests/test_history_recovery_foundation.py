@@ -143,7 +143,7 @@ class HistoryRecoverySchemaTests(unittest.TestCase):
 
     def test_schema_fourteen_is_additive_and_privacy_minimal(self):
         with db.get_connection(self.path) as connection:
-            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()[0],16)
+            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()[0],17)
             tables={row[0] for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertTrue({"history_recovery_sources","history_recovery_runs",
@@ -206,7 +206,7 @@ class HistoryRecoverySchemaTests(unittest.TestCase):
               (self.now,))
         db.initialize_database(self.path)
         with db.get_connection(self.path) as connection:
-            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()[0],16)
+            self.assertEqual(connection.execute("SELECT version FROM schema_version").fetchone()[0],17)
             self.assertEqual(connection.execute("SELECT display_name FROM creators WHERE telegram_id=88").fetchone()[0],
                 "Version Thirteen Creator")
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM audit_events WHERE action='v13_audit'").fetchone()[0],1)

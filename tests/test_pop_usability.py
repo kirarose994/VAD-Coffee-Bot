@@ -1,4 +1,5 @@
 import sys
+import sqlite3
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -166,6 +167,32 @@ class PopStatusViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Pending Review",text)
         self.assertIn("Alex",text)
         self.assertIn("@alex",text)
+
+    async def test_pending_review_handles_real_sqlite_rows_optional_fields_and_multiple_cases(self):
+        connection=sqlite3.connect(":memory:");connection.row_factory=sqlite3.Row
+        rows=connection.execute("""SELECT 'pending' AS status,'Lia' AS display_name,
+            'sirengirl26' AS username,NULL AS review_message_id
+            UNION ALL SELECT 'pending','Creator Without Username',NULL,NULL""").fetchall()
+        query=SimpleNamespace(data="op:n:pop_case_status_pending",answer=AsyncMock(),
+            edit_message_text=AsyncMock(),message=SimpleNamespace())
+        update=SimpleNamespace(callback_query=query,effective_user=SimpleNamespace(id=1),effective_chat=None)
+        ctx=SimpleNamespace(user_data={"menu_nonce":"n"},bot_data={"config":config()})
+        with patch("navigation.db.list_missing_pop_cases",return_value=rows):
+            await callback(update,ctx)
+        connection.close()
+        text=query.edit_message_text.await_args.args[0]
+        self.assertIn("Lia - @sirengirl26",text);self.assertIn("Creator Without Username",text)
+        labels=[button.text for row in query.edit_message_text.await_args.kwargs["reply_markup"].inline_keyboard for button in row]
+        self.assertTrue(any("Back" in label for label in labels));self.assertEqual(query.answer.await_count,1)
+
+    async def test_repeated_or_stale_pending_review_tap_is_answered_once_without_error(self):
+        first=SimpleNamespace(data="op:n:pop_case_status_pending",answer=AsyncMock(),edit_message_text=AsyncMock(),message=SimpleNamespace())
+        ctx=SimpleNamespace(user_data={"menu_nonce":"n"},bot_data={"config":config()})
+        with patch("navigation.db.list_missing_pop_cases",return_value=[]):
+            await callback(SimpleNamespace(callback_query=first,effective_user=SimpleNamespace(id=1),effective_chat=None),ctx)
+        stale=SimpleNamespace(data="op:n:pop_case_status_pending",answer=AsyncMock(),edit_message_text=AsyncMock(side_effect=RuntimeError("deleted")),message=SimpleNamespace())
+        await callback(SimpleNamespace(callback_query=stale,effective_user=SimpleNamespace(id=1),effective_chat=None),ctx)
+        self.assertEqual(first.answer.await_count,1);self.assertEqual(stale.answer.await_count,1)
 
 
 if __name__ == "__main__":
