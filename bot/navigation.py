@@ -865,7 +865,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         username=f"@{row['username']}" if row["username"] else "No username"
         text=(f"📨 Support Request #{request_id}\n\nCreator: {row['display_name']}\nUsername: {username}\n"
             f"Telegram ID: {row['telegram_id']}\nCategory: {row['category']}\nStatus: {row['status'].title()}\n\n{row['message']}")
-       actions = [
+        actions = [
             ("Assign to Me", f"support_action_assign_{request_id}"),
             ("💬 Reply", f"support_reply_{request_id}"),
             ("✅ Reply & Resolve", f"support_reply_resolve_{request_id}"),
