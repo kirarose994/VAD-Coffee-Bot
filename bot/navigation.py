@@ -1275,7 +1275,7 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "warnings_help" and has_permission(user_id,cfg,"adjust_warnings"):
         creators=list(db.list_creators()); buttons=[[(r["display_name"][:40],f"warning_member_{r['telegram_id']}")] for r in creators[:20]]
         return await _show(query,"⚠️ Warning & Strike Management\n\nSelect a member.",grid_markup(ctx,buttons,"admin"))
-if action.startswith("warning_member_"):
+    if action.startswith("warning_member_"):
         if not has_permission(user_id, cfg, "adjust_warnings"):
             return await _show(
                 query,
@@ -1441,7 +1441,7 @@ if action.startswith("warning_member_"):
                 else "That warning was already handled. Nothing was changed."
             ),
             menu_markup(ctx, [], f"warning_member_{draft['target']}"),
-        )ing_{target}"),("🔴 Strike",f"warning_type_strike_{target}")],"warnings_help"))
+        )
     if action.startswith("warning_type_"):
         if not has_permission(user_id,cfg,"adjust_warnings"): return await _show(query,"Creator Standing isn’t included in your access.",home_markup(ctx,user_id))
         raw=action.removeprefix("warning_type_"); kind,target_raw=raw.split("_",1); target=int(target_raw)
