@@ -11,7 +11,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 import database as db
 from config import RESOURCE_DEFAULTS
-from permissions import Membership, Role, has_permission, role_for, roles_for
+from permissions import Membership, Role, can_void_warning, has_permission, role_for, roles_for
 from pop_policy import (current_period, format_lateness, label as pop_label,
     latest_completed_period, posted_time, retention_hours)
 from presentation import audit_entry, friendly_timestamp, system_error_detail, timeline_entry
@@ -865,13 +865,30 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         username=f"@{row['username']}" if row["username"] else "No username"
         text=(f"📨 Support Request #{request_id}\n\nCreator: {row['display_name']}\nUsername: {username}\n"
             f"Telegram ID: {row['telegram_id']}\nCategory: {row['category']}\nStatus: {row['status'].title()}\n\n{row['message']}")
-        return await _show(query,text,menu_markup(ctx,[("Assign to Me",f"support_action_assign_{request_id}"),("Reply",f"support_reply_{request_id}"),
-            ("Open Creator Profile",f"creator_select_{row['telegram_id']}"),("Add Private Note",f"notes_member_{row['telegram_id']}"),
-            ("Escalate to Owner",f"support_action_escalate_{request_id}"),("Mark Resolved",f"support_action_resolve_{request_id}")],"support_queue"))
-    if action.startswith("support_reply_"):
-        if not has_permission(user_id,cfg,"manage_support"):return await _show(query,"Support access is required.",home_markup(ctx,user_id))
-        ctx.user_data["support_reply_id"]=int(action.removeprefix("support_reply_"));ctx.user_data["guided_input"]="support_reply"
-        return await _show(query,"💬 Reply to Support Request\n\nType your reply. It will be recorded before delivery.",menu_markup(ctx,[],"support_queue"))
+        actions = [
+            ("Assign to Me", f"support_action_assign_{request_id}"),
+            ("💬 Reply", f"support_reply_{request_id}"),
+            ("✅ Reply & Resolve", f"support_reply_resolve_{request_id}"),
+            ("✅ Mark Resolved", f"support_action_resolve_{request_id}"),
+            ("Open Creator Profile", f"creator_select_{row['telegram_id']}"),
+            ("Add Private Note", f"notes_member_{row['telegram_id']}"),
+            ("Escalate to Owner", f"support_action_escalate_{request_id}"),
+        ]
+        return await _show(query, text, menu_markup(ctx, actions, "support_queue"))
+    if action.startswith("support_reply_resolve_") or action.startswith("support_reply_"):
+        if not has_permission(user_id, cfg, "manage_support"):
+            return await _show(query, "Support access is required.", home_markup(ctx, user_id))
+        resolve_after = action.startswith("support_reply_resolve_")
+        prefix = "support_reply_resolve_" if resolve_after else "support_reply_"
+        ctx.user_data["support_reply_id"] = int(action.removeprefix(prefix))
+        ctx.user_data["support_reply_resolve"] = resolve_after
+        ctx.user_data["guided_input"] = "support_reply"
+        prompt = (
+            "💬 Reply & Resolve Support Request\n\nType your reply. It will be recorded and the request will be marked resolved after delivery."
+            if resolve_after
+            else "💬 Reply to Support Request\n\nType your reply. It will be recorded before delivery."
+        )
+        return await _show(query, prompt, menu_markup(ctx, [], "support_queue"))
     if action.startswith("support_action_"):
         if not has_permission(user_id,cfg,"manage_support"): return await _show(query,"Support access is required.",home_markup(ctx,user_id))
         raw=action.removeprefix("support_action_");kind,request_raw=raw.rsplit("_",1)
@@ -885,7 +902,8 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             try: await ctx.bot.send_message(request["telegram_id"],f"✅ Support request #{request_id} has been resolved. You can still view its history in My Support Requests.")
             except Exception:
                 db.record_delivery_failure("SUP-"+secrets.token_hex(4).upper(),"support_resolution",request["telegram_id"],None,f"Support request #{request_id}")
-        return await _show(query,"✅ Support request updated and audited." if changed else "That request was already resolved.",menu_markup(ctx,[],"support_queue"))
+        next_screen = "support_queue" if kind == "resolve" else f"support_select_{request_id}"
+        return await _show(query, "✅ Support request updated and audited." if changed else "That request was already resolved.", menu_markup(ctx, [], next_screen))
     if action == "resources":
         help_actions = [("⭐ Getting Started","resource_about"),("🆕 What’s New","resource_whats_new"),("📜 Community Rules","resource_rules"),
             ("📈 Participation Guide","resource_engagement"),("📸 Thursday POP Guide","resource_pop"),
@@ -1257,10 +1275,173 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "warnings_help" and has_permission(user_id,cfg,"adjust_warnings"):
         creators=list(db.list_creators()); buttons=[[(r["display_name"][:40],f"warning_member_{r['telegram_id']}")] for r in creators[:20]]
         return await _show(query,"⚠️ Warning & Strike Management\n\nSelect a member.",grid_markup(ctx,buttons,"admin"))
-    if action.startswith("warning_member_"):
-        if not has_permission(user_id,cfg,"adjust_warnings"): return await _show(query,"Creator Standing isn’t included in your access.",home_markup(ctx,user_id))
-        target=int(action.removeprefix("warning_member_")); creator=db.get_creator(target)
-        return await _show(query,f"⚠️ {creator['display_name']}\n\nChoose the record type.",menu_markup(ctx,[("💛 Warning",f"warning_type_warning_{target}"),("🔴 Strike",f"warning_type_strike_{target}")],"warnings_help"))
+if action.startswith("warning_member_"):
+        if not has_permission(user_id, cfg, "adjust_warnings"):
+            return await _show(
+                query,
+                "Creator Standing isn’t included in your access.",
+                home_markup(ctx, user_id),
+            )
+
+        target = int(action.removeprefix("warning_member_"))
+        creator = db.get_creator(target)
+        if not creator:
+            return await _show(
+                query,
+                "That creator is unavailable.",
+                menu_markup(ctx, [], "warnings_help"),
+            )
+
+        active_records = [
+            record
+            for record in db.list_warnings(target)
+            if record["status"] == "active"
+        ]
+
+        actions = [
+            ("💛 Add Warning", f"warning_type_warning_{target}"),
+            ("🔴 Add Strike", f"warning_type_strike_{target}"),
+        ]
+
+        if can_void_warning(user_id, target, cfg):
+            actions += [
+                (
+                    f"🚫 Void #{record['id']} · {record['warning_type'].title()}",
+                    f"warning_void_{record['id']}",
+                )
+                for record in active_records
+            ]
+
+        standing = (
+            "\n".join(
+                f"#{record['id']} · {record['warning_type'].title()}\n"
+                f"{record['reason']}"
+                for record in active_records
+            )
+            if active_records
+            else "No active warnings or strikes."
+        )
+
+        return await _show(
+            query,
+            f"⚠️ {creator['display_name']}\n\n{standing}\n\nChoose an action.",
+            menu_markup(ctx, actions, "warnings_help"),
+        )
+
+    if action.startswith("warning_void_") and action.removeprefix("warning_void_").isdigit():
+        warning_id = int(action.removeprefix("warning_void_"))
+        warning = db.get_warning(warning_id)
+
+        if (
+            not warning
+            or warning["status"] != "active"
+            or not can_void_warning(user_id, warning["telegram_id"], cfg)
+        ):
+            return await _show(
+                query,
+                "That warning cannot be voided with your access.",
+                menu_markup(ctx, [], "warnings_help"),
+            )
+
+        ctx.user_data["warning_void_id"] = warning_id
+        return await _show(
+            query,
+            f"🚫 Void Warning #{warning_id}\n\nChoose the reason. "
+            "The warning will leave active standing, but its history will remain preserved.",
+            menu_markup(
+                ctx,
+                [
+                    ("Created in Error", "warning_void_reason_error"),
+                    ("Issue Resolved", "warning_void_reason_resolved"),
+                    ("Duplicate Record", "warning_void_reason_duplicate"),
+                ],
+                f"warning_member_{warning['telegram_id']}",
+            ),
+        )
+
+    if action.startswith("warning_void_reason_"):
+        warning_id = ctx.user_data.get("warning_void_id")
+        warning = db.get_warning(warning_id) if warning_id else None
+
+        if (
+            not warning
+            or warning["status"] != "active"
+            or not can_void_warning(user_id, warning["telegram_id"], cfg)
+        ):
+            ctx.user_data.pop("warning_void_id", None)
+            return await _show(
+                query,
+                "That warning-selection expired.",
+                menu_markup(ctx, [], "warnings_help"),
+            )
+
+        reasons = {
+            "error": "Created in error",
+            "resolved": "Issue resolved",
+            "duplicate": "Duplicate record",
+        }
+        reason_key = action.removeprefix("warning_void_reason_")
+        reason = reasons.get(reason_key)
+
+        if not reason:
+            return await _show(
+                query,
+                "That reason is unavailable.",
+                menu_markup(ctx, [], "warnings_help"),
+            )
+
+        ctx.user_data["warning_void_draft"] = {
+            "warning_id": warning_id,
+            "target": warning["telegram_id"],
+            "reason": reason,
+        }
+
+        return await _show(
+            query,
+            f"🚫 Confirm Void Warning\n\nWarning: #{warning_id}\n"
+            f"Reason: {reason}\n\n"
+            "This removes it from active standing calculations. "
+            "Its audit history will remain preserved.",
+            menu_markup(
+                ctx,
+                [("✅ Confirm Void Warning", "warning_void_confirm")],
+                f"warning_member_{warning['telegram_id']}",
+            ),
+        )
+
+    if action == "warning_void_confirm":
+        draft = ctx.user_data.pop("warning_void_draft", None)
+        ctx.user_data.pop("warning_void_id", None)
+
+        warning = db.get_warning(draft["warning_id"]) if draft else None
+        if (
+            not draft
+            or not warning
+            or warning["status"] != "active"
+            or not can_void_warning(user_id, warning["telegram_id"], cfg)
+        ):
+            return await _show(
+                query,
+                "That warning confirmation expired. Nothing was changed.",
+                menu_markup(ctx, [], "warnings_help"),
+            )
+
+        changed = db.remove_warning(
+            draft["warning_id"],
+            user_id,
+            draft["reason"],
+        )
+
+        return await _show(
+            query,
+            (
+                "✅ Warning voided. It no longer counts toward active standing, "
+                "and its audit history remains preserved."
+                if changed
+                else "That warning was already handled. Nothing was changed."
+            ),
+            menu_markup(ctx, [], f"warning_member_{draft['target']}"),
+        )ing_{target}"),("🔴 Strike",f"warning_type_strike_{target}")],"warnings_help"))
     if action.startswith("warning_type_"):
         if not has_permission(user_id,cfg,"adjust_warnings"): return await _show(query,"Creator Standing isn’t included in your access.",home_markup(ctx,user_id))
         raw=action.removeprefix("warning_type_"); kind,target_raw=raw.split("_",1); target=int(target_raw)

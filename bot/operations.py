@@ -387,22 +387,85 @@ async def guided_contact_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("✅ Confirm Historical Decision",callback_data=f"op:{nonce}:pop_reconcile_confirm")],
             [InlineKeyboardButton("❌ Cancel",callback_data=f"op:{nonce}:pop_reconcile_weeks")]]))
     if guided == "support_reply":
-        cfg,actor=ctx.bot_data["config"],update.effective_user.id
-        if not has_permission(actor,cfg,"manage_support"):
-            ctx.user_data.clear();return await update.effective_message.reply_text("Support access is required.")
-        request_id=ctx.user_data.pop("support_reply_id",None);ctx.user_data.pop("guided_input",None)
-        body=_clean(update.effective_message.text,1500)
-        saved=db.add_support_message(request_id,actor,role_for(actor,cfg).name.lower(),body) if request_id and body else None
-        if not saved:return await update.effective_message.reply_text("That support request is unavailable. No reply was saved.")
-        message_id,target=saved
+        cfg, actor = ctx.bot_data["config"], update.effective_user.id
+        if not has_permission(actor, cfg, "manage_support"):
+            ctx.user_data.clear()
+            return await update.effective_message.reply_text(
+                "Support access is required."
+            )
+
+        request_id = ctx.user_data.pop("support_reply_id", None)
+        resolve_after = ctx.user_data.pop("support_reply_resolve", False)
+        ctx.user_data.pop("guided_input", None)
+        body = _clean(update.effective_message.text, 1500)
+
+        saved = (
+            db.add_support_message(
+                request_id,
+                actor,
+                role_for(actor, cfg).name.lower(),
+                body,
+            )
+            if request_id and body
+            else None
+        )
+
+        if not saved:
+            return await update.effective_message.reply_text(
+                "That support request is unavailable. No reply was saved."
+            )
+
+        message_id, target = saved
+
         try:
-            await ctx.bot.send_message(target,f"💬 Admin reply to support request #{request_id}\n\n{body}")
-            db.record_audit(actor,"support_reply_delivered","support_message",message_id,target,related_request_id=request_id)
-            return await update.effective_message.reply_text("✅ Reply recorded and delivered.")
+            await ctx.bot.send_message(
+                target,
+                f"💬 Admin reply to support request #{request_id}\n\n{body}",
+            )
+            db.record_audit(
+                actor,
+                "support_reply_delivered",
+                "support_message",
+                message_id,
+                target,
+                related_request_id=request_id,
+            )
+
+            if resolve_after:
+                db.update_support_request(request_id, "resolve", actor)
+                result_text = "✅ Reply delivered and support request resolved."
+                next_action = "support_queue"
+            else:
+                result_text = "✅ Reply recorded and delivered."
+                next_action = f"support_select_{request_id}"
+
+            nonce = secrets.token_urlsafe(6)
+            ctx.user_data["menu_nonce"] = nonce
+
+            return await update.effective_message.reply_text(
+                result_text,
+                reply_markup=InlineKeyboardMarkup(
+                    [[
+                        InlineKeyboardButton(
+                            "Return to Support",
+                            callback_data=f"op:{nonce}:{next_action}",
+                        )
+                    ]]
+                ),
+            )
+
         except Exception:
-            ref="SUP-"+secrets.token_hex(4).upper()
-            db.record_delivery_failure(ref,"support_reply",target,None,f"Support reply #{message_id}")
-            return await update.effective_message.reply_text(f"The reply was saved, but delivery needs attention. Reference: {ref}")
+            ref = "SUP-" + secrets.token_hex(4).upper()
+            db.record_delivery_failure(
+                ref,
+                "support_reply",
+                target,
+                None,
+                f"Support reply #{message_id}",
+            )
+            return await update.effective_message.reply_text(
+                f"The reply was saved, but delivery needs attention. Reference: {ref}"
+            )
     if guided == "admin_note":
         cfg,actor=ctx.bot_data["config"],update.effective_user.id
         if not has_permission(actor,cfg,"add_admin_notes"):

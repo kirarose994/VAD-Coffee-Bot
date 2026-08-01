@@ -59,7 +59,15 @@ def can_manage_sensitive(user_id: int | None, config) -> bool:
     """History, permissions, owners, and configuration are owner-only."""
     return role_for(user_id, config) is Role.OWNER
 
+def can_void_warning(actor_id: int | None, target_id: int | None, config) -> bool:
+    """Owners may void any warning; Admins may void Creator warnings only."""
+    actor_role = role_for(actor_id, config)
+    target_role = role_for(target_id, config)
 
+    if actor_role is Role.OWNER:
+        return True
+
+    return actor_role is Role.ADMIN and target_role is Role.NONE
 ADMIN_DEFAULT_PERMISSIONS = frozenset({
     "review_registrations", "review_vacations", "review_sick_days", "review_pop",
     "view_creator_reports", "manage_creators", "add_admin_notes", "send_announcements",
