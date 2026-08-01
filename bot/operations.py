@@ -386,7 +386,7 @@ async def guided_contact_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await update.effective_message.reply_text(preview,reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Confirm Historical Decision",callback_data=f"op:{nonce}:pop_reconcile_confirm")],
             [InlineKeyboardButton("❌ Cancel",callback_data=f"op:{nonce}:pop_reconcile_weeks")]]))
-   if guided == "support_reply":
+    if guided == "support_reply":
         cfg, actor = ctx.bot_data["config"], update.effective_user.id
         if not has_permission(actor, cfg, "manage_support"):
             ctx.user_data.clear()
