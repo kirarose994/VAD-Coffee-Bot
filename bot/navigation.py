@@ -11,7 +11,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 import database as db
 from config import RESOURCE_DEFAULTS
-from permissions import Membership, Rfrom permissions import Membership, Role, can_void_warning, has_permission, role_for, roles_forole, has_permission, role_for, roles_for
+from permissions import Membership, Role, can_void_warning, has_permission, role_for, roles_for
 from pop_policy import (current_period, format_lateness, label as pop_label,
     latest_completed_period, posted_time, retention_hours)
 from presentation import audit_entry, friendly_timestamp, system_error_detail, timeline_entry
